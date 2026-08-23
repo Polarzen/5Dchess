@@ -1,0 +1,6 @@
+# 5D Chess 依赖
+numpy>=1.24.0
+pygame>=2.5.0
+mysql-connector-python>=8.0.0
+SQLAlchemy>=2.0.0
+pytest>=7.4.0

@@ -1,0 +1,281 @@
+/* ============================================
+   5D Chess - 样式
+   ============================================ */
+
+:root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #533483;
+    --text: #e0e0e0;
+    --text-dim: #999;
+    --white-cell: #f0d9b5;
+    --black-cell: #b58863;
+    --selected: #ffff00;
+    --valid-move: #4caf50;
+    --check: #ff4444;
+    --branch: #e94560;
+    --white-piece: #fff;
+    --black-piece: #222;
+    --radius: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+#app { height: 100vh; display: flex; flex-direction: column; }
+
+/* ========== 屏幕切换 ========== */
+.screen { display: none; }
+.screen.active { display: flex; }
+
+/* ========== 主菜单 ========== */
+#menu-screen {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 40px;
+}
+
+.title-block { text-align: center; }
+.title-block h1 { font-size: 3em; }
+.title-block .subtitle { color: var(--text-dim); font-size: 1.1em; margin-top: 8px; }
+
+.menu-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 300px;
+}
+
+.menu-btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px;
+    border: 1px solid #444;
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 1.05em;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.menu-btn:hover { background: var(--surface2); border-color: var(--accent); }
+.menu-btn .icon { font-size: 1.4em; }
+
+/* ========== 游戏界面 ========== */
+#game-screen {
+    flex-direction: column;
+    height: 100%;
+}
+
+#top-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+}
+
+#btn-back {
+    padding: 6px 14px;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+}
+#btn-back:hover { background: var(--surface2); }
+
+#game-info { font-size: 0.95em; color: var(--text-dim); }
+
+#main-area {
+    display: flex;
+    flex: 1;
+    gap: 16px;
+    padding: 16px;
+    overflow: hidden;
+}
+
+/* ========== 棋盘 ========== */
+#board-container {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+#board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    width: min(60vh, 560px);
+    height: min(60vh, 560px);
+    border: 3px solid #555;
+    border-radius: 4px;
+    user-select: none;
+}
+
+.cell {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: min(6vh, 56px);
+    transition: background 0.15s;
+}
+.cell.light { background: var(--white-cell); }
+.cell.dark { background: var(--black-cell); }
+.cell.selected { box-shadow: inset 0 0 0 3px var(--selected); }
+.cell.valid-move::after {
+    content: '';
+    position: absolute;
+    width: 30%;
+    height: 30%;
+    border-radius: 50%;
+    background: var(--valid-move);
+    opacity: 0.7;
+}
+.cell.check { box-shadow: inset 0 0 0 3px var(--check); }
+.cell.branching::after {
+    content: '⏳';
+    position: absolute;
+    font-size: 0.3em;
+    bottom: 2px;
+    right: 4px;
+    color: var(--branch);
+}
+
+#board-labels { margin-top: 4px; color: var(--text-dim); font-size: 0.8em; }
+
+/* ========== 右侧面板 ========== */
+#right-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+    min-width: 280px;
+    max-width: 400px;
+}
+
+#timeline-panel, #control-panel, #move-history-panel {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 12px;
+    border: 1px solid #333;
+}
+
+#timeline-panel h3, #control-panel h3, #move-history-panel h3 {
+    font-size: 0.9em;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* ========== 时间线树 ========== */
+#timeline-tree {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 40px;
+}
+
+.timeline-node {
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    cursor: pointer;
+    border: 1px solid #555;
+    transition: all 0.2s;
+}
+.timeline-node.active { background: #2e7d32; border-color: #4caf50; }
+.timeline-node.inactive { background: #444; opacity: 0.6; }
+.timeline-node.selected { background: #1565c0; border-color: #42a5f5; }
+.timeline-node .branch-icon { color: var(--branch); margin-left: 4px; }
+
+.timeline-connector {
+    display: flex;
+    align-items: center;
+    color: var(--text-dim);
+    font-size: 0.8em;
+}
+
+/* ========== 控制面板 ========== */
+#controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.ctrl-btn {
+    padding: 6px 12px;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background: var(--surface2);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.15s;
+}
+.ctrl-btn:hover { background: var(--accent2); }
+.ctrl-btn:active { transform: scale(0.95); }
+.ctrl-btn:disabled { opacity: 0.4; cursor: default; }
+
+#info-panel { font-size: 0.85em; color: var(--text-dim); line-height: 1.6; }
+
+/* ========== 走子历史 ========== */
+#move-history {
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 0.8em;
+    font-family: 'Consolas', 'Courier New', monospace;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    color: var(--text-dim);
+}
+
+/* ========== 游戏结束弹窗 ========== */
+#game-over-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+#game-over-overlay.show { display: flex; }
+
+#game-over-dialog {
+    background: var(--surface);
+    padding: 32px 48px;
+    border-radius: var(--radius);
+    text-align: center;
+    border: 1px solid #555;
+}
+#game-over-dialog h2 { font-size: 2em; margin-bottom: 16px; }
+#game-over-dialog .result-text { font-size: 1.2em; margin-bottom: 24px; }
+
+/* ========== 响应式 ========== */
+@media (max-width: 900px) {
+    #main-area { flex-direction: column; align-items: center; }
+    #board { width: min(80vw, 400px); height: min(80vw, 400px); }
+    .cell { font-size: min(8vw, 40px); }
+    #right-panel { max-width: 100%; width: 100%; }
+}

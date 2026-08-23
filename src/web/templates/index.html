@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>5D Chess - 五维国际象棋</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- ========== 外框 ========== -->
+    <div id="app">
+
+        <!-- ========== 主菜单 ========== -->
+        <div id="menu-screen" class="screen active">
+            <div class="title-block">
+                <h1>♚ 5D Chess</h1>
+                <p class="subtitle">Multiverse Time Travel · 五维国际象棋</p>
+            </div>
+            <div class="menu-buttons">
+                <button class="menu-btn" onclick="startGame('pvp')">
+                    <span class="icon">⚔</span>
+                    <span>真人对弈 PvP</span>
+                </button>
+                <button class="menu-btn" onclick="startGame('pve', 'easy')">
+                    <span class="icon">🤖</span>
+                    <span>人机对弈 · 简单</span>
+                </button>
+                <button class="menu-btn" onclick="startGame('pve', 'medium')">
+                    <span class="icon">🤖</span>
+                    <span>人机对弈 · 中等</span>
+                </button>
+                <button class="menu-btn" onclick="startGame('pve', 'hard')">
+                    <span class="icon">🤖</span>
+                    <span>人机对弈 · 困难</span>
+                </button>
+                <button class="menu-btn" onclick="startGame('replay')">
+                    <span class="icon">📼</span>
+                    <span>棋谱回放 Replay</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- ========== 游戏界面 ========== -->
+        <div id="game-screen" class="screen">
+            <!-- 顶栏 -->
+            <div id="top-bar">
+                <button id="btn-back" onclick="backToMenu()">← 菜单</button>
+                <span id="game-info"></span>
+            </div>
+
+            <!-- 主区域 -->
+            <div id="main-area">
+                <!-- 棋盘 -->
+                <div id="board-container">
+                    <div id="board"></div>
+                    <div id="board-labels"></div>
+                </div>
+
+                <!-- 右侧面板 -->
+                <div id="right-panel">
+                    <!-- 时间线树 -->
+                    <div id="timeline-panel">
+                        <h3>时间线树</h3>
+                        <div id="timeline-tree"></div>
+                    </div>
+
+                    <!-- 控制面板 -->
+                    <div id="control-panel">
+                        <h3>控制</h3>
+                        <div id="controls"></div>
+                        <div id="info-panel"></div>
+                    </div>
+
+                    <!-- 走子历史 -->
+                    <div id="move-history-panel">
+                        <h3>走子历史</h3>
+                        <div id="move-history"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="/static/js/game.js?v=6"></script>
+</body>
+</html>
