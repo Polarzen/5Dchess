@@ -8,6 +8,7 @@ from src.utils.constants import ChessColor, PieceType, BOARD_SIZE
 from src.engine.piece import Piece
 from src.engine.board import Position
 from src.engine.coordinates import BoardCoord, Square5D, Vector4D
+from src.engine.piece_movement import PieceMovementRules
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,7 +175,7 @@ class MoveGenerator:
                    captured: Piece | None = None, promotion: PieceType | None = None,
                    is_castling: bool = False, is_en_passant: bool = False) -> Move:
         board = self._board_coord()
-        return Move(
+        move = Move(
             piece=piece,
             source=Square5D(board, fx, fy),
             destination=Square5D(board, tx, ty),
@@ -183,6 +184,20 @@ class MoveGenerator:
             is_castling=is_castling,
             is_en_passant=is_en_passant,
         )
+
+        # Keep special pawn/castling rules separate. All ordinary non-pawn
+        # moves must satisfy the canonical 4D geometry layer, even while the
+        # generator still enumerates only its existing 2D directions.
+        if (
+            piece.piece_type != PieceType.PAWN
+            and not is_castling
+            and not PieceMovementRules.is_valid(piece.piece_type, move.vector)
+        ):
+            raise ValueError(
+                f"generated move violates {piece.piece_type.name} geometry: {move.vector}"
+            )
+
+        return move
 
     def _gen_pawn_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
         moves = []
