@@ -186,7 +186,7 @@ class AsyncDBWriter:
         tuples = [(s["game_id"], s.get("avg_branch_depth", 0), s.get("max_timelines", 0),
                    s.get("white_time_travels", 0), s.get("black_time_travels", 0))
                   for s in stats]
-        db.execute_many(sql, tuples]
+        db.execute_many(sql, tuples)
 
 
 # 全局异步写入器
