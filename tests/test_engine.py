@@ -5,7 +5,6 @@ import pytest
 import sys
 from pathlib import Path
 
-# 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.engine import FiveDEngine, Position, Piece, piece_from_char, Move, MoveGenerator, MoveValidator, Timeline, TimelineManager, RulesEngine
@@ -13,8 +12,6 @@ from src.utils.constants import ChessColor, PieceType, GameState, INITIAL_BOARD
 
 
 class TestPiece:
-    """棋子定义测试"""
-
     def test_piece_from_char(self):
         assert piece_from_char("K") is not None
         assert piece_from_char("K").piece_type == PieceType.KING
@@ -34,28 +31,22 @@ class TestPiece:
 
 
 class TestPosition:
-    """棋盘测试"""
-
     def test_initial_position(self):
         pos = Position.initial()
         assert pos.turn == ChessColor.WHITE
         assert pos.time_point == 0
-        # 白棋在1-2行，黑棋在7-8行
-        assert pos.get_piece(0, 6) is not None  # 白兵
+        assert pos.get_piece(0, 6) is not None
         assert pos.get_piece(0, 6).color == ChessColor.WHITE
-        assert pos.get_piece(0, 0) is not None  # 黑车
+        assert pos.get_piece(0, 0) is not None
         assert pos.get_piece(0, 0).color == ChessColor.BLACK
 
     def test_find_king(self):
         pos = Position.initial()
-        wk = pos.find_king(ChessColor.WHITE)
-        assert wk == (4, 7)  # e1
-        bk = pos.find_king(ChessColor.BLACK)
-        assert bk == (4, 0)  # e8
+        assert pos.find_king(ChessColor.WHITE) == (4, 7)
+        assert pos.find_king(ChessColor.BLACK) == (4, 0)
 
     def test_move_piece(self):
         pos = Position.initial()
-        # e2-e4
         pos.move_piece(4, 6, 4, 4)
         assert pos.get_piece(4, 4) is not None
         assert pos.get_piece(4, 4).piece_type == PieceType.PAWN
@@ -65,39 +56,31 @@ class TestPosition:
         pos = Position.initial()
         pos2 = pos.copy()
         pos2.move_piece(4, 6, 4, 4)
-        assert pos.get_piece(4, 6) is not None  # 原棋盘不受影响
+        assert pos.get_piece(4, 6) is not None
         assert pos2.is_empty(4, 6)
 
 
 class TestMoveGenerator:
-    """走子生成测试"""
-
     def test_initial_pawn_moves(self):
         pos = Position.initial()
-        gen = MoveGenerator(pos)
-        moves = gen.generate_all()
-        # 初始局面白方应有16个兵走子 + 4个马走子
+        moves = MoveGenerator(pos).generate_all()
         pawn_moves = [m for m in moves if m.piece.piece_type == PieceType.PAWN]
-        assert len(pawn_moves) == 16  # 8个兵，每个可走1或2格
+        assert len(pawn_moves) == 16
 
     def test_knight_moves(self):
         pos = Position.initial()
-        gen = MoveGenerator(pos)
-        moves = gen.generate_all()
+        moves = MoveGenerator(pos).generate_all()
         knight_moves = [m for m in moves if m.piece.piece_type == PieceType.KNIGHT]
-        assert len(knight_moves) == 4  # 2个马，每个2个走法
+        assert len(knight_moves) == 4
 
     def test_no_king_moves_initial(self):
         pos = Position.initial()
-        gen = MoveGenerator(pos)
-        moves = gen.generate_all()
+        moves = MoveGenerator(pos).generate_all()
         king_moves = [m for m in moves if m.piece.piece_type == PieceType.KING]
-        assert len(king_moves) == 0  # 王被包围，无法移动
+        assert len(king_moves) == 0
 
 
 class TestMoveValidator:
-    """走子校验测试"""
-
     def test_legal_filter(self):
         pos = Position.initial()
         gen = MoveGenerator(pos)
@@ -105,7 +88,6 @@ class TestMoveValidator:
         all_moves = gen.generate_all()
         legal = validator.filter_legal_moves(pos, all_moves)
         assert len(legal) > 0
-        # 初始局面所有伪合法走子都应该是合法的（王未被攻击）
         assert len(legal) == len(all_moves)
 
     def test_not_in_check_initial(self):
@@ -116,8 +98,6 @@ class TestMoveValidator:
 
 
 class TestRulesEngine:
-    """规则引擎测试"""
-
     def test_initial_not_checkmate(self):
         pos = Position.initial()
         engine = RulesEngine()
@@ -130,7 +110,6 @@ class TestRulesEngine:
         assert engine.get_game_result(pos) is None
 
     def test_insufficient_material(self):
-        # 只有两王
         board = [["" for _ in range(8)] for _ in range(8)]
         board[0][4] = "k"
         board[7][4] = "K"
@@ -145,7 +124,13 @@ class TestRulesEngine:
 
 
 class TestTimelineManager:
-    """时间线管理测试"""
+    def _parent_with_history(self, mgr: TimelineManager, latest: int = 3):
+        parent = mgr.create_initial_timeline()
+        for time_point in range(latest + 1):
+            pos = Position.initial(timeline_id=0, time_point=time_point)
+            pos.turn = ChessColor.WHITE if time_point % 2 == 0 else ChessColor.BLACK
+            parent.add_position(pos)
+        return parent
 
     def test_create_initial(self):
         mgr = TimelineManager()
@@ -155,23 +140,28 @@ class TestTimelineManager:
 
     def test_create_branch(self):
         mgr = TimelineManager()
-        mgr.create_initial_timeline()
-        tl = mgr.create_branch(parent_id=0, branch_turn=5, branch_move_id=10, target_time=3)
+        self._parent_with_history(mgr)
+        tl = mgr.create_branch(
+            parent_id=0,
+            branch_turn=5,
+            branch_move_id=10,
+            target_time=3,
+            creator=ChessColor.BLACK,
+        )
         assert tl is not None
+        assert tl.timeline_id == -1
         assert tl.parent_id == 0
         assert tl.branch_turn == 5
 
     def test_max_timelines(self):
         mgr = TimelineManager(max_timelines=3)
-        mgr.create_initial_timeline()
-        assert mgr.create_branch(0, 1, 1, 0) is not None
-        assert mgr.create_branch(0, 2, 2, 0) is not None
-        assert mgr.create_branch(0, 3, 3, 0) is None  # 超过上限
+        self._parent_with_history(mgr, latest=0)
+        assert mgr.create_branch(0, 1, 1, 0, creator=ChessColor.WHITE) is not None
+        assert mgr.create_branch(0, 2, 2, 0, creator=ChessColor.BLACK) is not None
+        assert mgr.create_branch(0, 3, 3, 0, creator=ChessColor.WHITE) is None
 
 
 class TestFiveDEngine:
-    """核心引擎集成测试"""
-
     def test_engine_init(self):
         engine = FiveDEngine()
         assert engine.game_state == GameState.PLAYING
@@ -186,12 +176,10 @@ class TestFiveDEngine:
 
     def test_execute_and_get_moves(self):
         engine = FiveDEngine()
-        # 执行 e7-e5 (白方兵从row 6到row 4)
         moves = engine.get_legal_moves()
         e2e4 = [m for m in moves if m.from_x == 4 and m.from_y == 6 and m.to_y == 4]
         assert len(e2e4) > 0
-        success = engine.execute_move(e2e4[0])
-        assert success
+        assert engine.execute_move(e2e4[0])
         assert engine.move_counter == 1
         assert engine.current_turn_color == ChessColor.BLACK
 
