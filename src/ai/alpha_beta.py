@@ -121,6 +121,10 @@ class AlphaBetaAI(AIPlayer):
             from src.engine.piece import Piece
             new_pos.set_piece(move.to_x, move.to_y, Piece(move.promotion, position.turn))
 
+        # Match the real engine transition: every local move advances the legacy
+        # half-move index and flips the side together. Keeping these two fields
+        # synchronized is required by canonical BoardCoord conversion.
+        new_pos.time_point = position.time_point + 1
         new_pos.turn = position.turn.opposite()
         return new_pos
 
