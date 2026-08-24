@@ -13,7 +13,7 @@ from math import gcd
 from src.utils.constants import BOARD_SIZE, ChessColor
 
 
-@dataclass(frozen=True, slots=True, order=True)
+@dataclass(frozen=True, slots=True)
 class BoardCoord:
     """Identity of one board in the multiverse.
 
