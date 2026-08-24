@@ -2,6 +2,8 @@
 5D Chess - 异步数据库写入器
 不阻塞游戏主循环，通过队列+工作线程批量写入
 """
+from __future__ import annotations
+
 import threading
 import time
 from queue import Queue, Empty
