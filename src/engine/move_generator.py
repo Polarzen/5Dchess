@@ -3,11 +3,16 @@
 生成所有伪合法走子（不考虑将军约束）
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
+from itertools import product
+
 from src.utils.constants import ChessColor, PieceType, BOARD_SIZE
 from src.engine.piece import Piece
 from src.engine.board import Position
 from src.engine.coordinates import BoardCoord, Square5D, Vector4D
+from src.engine.multiverse import MultiverseBoardView
+from src.engine.path_rules import PathRules
 from src.engine.piece_movement import PieceMovementRules
 
 
@@ -107,7 +112,12 @@ class Move:
 
 
 class MoveGenerator:
-    """走子生成器 — 生成所有伪合法走子"""
+    """走子生成器 — 生成所有伪合法走子。
+
+    普通二维走法仍从当前 ``Position`` 枚举。非兵棋子的跨棋盘走法则通过
+    canonical ``BoardCoord`` / ``Vector4D``、``PieceMovementRules`` 和
+    ``PathRules`` 生成；历史棋盘只可作为目标，不可作为起点。
+    """
 
     KNIGHT_MOVES = [
         (-2, -1), (-2, 1), (-1, -2), (-1, 2),
@@ -126,6 +136,7 @@ class MoveGenerator:
     def __init__(self, position: Position, timelines: dict[int, "Timeline"] = None):
         self.position = position
         self.timelines = timelines or {}
+        self.board_view = MultiverseBoardView(self.timelines)
 
     def _board_coord(
         self,
@@ -167,10 +178,17 @@ class MoveGenerator:
         )
 
     def generate_all(self) -> list[Move]:
-        """生成所有伪合法走子"""
-        moves: list[Move] = []
+        """生成当前可玩棋盘上的所有伪合法走子。"""
         color = self.position.turn
+        source_board = self._board_coord()
 
+        # 当提供完整 multiverse 时，历史棋盘不能作为走子起点。
+        if self.timelines:
+            source = self.board_view.describe(source_board)
+            if source is not None and not source.is_playable:
+                return []
+
+        moves: list[Move] = []
         for x, y, piece in self.position.get_all_pieces(color):
             if piece.piece_type == PieceType.PAWN:
                 moves.extend(self._gen_pawn_moves(x, y, piece))
@@ -185,9 +203,7 @@ class MoveGenerator:
             elif piece.piece_type == PieceType.KING:
                 moves.extend(self._gen_king_moves(x, y, piece))
 
-        # 仍沿用当前项目的简化时间走法；目标棋盘至少先使用正确的
-        # canonical turn/side 映射。下一阶段再按 Vector4D 枚举真实目标。
-        moves.extend(self._gen_time_moves(color))
+        moves.extend(self._gen_multiverse_moves(color))
         return moves
 
     def _in_bounds(self, x: int, y: int) -> bool:
@@ -335,64 +351,132 @@ class MoveGenerator:
                 ny += dy
         return moves
 
-    def _gen_time_moves(self, color: ChessColor) -> list[Move]:
-        """生成当前项目已有的简化时间旅行移动。
+    def _gen_multiverse_moves(self, color: ChessColor) -> list[Move]:
+        """按真实 4D 几何生成非 Pawn 的跨棋盘伪合法走子。"""
+        if not self.timelines:
+            return []
 
-        旧引擎的 ``time_point`` 是半步索引。这里只允许目标 half-move
-        与当前棋子颜色相同，并把它转换为 canonical ``BoardCoord``，从而
-        保证后续 ``Vector4D.dt`` 使用完整回合距离而不是被放大两倍。
-        """
-        moves = []
-        tid = self.position.timeline_id
-        current_time = self.position.time_point
         source_board = self._board_coord()
-        source_timeline = self.timelines.get(tid)
+        source_description = self.board_view.describe(source_board)
+        if source_description is None or not source_description.is_playable:
+            return []
 
-        for target_time in range(current_time):
-            if BoardCoord.legacy_side_for_time_point(target_time) != color:
+        target_boards = tuple(self.board_view.iter_boards(side=color))
+        moves: list[Move] = []
+
+        for x, y, piece in self.position.get_all_pieces(color):
+            if not PieceMovementRules.supports(piece.piece_type):
+                # Pawn keeps its current spatial-only implementation until its
+                # color-relative 5D rule set is implemented separately.
                 continue
 
-            if source_timeline is not None:
-                target_pos = source_timeline.positions.get(target_time)
-                if target_pos is None or target_pos.turn != color:
+            source = Square5D(source_board, x, y)
+            for target_board in target_boards:
+                if target_board.coord == source_board:
                     continue
 
-            target_board = self._board_coord(
-                timeline_id=tid,
-                legacy_time_point=target_time,
-                side=color,
-            )
-            for x, y, piece in self.position.get_all_pieces(color):
-                if piece.piece_type == PieceType.KING:
-                    continue
-                moves.append(Move(
-                    piece=piece,
-                    source=Square5D(source_board, x, y),
-                    destination=Square5D(target_board, x, y),
-                    is_branching=True,
-                ))
+                dt = target_board.coord.turn - source.turn
+                dl = target_board.coord.timeline - source.timeline
+                for dx, dy in self._candidate_spatial_offsets(
+                    piece.piece_type, dt, dl
+                ):
+                    tx, ty = x + dx, y + dy
+                    if not self._in_bounds(tx, ty):
+                        continue
 
-        for other_tid, timeline in self.timelines.items():
-            if other_tid == tid:
-                continue
-            if not timeline.is_active:
-                continue
-            if current_time not in timeline.positions:
-                continue
-            target_pos = timeline.positions[current_time]
-            if target_pos.turn != color:
-                continue
-            target_board = BoardCoord.from_legacy_time_point(
-                timeline=other_tid,
-                time_point=current_time,
-                side=target_pos.turn,
-            )
-            for x, y, piece in self.position.get_all_pieces(color):
-                if target_pos.is_empty(x, y):
+                    destination = Square5D(target_board.coord, tx, ty)
+                    vector = source.vector_to(destination)
+                    if not PieceMovementRules.is_valid(piece.piece_type, vector):
+                        continue
+
+                    if (
+                        PieceMovementRules.is_slider(piece.piece_type)
+                        and not PathRules.is_clear(
+                            piece.piece_type,
+                            source,
+                            destination,
+                            self.board_view.resolve,
+                        )
+                    ):
+                        continue
+
+                    captured = target_board.position.get_piece(tx, ty)
+                    if captured is not None and captured.color == piece.color:
+                        continue
+
                     moves.append(Move(
                         piece=piece,
-                        source=Square5D(source_board, x, y),
-                        destination=Square5D(target_board, x, y),
+                        source=source,
+                        destination=destination,
+                        captured=captured,
+                        is_branching=target_board.is_historical,
                     ))
 
         return moves
+
+    @staticmethod
+    def _candidate_spatial_offsets(
+        piece_type: PieceType,
+        dt: int,
+        dl: int,
+    ) -> tuple[tuple[int, int], ...]:
+        """Infer the small set of (dx, dy) candidates from fixed T/L deltas.
+
+        This avoids scanning all 64 squares on every historical board. The
+        returned candidates are still verified by ``PieceMovementRules`` before
+        a Move is emitted.
+        """
+        board_components = tuple(value for value in (dt, dl) if value != 0)
+        if not board_components:
+            return ()
+
+        if piece_type == PieceType.ROOK:
+            return ((0, 0),) if len(board_components) == 1 else ()
+
+        if piece_type == PieceType.BISHOP:
+            if len(board_components) == 2:
+                if abs(board_components[0]) != abs(board_components[1]):
+                    return ()
+                return ((0, 0),)
+
+            magnitude = abs(board_components[0])
+            return (
+                (-magnitude, 0),
+                (magnitude, 0),
+                (0, -magnitude),
+                (0, magnitude),
+            )
+
+        if piece_type == PieceType.QUEEN:
+            magnitudes = {abs(value) for value in board_components}
+            if len(magnitudes) != 1:
+                return ()
+            magnitude = magnitudes.pop()
+            values = (-magnitude, 0, magnitude)
+            return tuple(product(values, repeat=2))
+
+        if piece_type == PieceType.KING:
+            if any(abs(value) != 1 for value in board_components):
+                return ()
+            return tuple(product((-1, 0, 1), repeat=2))
+
+        if piece_type == PieceType.KNIGHT:
+            if len(board_components) == 2:
+                return (
+                    ((0, 0),)
+                    if sorted(abs(value) for value in board_components) == [1, 2]
+                    else ()
+                )
+
+            magnitude = abs(board_components[0])
+            if magnitude not in (1, 2):
+                return ()
+            spatial_magnitude = 2 if magnitude == 1 else 1
+            return (
+                (-spatial_magnitude, 0),
+                (spatial_magnitude, 0),
+                (0, -spatial_magnitude),
+                (0, spatial_magnitude),
+            )
+
+        return ()
