@@ -1,7 +1,7 @@
 """Core coordinate primitives for 5D Chess.
 
 The rules engine treats a square as a spatial coordinate (x, y) attached to a
-specific board coordinate (timeline, turn, side).  Movement geometry is then
+specific board coordinate (timeline, turn, side). Movement geometry is then
 expressed as a four-dimensional vector (dx, dy, dt, dl).
 """
 from __future__ import annotations
@@ -17,10 +17,10 @@ from src.utils.constants import BOARD_SIZE, ChessColor
 class BoardCoord:
     """Identity of one board in the multiverse.
 
-    ``turn`` is the canonical full-turn coordinate. ``side`` identifies the
-    half-move board for that turn. During the migration from the legacy
-    ``Position.time_point`` model, callers may temporarily map ``time_point``
-    into ``turn`` without changing the old state-transition code.
+    ``turn`` is the canonical full-turn coordinate. ``side`` identifies which
+    half-move board exists at that turn. The legacy engine stores one integer
+    ``Position.time_point`` per half-move; use ``from_legacy_time_point`` and
+    ``legacy_time_point`` at that compatibility boundary.
     """
 
     timeline: int
@@ -30,6 +30,45 @@ class BoardCoord:
     def __post_init__(self) -> None:
         if self.turn < 0:
             raise ValueError("turn must be non-negative")
+
+    @staticmethod
+    def legacy_side_for_time_point(time_point: int) -> ChessColor:
+        """Return the side encoded by a legacy half-move time point."""
+        if time_point < 0:
+            raise ValueError("time_point must be non-negative")
+        return ChessColor.WHITE if time_point % 2 == 0 else ChessColor.BLACK
+
+    @classmethod
+    def from_legacy_time_point(
+        cls,
+        timeline: int,
+        time_point: int,
+        side: ChessColor | None = None,
+    ) -> "BoardCoord":
+        """Convert the old half-move index into canonical ``(turn, side)``.
+
+        Legacy time points advance after every local move:
+        ``0 -> T0w``, ``1 -> T0b``, ``2 -> T1w``, ``3 -> T1b``, ...
+        Supplying ``side`` validates that the legacy Position has a consistent
+        phase instead of silently creating an impossible board coordinate.
+        """
+        expected_side = cls.legacy_side_for_time_point(time_point)
+        if side is not None and side != expected_side:
+            raise ValueError(
+                f"legacy time_point {time_point} implies {expected_side.value}, "
+                f"not {side.value}"
+            )
+        return cls(
+            timeline=timeline,
+            turn=time_point // 2,
+            side=expected_side,
+        )
+
+    @property
+    def legacy_time_point(self) -> int:
+        """Convert this canonical board back to the legacy half-move index."""
+        phase = 0 if self.side == ChessColor.WHITE else 1
+        return self.turn * 2 + phase
 
     def next(self) -> "BoardCoord":
         """Return the board coordinate after one local move on this timeline."""
@@ -74,7 +113,7 @@ class Square5D:
 class Vector4D:
     """Movement vector across space, time and timelines.
 
-    Component order is ``(dx, dy, dt, dl)``.  Board ``side`` is deliberately
+    Component order is ``(dx, dy, dt, dl)``. Board ``side`` is deliberately
     not encoded as a fifth movement axis; geometric moves compare boards with
     the same side-to-move phase.
     """
