@@ -136,21 +136,19 @@ class TestKingMoves:
         assert len(castlings) == 2
 
 
-class TestTimeMoves:
-    def test_time_travel_moves(self):
-        """测试时间旅行走子生成"""
+class TestMultiverseContext:
+    def test_no_synthetic_time_moves_without_timeline_state(self):
+        """没有真实 Timeline 棋盘时，不再凭空生成旧式时间传送。"""
         board = [["" for _ in range(8)] for _ in range(8)]
-        board[4][4] = "P"
+        board[4][4] = "R"
         board[0][0] = "K"
         board[7][7] = "k"
-        # Legacy time_point advances every half-move. White boards are even.
         pos = Position(board=board, turn=ChessColor.WHITE, timeline_id=0, time_point=4)
-        gen = MoveGenerator(pos)
-        moves = gen.generate_all()
-        branching = [m for m in moves if m.is_branching]
-        assert len(branching) >= 1
-        assert all(m.source.side == m.destination.side == ChessColor.WHITE for m in branching)
-        assert all(m.to_time % 2 == 0 for m in branching)
+
+        moves = MoveGenerator(pos).generate_all()
+
+        assert all(move.is_spatial for move in moves)
+        assert not any(move.is_branching or move.is_cross_timeline for move in moves)
 
 
 if __name__ == "__main__":
