@@ -3,7 +3,7 @@
 整合棋盘、走子生成、校验、时间线管理、规则判定
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from src.config import DEFAULT_MAX_TIMELINES, DEFAULT_MAX_TURNS
 from src.utils.constants import ChessColor, PieceType, GameState
 from src.utils.logger import logger
@@ -11,7 +11,7 @@ from src.engine.piece import Piece
 from src.engine.board import Position
 from src.engine.move_generator import Move, MoveGenerator
 from src.engine.move_validator import MoveValidator
-from src.engine.timeline import Timeline, TimelineManager
+from src.engine.timeline import TimelineManager
 from src.engine.rules import RulesEngine
 
 
@@ -28,13 +28,12 @@ class FiveDEngine:
     current_turn_color: ChessColor = ChessColor.WHITE
 
     def __post_init__(self):
+        self.timeline_manager.max_timelines = self.max_timelines
         self._init_game()
 
     def _init_game(self):
         """初始化游戏"""
-        # 创建初始时间线
         tl = self.timeline_manager.create_initial_timeline()
-        # 创建初始棋盘
         initial_pos = Position.initial(timeline_id=tl.timeline_id, time_point=0)
         tl.add_position(initial_pos)
         self.game_state = GameState.PLAYING
@@ -64,43 +63,30 @@ class FiveDEngine:
         return validator.filter_legal_moves(position, pseudo_moves)
 
     def execute_move(self, move: Move) -> bool:
-        """
-        执行走子，返回是否成功
-        处理：普通走子、时间旅行、跨时间线、分支
-        """
+        """执行普通、跨棋盘或分支走子。"""
         if self.game_state != GameState.PLAYING:
             logger.warning("游戏已结束，无法走子")
             return False
 
         try:
-            current_pos = self.get_current_position()
-            tid = self.timeline_manager.active_timeline_id
-            current_time = current_pos.time_point
-
             if move.is_branching:
                 return self._execute_branching_move(move)
-            elif move.is_cross_timeline:
+            if move.is_cross_timeline:
                 return self._execute_cross_timeline_move(move)
-            else:
-                return self._execute_normal_move(move)
-
+            return self._execute_normal_move(move)
         except Exception as e:
             logger.error(f"走子执行失败: {e}")
             return False
 
     def _execute_normal_move(self, move: Move) -> bool:
-        """执行普通走子（同时间线，空间移动）"""
+        """执行同一棋盘上的普通空间移动。"""
         current_pos = self.get_current_position()
-        new_time = current_pos.time_point + 1
-
-        # 创建新棋盘
         new_pos = current_pos.copy()
-        new_pos.time_point = new_time
+        new_pos.time_point = current_pos.time_point + 1
         new_pos.turn = current_pos.turn.opposite()
         new_pos.move_number = self.move_counter + 1
 
-        # 处理特殊走子
-        captured = new_pos.move_piece(move.from_x, move.from_y, move.to_x, move.to_y)
+        new_pos.move_piece(move.from_x, move.from_y, move.to_x, move.to_y)
 
         if move.is_castling:
             row = move.to_y
@@ -116,99 +102,110 @@ class FiveDEngine:
         if move.promotion:
             new_pos.set_piece(move.to_x, move.to_y, Piece(move.promotion, current_pos.turn))
 
-        # 更新易位权
         self._update_castling_rights(new_pos, move)
 
-        # 添加到时间线
         tl = self.timeline_manager.get_timeline(move.to_timeline_id)
+        if tl is None:
+            return False
         tl.add_position(new_pos)
 
         self.move_counter += 1
         self.move_history.append(move)
         self.current_turn_color = new_pos.turn
-
-        # 检查胜负
         self._check_game_result(new_pos)
-
         return True
 
     def _execute_branching_move(self, move: Move) -> bool:
-        """执行产生分支的走子（向过去移动）"""
+        """执行落到历史棋盘并创建新时间线的走子。"""
         current_pos = self.get_current_position()
+        source_tl = self.timeline_manager.get_timeline(move.from_timeline_id)
+        target_tl = self.timeline_manager.get_timeline(move.to_timeline_id)
+        if source_tl is None or target_tl is None:
+            return False
+        if move.to_time not in target_tl.positions:
+            return False
+        if move.to_time >= target_tl.latest_time:
+            # Branching is defined by landing on a historical board.
+            return False
 
-        # 创建新时间线分支
         new_tl = self.timeline_manager.create_branch(
-            parent_id=move.from_timeline_id,
+            parent_id=move.to_timeline_id,
             branch_turn=current_pos.time_point,
             branch_move_id=self.move_counter + 1,
             target_time=move.to_time,
+            creator=move.piece.color,
         )
         if new_tl is None:
-            logger.warning("无法创建新时间线：已达上限")
+            logger.warning("无法创建新时间线：已达上限或目标棋盘不存在")
             return False
 
-        # 在新时间线中创建新时间点并放置棋子（不修改过去的棋盘）
-        if move.to_time in new_tl.positions:
-            past_pos = new_tl.positions[move.to_time]
-            new_pos = past_pos.copy()
-            new_pos.time_point = new_tl.latest_time + 1
-            new_pos.turn = current_pos.turn.opposite()
-            new_pos.set_piece(move.to_x, move.to_y, move.piece)
-            new_tl.add_position(new_pos)
+        past_pos = new_tl.positions[move.to_time]
+        new_target_pos = past_pos.copy()
+        new_target_pos.time_point = move.to_time + 1
+        new_target_pos.turn = past_pos.turn.opposite()
+        new_target_pos.move_number = self.move_counter + 1
+        new_target_pos.set_piece(move.to_x, move.to_y, move.piece)
+        new_tl.add_position(new_target_pos)
 
-        # 在源时间线创建新时间点（移除棋子，不修改历史）
+        # The source history remains immutable; removal happens in a successor.
         new_source_pos = current_pos.copy()
         new_source_pos.set_piece(move.from_x, move.from_y, None)
         new_source_pos.time_point = current_pos.time_point + 1
         new_source_pos.turn = current_pos.turn.opposite()
         new_source_pos.move_number = self.move_counter + 1
-        source_tl = self.timeline_manager.get_timeline(move.from_timeline_id)
         source_tl.add_position(new_source_pos)
 
-        # 切换到新时间线
         self.timeline_manager.switch_active(new_tl.timeline_id)
 
+        recorded_move = replace(move, created_timeline=new_tl.timeline_id)
         self.move_counter += 1
-        self.move_history.append(move)
-        self.current_turn_color = new_pos.turn
+        self.move_history.append(recorded_move)
+        self.current_turn_color = new_source_pos.turn
 
-        logger.info(f"时间线分支: T{new_tl.timeline_id} ← T{new_tl.parent_id} @ t={move.to_time}")
+        logger.info(
+            f"时间线分支: L{new_tl.timeline_id:+d} ← "
+            f"L{new_tl.parent_id:+d} @ t={move.to_time}"
+        )
         return True
 
     def _execute_cross_timeline_move(self, move: Move) -> bool:
-        """执行跨时间线移动"""
+        """执行两个可走棋盘之间的跨时间线移动。"""
         current_pos = self.get_current_position()
+        source_tl = self.timeline_manager.get_timeline(move.from_timeline_id)
         target_tl = self.timeline_manager.get_timeline(move.to_timeline_id)
-        if target_tl is None:
+        if source_tl is None or target_tl is None:
             return False
 
         target_time = move.to_time
         if target_time not in target_tl.positions:
             return False
+        if target_time != target_tl.latest_time:
+            # Landing on history must use the branching execution path instead.
+            return False
 
-        # 在目标时间线创建新位置（不从过去复制，而是新建时间点）
         target_pos = target_tl.positions[target_time]
+        if target_pos.turn != current_pos.turn:
+            return False
+
         new_target_pos = target_pos.copy()
-        new_target_pos.time_point = target_tl.latest_time + 1
-        new_target_pos.turn = current_pos.turn.opposite()
+        new_target_pos.time_point = target_pos.time_point + 1
+        new_target_pos.turn = target_pos.turn.opposite()
+        new_target_pos.move_number = self.move_counter + 1
         new_target_pos.set_piece(move.to_x, move.to_y, move.piece)
+
+        # Never mutate the stored source board. Create its successor first.
+        new_source_pos = current_pos.copy()
+        new_source_pos.set_piece(move.from_x, move.from_y, None)
+        new_source_pos.time_point = current_pos.time_point + 1
+        new_source_pos.turn = current_pos.turn.opposite()
+        new_source_pos.move_number = self.move_counter + 1
+
         target_tl.add_position(new_target_pos)
-
-        # 从源时间线移除棋子
-        current_pos.set_piece(move.from_x, move.from_y, None)
-
-        # 在源时间线创建新时间点
-        new_pos = current_pos.copy()
-        new_pos.time_point = current_pos.time_point + 1
-        new_pos.turn = current_pos.turn.opposite()
-        new_pos.move_number = self.move_counter + 1
-        source_tl = self.timeline_manager.get_timeline(move.from_timeline_id)
-        source_tl.add_position(new_pos)
+        source_tl.add_position(new_source_pos)
 
         self.move_counter += 1
         self.move_history.append(move)
-        self.current_turn_color = new_pos.turn
-
+        self.current_turn_color = new_source_pos.turn
         return True
 
     def _update_castling_rights(self, position: Position, move: Move):
@@ -279,6 +276,7 @@ class FiveDEngine:
                     "to_timeline_id": m.to_timeline_id,
                     "from_time": m.from_time, "to_time": m.to_time,
                     "is_branching": m.is_branching,
+                    "created_timeline": m.created_timeline,
                     "is_castling": m.is_castling,
                     "is_en_passant": m.is_en_passant,
                     "promotion": m.promotion.value if m.promotion else None,
@@ -301,5 +299,4 @@ class FiveDEngine:
         engine.game_state = GameState[data["game_state"]]
         engine.move_counter = data["move_counter"]
         engine.current_turn_color = ChessColor(data["current_turn_color"])
-        # 走子历史需要从数据重建（简化处理）
         return engine
