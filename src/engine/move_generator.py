@@ -15,7 +15,7 @@ from src.engine.piece_movement import PieceMovementRules
 class Move:
     """不可变走子对象。
 
-    ``source`` / ``destination`` are the canonical coordinates.  The legacy
+    ``source`` / ``destination`` are the canonical coordinates. The legacy
     ``from_*`` / ``to_*`` attributes are exposed as read-only compatibility
     properties so the rest of the engine can migrate incrementally.
     """
@@ -54,8 +54,9 @@ class Move:
         return self.source.timeline != self.destination.timeline
 
     # ---- Legacy compatibility accessors ---------------------------------
-    # These keep Engine/GUI/Replay/serialization working while those layers
-    # are migrated to Square5D in later refactors.
+    # Engine/Replay/storage still index Position objects by half-move
+    # ``time_point``. Canonical BoardCoord uses full turns, so convert only at
+    # this boundary instead of contaminating 4D movement geometry.
     @property
     def from_x(self) -> int:
         return self.source.x
@@ -82,11 +83,11 @@ class Move:
 
     @property
     def from_time(self) -> int:
-        return self.source.turn
+        return self.source.board.legacy_time_point
 
     @property
     def to_time(self) -> int:
-        return self.destination.turn
+        return self.destination.board.legacy_time_point
 
     def to_notation(self) -> str:
         """生成棋谱记法（暂时保持现有格式兼容）"""
@@ -126,21 +127,41 @@ class MoveGenerator:
         self.position = position
         self.timelines = timelines or {}
 
-    def _board_coord(self, *, timeline_id: int | None = None,
-                     turn: int | None = None,
-                     side: ChessColor | None = None) -> BoardCoord:
-        """Adapt the legacy Position coordinates into the new board model."""
-        return BoardCoord(
+    def _board_coord(
+        self,
+        *,
+        timeline_id: int | None = None,
+        legacy_time_point: int | None = None,
+        side: ChessColor | None = None,
+    ) -> BoardCoord:
+        """Adapt a legacy Position half-move index into canonical board time."""
+        time_point = (
+            self.position.time_point
+            if legacy_time_point is None
+            else legacy_time_point
+        )
+        board_side = self.position.turn if side is None else side
+        return BoardCoord.from_legacy_time_point(
             timeline=self.position.timeline_id if timeline_id is None else timeline_id,
-            turn=self.position.time_point if turn is None else turn,
-            side=self.position.turn if side is None else side,
+            time_point=time_point,
+            side=board_side,
         )
 
-    def _square(self, x: int, y: int, *, timeline_id: int | None = None,
-                turn: int | None = None,
-                side: ChessColor | None = None) -> Square5D:
+    def _square(
+        self,
+        x: int,
+        y: int,
+        *,
+        timeline_id: int | None = None,
+        legacy_time_point: int | None = None,
+        side: ChessColor | None = None,
+    ) -> Square5D:
         return Square5D(
-            board=self._board_coord(timeline_id=timeline_id, turn=turn, side=side),
+            board=self._board_coord(
+                timeline_id=timeline_id,
+                legacy_time_point=legacy_time_point,
+                side=side,
+            ),
             x=x,
             y=y,
         )
@@ -164,7 +185,8 @@ class MoveGenerator:
             elif piece.piece_type == PieceType.KING:
                 moves.extend(self._gen_king_moves(x, y, piece))
 
-        # 仍沿用当前项目的简化时间走法；下一阶段会按 Vector4D 重写。
+        # 仍沿用当前项目的简化时间走法；目标棋盘至少先使用正确的
+        # canonical turn/side 映射。下一阶段再按 Vector4D 枚举真实目标。
         moves.extend(self._gen_time_moves(color))
         return moves
 
@@ -185,9 +207,6 @@ class MoveGenerator:
             is_en_passant=is_en_passant,
         )
 
-        # Keep special pawn/castling rules separate. All ordinary non-pawn
-        # moves must satisfy the canonical 4D geometry layer, even while the
-        # generator still enumerates only its existing 2D directions.
         if (
             piece.piece_type != PieceType.PAWN
             and not is_castling
@@ -319,16 +338,30 @@ class MoveGenerator:
     def _gen_time_moves(self, color: ChessColor) -> list[Move]:
         """生成当前项目已有的简化时间旅行移动。
 
-        这里只迁移数据模型，不在本次提交中改变旧规则语义。后续会用
-        ``Vector4D`` 按各棋子的真实四维几何规则替换本方法。
+        旧引擎的 ``time_point`` 是半步索引。这里只允许目标 half-move
+        与当前棋子颜色相同，并把它转换为 canonical ``BoardCoord``，从而
+        保证后续 ``Vector4D.dt`` 使用完整回合距离而不是被放大两倍。
         """
         moves = []
         tid = self.position.timeline_id
         current_time = self.position.time_point
         source_board = self._board_coord()
+        source_timeline = self.timelines.get(tid)
 
         for target_time in range(current_time):
-            target_board = self._board_coord(timeline_id=tid, turn=target_time, side=color)
+            if BoardCoord.legacy_side_for_time_point(target_time) != color:
+                continue
+
+            if source_timeline is not None:
+                target_pos = source_timeline.positions.get(target_time)
+                if target_pos is None or target_pos.turn != color:
+                    continue
+
+            target_board = self._board_coord(
+                timeline_id=tid,
+                legacy_time_point=target_time,
+                side=color,
+            )
             for x, y, piece in self.position.get_all_pieces(color):
                 if piece.piece_type == PieceType.KING:
                     continue
@@ -347,7 +380,13 @@ class MoveGenerator:
             if current_time not in timeline.positions:
                 continue
             target_pos = timeline.positions[current_time]
-            target_board = BoardCoord(other_tid, current_time, target_pos.turn)
+            if target_pos.turn != color:
+                continue
+            target_board = BoardCoord.from_legacy_time_point(
+                timeline=other_tid,
+                time_point=current_time,
+                side=target_pos.turn,
+            )
             for x, y, piece in self.position.get_all_pieces(color):
                 if target_pos.is_empty(x, y):
                     moves.append(Move(
