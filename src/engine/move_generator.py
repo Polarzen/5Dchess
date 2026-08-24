@@ -7,45 +7,88 @@ from dataclasses import dataclass
 from src.utils.constants import ChessColor, PieceType, BOARD_SIZE
 from src.engine.piece import Piece
 from src.engine.board import Position
+from src.engine.coordinates import BoardCoord, Square5D, Vector4D
 
 
 @dataclass(frozen=True, slots=True)
 class Move:
-    """不可变走子对象"""
+    """不可变走子对象。
+
+    ``source`` / ``destination`` are the canonical coordinates.  The legacy
+    ``from_*`` / ``to_*`` attributes are exposed as read-only compatibility
+    properties so the rest of the engine can migrate incrementally.
+    """
+
     piece: Piece
-    from_x: int
-    from_y: int
-    to_x: int
-    to_y: int
-    from_timeline_id: int
-    to_timeline_id: int
-    from_time: int
-    to_time: int
-    is_branching: bool = False
+    source: Square5D
+    destination: Square5D
     captured: Piece | None = None
     promotion: PieceType | None = None
     is_castling: bool = False
     is_en_passant: bool = False
+    is_branching: bool = False
+    created_timeline: int | None = None
+
+    @property
+    def vector(self) -> Vector4D:
+        """Return the canonical four-dimensional movement vector."""
+        return self.source.vector_to(self.destination)
 
     @property
     def is_spatial(self) -> bool:
-        """纯空间移动（同时间线，同时刻）"""
-        return (self.from_timeline_id == self.to_timeline_id
-                and self.from_time == self.to_time)
+        """纯空间移动（同一棋盘内）"""
+        return self.source.board == self.destination.board
 
     @property
     def is_time_travel(self) -> bool:
-        """时间移动（同时间线，不同时间）"""
-        return (self.from_timeline_id == self.to_timeline_id
-                and self.from_time != self.to_time)
+        """同时间线、不同时刻的移动"""
+        return (
+            self.source.timeline == self.destination.timeline
+            and self.source.turn != self.destination.turn
+        )
 
     @property
     def is_cross_timeline(self) -> bool:
         """跨时间线移动"""
-        return self.from_timeline_id != self.to_timeline_id
+        return self.source.timeline != self.destination.timeline
+
+    # ---- Legacy compatibility accessors ---------------------------------
+    # These keep Engine/GUI/Replay/serialization working while those layers
+    # are migrated to Square5D in later refactors.
+    @property
+    def from_x(self) -> int:
+        return self.source.x
+
+    @property
+    def from_y(self) -> int:
+        return self.source.y
+
+    @property
+    def to_x(self) -> int:
+        return self.destination.x
+
+    @property
+    def to_y(self) -> int:
+        return self.destination.y
+
+    @property
+    def from_timeline_id(self) -> int:
+        return self.source.timeline
+
+    @property
+    def to_timeline_id(self) -> int:
+        return self.destination.timeline
+
+    @property
+    def from_time(self) -> int:
+        return self.source.turn
+
+    @property
+    def to_time(self) -> int:
+        return self.destination.turn
 
     def to_notation(self) -> str:
-        """生成棋谱记法"""
+        """生成棋谱记法（暂时保持现有格式兼容）"""
         if self.is_cross_timeline:
             base = f"({self.from_timeline_id}→{self.to_timeline_id})"
         else:
@@ -64,27 +107,42 @@ class Move:
 class MoveGenerator:
     """走子生成器 — 生成所有伪合法走子"""
 
-    # 马步
     KNIGHT_MOVES = [
         (-2, -1), (-2, 1), (-1, -2), (-1, 2),
         (1, -2), (1, 2), (2, -1), (2, 1),
     ]
 
-    # 王步（含对角线）
     KING_MOVES = [
         (-1, -1), (-1, 0), (-1, 1),
         (0, -1),           (0, 1),
         (1, -1),  (1, 0),  (1, 1),
     ]
 
-    # 直线方向
     STRAIGHT_DIRS = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-    # 对角线方向
     DIAGONAL_DIRS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
 
     def __init__(self, position: Position, timelines: dict[int, "Timeline"] = None):
         self.position = position
         self.timelines = timelines or {}
+
+    def _board_coord(self, *, timeline_id: int | None = None,
+                     turn: int | None = None,
+                     side: ChessColor | None = None) -> BoardCoord:
+        """Adapt the legacy Position coordinates into the new board model."""
+        return BoardCoord(
+            timeline=self.position.timeline_id if timeline_id is None else timeline_id,
+            turn=self.position.time_point if turn is None else turn,
+            side=self.position.turn if side is None else side,
+        )
+
+    def _square(self, x: int, y: int, *, timeline_id: int | None = None,
+                turn: int | None = None,
+                side: ChessColor | None = None) -> Square5D:
+        return Square5D(
+            board=self._board_coord(timeline_id=timeline_id, turn=turn, side=side),
+            x=x,
+            y=y,
+        )
 
     def generate_all(self) -> list[Move]:
         """生成所有伪合法走子"""
@@ -105,9 +163,8 @@ class MoveGenerator:
             elif piece.piece_type == PieceType.KING:
                 moves.extend(self._gen_king_moves(x, y, piece))
 
-        # 添加时间移动（五维特有）
+        # 仍沿用当前项目的简化时间走法；下一阶段会按 Vector4D 重写。
         moves.extend(self._gen_time_moves(color))
-
         return moves
 
     def _in_bounds(self, x: int, y: int) -> bool:
@@ -116,21 +173,16 @@ class MoveGenerator:
     def _make_move(self, piece: Piece, fx: int, fy: int, tx: int, ty: int,
                    captured: Piece | None = None, promotion: PieceType | None = None,
                    is_castling: bool = False, is_en_passant: bool = False) -> Move:
+        board = self._board_coord()
         return Move(
             piece=piece,
-            from_x=fx, from_y=fy,
-            to_x=tx, to_y=ty,
-            from_timeline_id=self.position.timeline_id,
-            to_timeline_id=self.position.timeline_id,
-            from_time=self.position.time_point,
-            to_time=self.position.time_point,
+            source=Square5D(board, fx, fy),
+            destination=Square5D(board, tx, ty),
             captured=captured,
             promotion=promotion,
             is_castling=is_castling,
             is_en_passant=is_en_passant,
         )
-
-    # ─── 兵 ────────────────────────────────────────────
 
     def _gen_pawn_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
         moves = []
@@ -139,7 +191,6 @@ class MoveGenerator:
         promotion_row = 0 if piece.color == ChessColor.WHITE else 7
         enemy_color = piece.color.opposite()
 
-        # 前进一格
         ny = y + direction
         if self._in_bounds(x, ny) and self.position.is_empty(x, ny):
             if ny == promotion_row:
@@ -148,13 +199,11 @@ class MoveGenerator:
             else:
                 moves.append(self._make_move(piece, x, y, x, ny))
 
-            # 前进两格（初始位置）
             if y == start_row:
                 nny = y + 2 * direction
                 if self._in_bounds(x, nny) and self.position.is_empty(x, nny):
                     moves.append(self._make_move(piece, x, y, x, nny))
 
-        # 斜吃
         for dx in [-1, 1]:
             nx = x + dx
             if not self._in_bounds(nx, ny):
@@ -167,7 +216,6 @@ class MoveGenerator:
                 else:
                     moves.append(self._make_move(piece, x, y, nx, ny, captured=target))
 
-            # 过路兵
             ep = self.position.en_passant_target
             if ep and ep == (nx, ny):
                 moves.append(self._make_move(
@@ -177,8 +225,6 @@ class MoveGenerator:
                 ))
 
         return moves
-
-    # ─── 马 ────────────────────────────────────────────
 
     def _gen_knight_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
         moves = []
@@ -191,22 +237,14 @@ class MoveGenerator:
                 moves.append(self._make_move(piece, x, y, nx, ny, captured=target))
         return moves
 
-    # ─── 象 ────────────────────────────────────────────
-
     def _gen_bishop_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
         return self._gen_sliding_moves(x, y, piece, self.DIAGONAL_DIRS)
-
-    # ─── 车 ────────────────────────────────────────────
 
     def _gen_rook_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
         return self._gen_sliding_moves(x, y, piece, self.STRAIGHT_DIRS)
 
-    # ─── 后 ────────────────────────────────────────────
-
     def _gen_queen_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
         return self._gen_sliding_moves(x, y, piece, self.STRAIGHT_DIRS + self.DIAGONAL_DIRS)
-
-    # ─── 王 ────────────────────────────────────────────
 
     def _gen_king_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
         moves = []
@@ -218,29 +256,24 @@ class MoveGenerator:
             if target is None or target.color != piece.color:
                 moves.append(self._make_move(piece, x, y, nx, ny, captured=target))
 
-        # 王车易位
         moves.extend(self._gen_castling_moves(x, y, piece))
         return moves
 
     def _gen_castling_moves(self, kx: int, ky: int, king: Piece) -> list[Move]:
-        """生成王车易位走子"""
         moves = []
         color = king.color
         rights = self.position.castling_rights
         row = 7 if color == ChessColor.WHITE else 0
 
-        # 王必须在原位
         if kx != 4 or ky != row:
             return moves
 
-        # 短易位 (Kingside)
         if rights.get(f"{color.value}_kingside", False):
-            if (self.position.is_empty(5, row) and self.position.is_empty(6, row)):
+            if self.position.is_empty(5, row) and self.position.is_empty(6, row):
                 rook = self.position.get_piece(7, row)
                 if rook and rook.piece_type == PieceType.ROOK and rook.color == color:
                     moves.append(self._make_move(king, kx, ky, 6, row, is_castling=True))
 
-        # 长易位 (Queenside)
         if rights.get(f"{color.value}_queenside", False):
             if (self.position.is_empty(3, row) and self.position.is_empty(2, row)
                     and self.position.is_empty(1, row)):
@@ -249,8 +282,6 @@ class MoveGenerator:
                     moves.append(self._make_move(king, kx, ky, 2, row, is_castling=True))
 
         return moves
-
-    # ─── 滑动走子通用 ──────────────────────────────────
 
     def _gen_sliding_moves(self, x: int, y: int, piece: Piece,
                            directions: list[tuple[int, int]]) -> list[Move]:
@@ -270,51 +301,44 @@ class MoveGenerator:
                 ny += dy
         return moves
 
-    # ─── 时间移动（五维特有）────────────────────────────
-
     def _gen_time_moves(self, color: ChessColor) -> list[Move]:
-        """生成时间旅行移动"""
+        """生成当前项目已有的简化时间旅行移动。
+
+        这里只迁移数据模型，不在本次提交中改变旧规则语义。后续会用
+        ``Vector4D`` 按各棋子的真实四维几何规则替换本方法。
+        """
         moves = []
         tid = self.position.timeline_id
         current_time = self.position.time_point
+        source_board = self._board_coord()
 
-        # 向过去移动 → 产生分支
         for target_time in range(current_time):
+            target_board = self._board_coord(timeline_id=tid, turn=target_time, side=color)
             for x, y, piece in self.position.get_all_pieces(color):
                 if piece.piece_type == PieceType.KING:
-                    continue  # 王不能时间旅行
+                    continue
                 moves.append(Move(
                     piece=piece,
-                    from_x=x, from_y=y,
-                    to_x=x, to_y=y,
-                    from_timeline_id=tid,
-                    to_timeline_id=tid,
-                    from_time=current_time,
-                    to_time=target_time,
+                    source=Square5D(source_board, x, y),
+                    destination=Square5D(target_board, x, y),
                     is_branching=True,
                 ))
 
-        # 跨时间线移动（同一时间点，不同时间线）
         for other_tid, timeline in self.timelines.items():
             if other_tid == tid:
                 continue
             if not timeline.is_active:
                 continue
-            # 找到目标时间线中同时间点的棋盘
             if current_time not in timeline.positions:
                 continue
             target_pos = timeline.positions[current_time]
+            target_board = BoardCoord(other_tid, current_time, target_pos.turn)
             for x, y, piece in self.position.get_all_pieces(color):
-                # 目标位置必须为空
                 if target_pos.is_empty(x, y):
                     moves.append(Move(
                         piece=piece,
-                        from_x=x, from_y=y,
-                        to_x=x, to_y=y,
-                        from_timeline_id=tid,
-                        to_timeline_id=other_tid,
-                        from_time=current_time,
-                        to_time=current_time,
+                        source=Square5D(source_board, x, y),
+                        destination=Square5D(target_board, x, y),
                     ))
 
         return moves

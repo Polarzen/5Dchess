@@ -60,8 +60,7 @@ class FiveDPGN:
             lines = []
             meta = game_metadata or {}
 
-            # 头部
-            lines.append(f'[Game "5D Chess"]')
+            lines.append('[Game "5D Chess"]')
             lines.append(f'[Mode "{meta.get("mode", "pvp")}"]')
             lines.append(f'[Date "{meta.get("date", "")}"]')
             lines.append(f'[White "{meta.get("white", "Player1")}"]')
@@ -71,14 +70,13 @@ class FiveDPGN:
             lines.append(f'[TotalMoves "{engine.move_counter}"]')
             lines.append("")
 
-            # 走子
             current_turn = 0
             current_timeline = 0
             for move in engine.move_history:
                 if move.from_time != current_turn or move.from_timeline_id != current_timeline:
                     current_turn = move.from_time
                     current_timeline = move.from_timeline_id
-                    lines.append(f"{current_turn + 1}. (T{current_timeline}) ", end="")
+                    lines.append(f"{current_turn + 1}. (T{current_timeline})")
 
                 notation = move.to_notation()
                 if move.is_branching:
@@ -118,35 +116,50 @@ class FiveDPGN:
             game_data = data.get("game", {})
             tl_mgr = TimelineManager.from_dict(game_data.get("timeline_manager", {}))
 
-            # 走子需要从数据重建
-            # 由于Move是不可变对象，这里返回空列表让调用者通过timeline_manager访问
             moves = []
             for m_data in game_data.get("move_history", []):
+                from src.engine.coordinates import BoardCoord, Square5D
                 from src.engine.piece import Piece
                 from src.utils.constants import PieceType, ChessColor
+
                 piece = Piece(
                     PieceType(m_data["piece_type"]),
                     ChessColor(m_data["piece_color"]),
                 )
                 captured = None
                 if m_data.get("captured"):
-                    captured = Piece(PieceType(m_data["captured"]), ChessColor(m_data["piece_color"]).opposite())
+                    captured = Piece(
+                        PieceType(m_data["captured"]),
+                        piece.color.opposite(),
+                    )
                 promotion = None
                 if m_data.get("promotion"):
                     promotion = PieceType(m_data["promotion"])
 
+                # Legacy .5dpgn files do not store the board half-move side.
+                # Existing move history always belongs to the moving piece's
+                # side, so use that as the migration adapter.
+                source_board = BoardCoord(
+                    timeline=m_data["from_timeline_id"],
+                    turn=m_data["from_time"],
+                    side=piece.color,
+                )
+                destination_board = BoardCoord(
+                    timeline=m_data["to_timeline_id"],
+                    turn=m_data["to_time"],
+                    side=piece.color,
+                )
+
                 move = Move(
                     piece=piece,
-                    from_x=m_data["from_x"], from_y=m_data["from_y"],
-                    to_x=m_data["to_x"], to_y=m_data["to_y"],
-                    from_timeline_id=m_data["from_timeline_id"],
-                    to_timeline_id=m_data["to_timeline_id"],
-                    from_time=m_data["from_time"], to_time=m_data["to_time"],
+                    source=Square5D(source_board, m_data["from_x"], m_data["from_y"]),
+                    destination=Square5D(destination_board, m_data["to_x"], m_data["to_y"]),
                     is_branching=m_data.get("is_branching", False),
                     is_castling=m_data.get("is_castling", False),
                     is_en_passant=m_data.get("is_en_passant", False),
                     captured=captured,
                     promotion=promotion,
+                    created_timeline=m_data.get("created_timeline"),
                 )
                 moves.append(move)
 
