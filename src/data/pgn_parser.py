@@ -136,17 +136,17 @@ class FiveDPGN:
                 if m_data.get("promotion"):
                     promotion = PieceType(m_data["promotion"])
 
-                # Legacy .5dpgn files do not store the board half-move side.
-                # Existing move history always belongs to the moving piece's
-                # side, so use that as the migration adapter.
-                source_board = BoardCoord(
+                # .5dpgn stores the legacy half-move indices for compatibility.
+                # Convert them at the serialization boundary so Move itself keeps
+                # canonical full-turn coordinates.
+                source_board = BoardCoord.from_legacy_time_point(
                     timeline=m_data["from_timeline_id"],
-                    turn=m_data["from_time"],
+                    time_point=m_data["from_time"],
                     side=piece.color,
                 )
-                destination_board = BoardCoord(
+                destination_board = BoardCoord.from_legacy_time_point(
                     timeline=m_data["to_timeline_id"],
-                    turn=m_data["to_time"],
+                    time_point=m_data["to_time"],
                     side=piece.color,
                 )
 
