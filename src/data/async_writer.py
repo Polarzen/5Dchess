@@ -2,6 +2,8 @@
 5D Chess - 异步数据库写入器
 不阻塞游戏主循环，通过队列+工作线程批量写入
 """
+from __future__ import annotations
+
 import threading
 import time
 from queue import Queue, Empty
@@ -184,7 +186,7 @@ class AsyncDBWriter:
         tuples = [(s["game_id"], s.get("avg_branch_depth", 0), s.get("max_timelines", 0),
                    s.get("white_time_travels", 0), s.get("black_time_travels", 0))
                   for s in stats]
-        db.execute_many(sql, tuples)
+        db.execute_many(sql, tuples]
 
 
 # 全局异步写入器
