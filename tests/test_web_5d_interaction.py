@@ -90,6 +90,40 @@ def test_web_ui_visible_labels_are_chinese(client):
         assert english_label not in html
 
 
+def test_temporary_share_mode_requires_login_and_blocks_file_access(client, monkeypatch):
+    monkeypatch.setenv("FIVED_CHESS_SHARE_MODE", "1")
+    monkeypatch.setenv("FIVED_CHESS_SHARE_USER", "棋手")
+    monkeypatch.setenv("FIVED_CHESS_SHARE_PASSWORD", "correct-password")
+
+    protected = client.get("/")
+    assert protected.status_code == 302
+    assert protected.headers["Location"].endswith("/share/login")
+
+    login_page = client.get("/share/login")
+    assert login_page.status_code == 200
+    assert "临时分享棋局" in login_page.get_data(as_text=True)
+
+    rejected = client.post(
+        "/share/login",
+        data={"username": "棋手", "password": "wrong-password"},
+    )
+    assert rejected.status_code == 401
+    assert "用户名或密码错误" in rejected.get_data(as_text=True)
+
+    accepted = client.post(
+        "/share/login",
+        data={"username": "棋手", "password": "correct-password"},
+    )
+    assert accepted.status_code == 302
+    assert accepted.headers["Location"].endswith("/")
+    assert client.get("/").status_code == 200
+
+    for endpoint in ("/api/game/save", "/api/game/load", "/api/replay/load"):
+        response = client.post(endpoint, json={"filepath": "blocked.5dpgn"})
+        assert response.status_code == 403
+        assert "已禁用本机文件保存和加载功能" in response.get_json()["error"]
+
+
 def test_start_state_serializes_canonical_present_board(client):
     state = _start_pvp(client)
 

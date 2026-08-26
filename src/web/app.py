@@ -6,11 +6,14 @@ multiverse instead of pretending that one selected 8x8 board is the game.
 """
 from __future__ import annotations
 
+import hmac
+import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 # Ensure project root is importable when running ``python src/main.py --web``.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -31,6 +34,11 @@ app = Flask(
     template_folder=str(Path(__file__).parent / "templates"),
     static_folder=str(Path(__file__).parent / "static"),
 )
+app.config.update(
+    SECRET_KEY=os.getenv("FIVED_CHESS_SHARE_SECRET") or secrets.token_hex(32),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
 
 # Single-session local UI.  Multi-user/server deployment is intentionally out
 # of scope for this project; the browser and engine live in one local process.
@@ -40,6 +48,69 @@ _game_session: dict[str, Any] = {
     "ai_difficulty": "medium",
     "player_color": None,
 }
+
+
+def _share_mode_enabled() -> bool:
+    return os.getenv("FIVED_CHESS_SHARE_MODE", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _share_file_access_blocked():
+    if _share_mode_enabled():
+        return jsonify({
+            "error": "临时分享模式已禁用本机文件保存和加载功能",
+        }), 403
+    return None
+
+
+@app.before_request
+def require_share_login():
+    """Protect every shared route with a small Chinese login screen."""
+    if not _share_mode_enabled() or request.endpoint == "share_login":
+        return None
+    if session.get("share_authenticated") is True:
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "请先输入临时分享账号和密码"}), 401
+    return redirect(url_for("share_login"))
+
+
+@app.route("/share/login", methods=["GET", "POST"])
+def share_login():
+    if not _share_mode_enabled():
+        return redirect(url_for("index"))
+    if session.get("share_authenticated") is True:
+        return redirect(url_for("index"))
+
+    expected_user = os.getenv("FIVED_CHESS_SHARE_USER", "棋手")
+    expected_password = os.getenv("FIVED_CHESS_SHARE_PASSWORD", "")
+    error = None
+    status = 200
+    if not expected_password:
+        error = "临时分享模式尚未配置访问密码"
+        status = 503
+    elif request.method == "POST":
+        submitted_user = request.form.get("username", "")
+        submitted_password = request.form.get("password", "")
+        credentials_match = (
+            hmac.compare_digest(
+                submitted_user.encode("utf-8"),
+                expected_user.encode("utf-8"),
+            )
+            and hmac.compare_digest(
+                submitted_password.encode("utf-8"),
+                expected_password.encode("utf-8"),
+            )
+        )
+        if credentials_match:
+            session.clear()
+            session["share_authenticated"] = True
+            return redirect(url_for("index"))
+        error = "用户名或密码错误"
+        status = 401
+
+    return render_template("share_login.html", error=error), status
 
 
 def _get_mode_instance():
@@ -282,6 +353,9 @@ def api_game_state():
 @app.route("/api/game/save", methods=["POST"])
 def api_save_game():
     """Persist the active canonical engine without changing the live session."""
+    blocked = _share_file_access_blocked()
+    if blocked is not None:
+        return blocked
     instance = _get_mode_instance()
     if instance is None or _game_session["mode"] == "replay":
         return jsonify({"error": "当前模式没有可保存的进行中游戏"}), 400
@@ -304,6 +378,9 @@ def api_save_game():
 @app.route("/api/game/load", methods=["POST"])
 def api_load_game():
     """Restore a canonical archive into an interactive session for continuation."""
+    blocked = _share_file_access_blocked()
+    if blocked is not None:
+        return blocked
     data = request.get_json() or {}
     filepath = data.get("filepath")
     if not filepath:
@@ -524,6 +601,9 @@ def api_ai_move():
 
 @app.route("/api/replay/load", methods=["POST"])
 def replay_load():
+    blocked = _share_file_access_blocked()
+    if blocked is not None:
+        return blocked
     instance = _get_mode_instance()
     if instance is None or _game_session["mode"] != "replay":
         engine = FiveDEngine()
