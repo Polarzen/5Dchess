@@ -14,6 +14,7 @@ from src.engine.coordinates import BoardCoord
 from src.engine.move_generator import Move, MoveGenerator
 from src.engine.move_validator import MoveValidator
 from src.engine.multiverse import MultiverseBoardView
+from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.engine.pawn_rules import PawnRules
 from src.engine.timeline import TimelineManager
 from src.engine.timeline_rules import PresentState, TimelineRules
@@ -252,7 +253,7 @@ class FiveDEngine:
         return True
 
     def submit_action(self) -> bool:
-        """Finalize the current Action once The Present is on the opponent."""
+        """Finalize a royal-safe Action, then evaluate the opponent's full turn."""
         if self.game_state != GameState.PLAYING:
             return False
 
@@ -267,15 +268,9 @@ class FiveDEngine:
             self.timeline_manager.timelines,
         )
 
-        # Legacy board-local result checking is retained only for ordinary
-        # single-timeline games.  Full multiverse royal safety belongs to the
-        # later RoyalRules layer and must not be faked here.
-        if len(self.timeline_manager.timelines) == 1:
-            present = self.get_present()
-            if present and present.boards:
-                position = self._resolve_position(present.boards[0])
-                if position is not None:
-                    self._check_game_result(position)
+        # Checkmate/stalemate is global: after every submitted Action, determine
+        # whether the next player has at least one complete legal Action.
+        self._check_multiverse_game_result()
         return True
 
     def _execute_state_move(self, move: Move) -> Move | None:
@@ -459,8 +454,29 @@ class FiveDEngine:
                 if source.x == 0 and source.y == 0:
                     rights["black_queenside"] = False
 
+    def _check_multiverse_game_result(self) -> None:
+        """Update terminal state from complete Action-level 5D rules."""
+        outcome = OutcomeRules.evaluate(self, self.current_turn_color)
+        if outcome is None:
+            return
+
+        if outcome.kind == OutcomeKind.CHECKMATE:
+            self.game_state = GameState.CHECKMATE
+            winner = outcome.winner.value if outcome.winner else "unknown"
+            logger.info(
+                f"5D checkmate: {self.current_turn_color.value} has no legal "
+                f"Action; winner={winner}"
+            )
+            return
+
+        if outcome.kind == OutcomeKind.STALEMATE:
+            self.game_state = GameState.STALEMATE
+            logger.info(
+                f"5D stalemate: {self.current_turn_color.value} has no legal Action"
+            )
+
     def _check_game_result(self, position: Position):
-        """检查 legacy 单棋盘游戏结果。"""
+        """Legacy board-local result helper retained for old direct callers."""
         result = self.rules_engine.get_game_result(position)
         if result == "white_win":
             self.game_state = GameState.CHECKMATE
