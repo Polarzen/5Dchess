@@ -1,87 +1,140 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>5D Chess - 五维国际象棋</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <title>5D Chess · Multiverse Board</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=7">
 </head>
 <body>
-    <!-- ========== 外框 ========== -->
-    <div id="app">
-
-        <!-- ========== 主菜单 ========== -->
-        <div id="menu-screen" class="screen active">
-            <div class="title-block">
-                <h1>♚ 5D Chess</h1>
-                <p class="subtitle">Multiverse Time Travel · 五维国际象棋</p>
-            </div>
-            <div class="menu-buttons">
-                <button class="menu-btn" onclick="startGame('pvp')">
-                    <span class="icon">⚔</span>
-                    <span>真人对弈 PvP</span>
-                </button>
-                <button class="menu-btn" onclick="startGame('pve', 'easy')">
-                    <span class="icon">🤖</span>
-                    <span>人机对弈 · 简单</span>
-                </button>
-                <button class="menu-btn" onclick="startGame('pve', 'medium')">
-                    <span class="icon">🤖</span>
-                    <span>人机对弈 · 中等</span>
-                </button>
-                <button class="menu-btn" onclick="startGame('pve', 'hard')">
-                    <span class="icon">🤖</span>
-                    <span>人机对弈 · 困难</span>
-                </button>
-                <button class="menu-btn" onclick="startGame('replay')">
-                    <span class="icon">📼</span>
-                    <span>棋谱回放 Replay</span>
-                </button>
+<div id="app">
+    <section id="menu-screen" class="screen active">
+        <div class="menu-hero">
+            <div class="brand-mark">5D</div>
+            <div>
+                <h1>5D Chess</h1>
+                <p>Multiverse Time Travel · 多棋盘时间线对弈</p>
             </div>
         </div>
-
-        <!-- ========== 游戏界面 ========== -->
-        <div id="game-screen" class="screen">
-            <!-- 顶栏 -->
-            <div id="top-bar">
-                <button id="btn-back" onclick="backToMenu()">← 菜单</button>
-                <span id="game-info"></span>
-            </div>
-
-            <!-- 主区域 -->
-            <div id="main-area">
-                <!-- 棋盘 -->
-                <div id="board-container">
-                    <div id="board"></div>
-                    <div id="board-labels"></div>
-                </div>
-
-                <!-- 右侧面板 -->
-                <div id="right-panel">
-                    <!-- 时间线树 -->
-                    <div id="timeline-panel">
-                        <h3>时间线树</h3>
-                        <div id="timeline-tree"></div>
-                    </div>
-
-                    <!-- 控制面板 -->
-                    <div id="control-panel">
-                        <h3>控制</h3>
-                        <div id="controls"></div>
-                        <div id="info-panel"></div>
-                    </div>
-
-                    <!-- 走子历史 -->
-                    <div id="move-history-panel">
-                        <h3>走子历史</h3>
-                        <div id="move-history"></div>
-                    </div>
-                </div>
-            </div>
+        <div class="menu-grid">
+            <button class="menu-card primary" onclick="startGame('pvp')">
+                <span class="menu-icon">♚</span>
+                <strong>真人对弈</strong>
+                <small>PvP · 完整 Action / The Present</small>
+            </button>
+            <button class="menu-card" onclick="startGame('pve', 'easy')">
+                <span class="menu-icon">♞</span>
+                <strong>人机 · 简单</strong>
+                <small>Legacy AI compatibility</small>
+            </button>
+            <button class="menu-card" onclick="startGame('pve', 'medium')">
+                <span class="menu-icon">♝</span>
+                <strong>人机 · 中等</strong>
+                <small>Legacy AI compatibility</small>
+            </button>
+            <button class="menu-card" onclick="startGame('pve', 'hard')">
+                <span class="menu-icon">♛</span>
+                <strong>人机 · 困难</strong>
+                <small>Legacy AI compatibility</small>
+            </button>
+            <button class="menu-card" onclick="startGame('replay')">
+                <span class="menu-icon">↺</span>
+                <strong>棋谱回放</strong>
+                <small>Replay · 多时间线概览</small>
+            </button>
         </div>
+    </section>
 
-    </div>
+    <section id="game-screen" class="screen">
+        <header id="top-bar">
+            <div class="top-left">
+                <button class="ghost-btn" onclick="backToMenu()">← 菜单</button>
+                <div class="top-title">
+                    <strong>5D Chess</strong>
+                    <span id="game-info">Multiverse</span>
+                </div>
+            </div>
+            <div id="top-status" class="status-pills"></div>
+        </header>
 
-    <script src="/static/js/game.js?v=6"></script>
+        <div id="workspace">
+            <main id="multiverse-panel">
+                <div id="canvas-toolbar">
+                    <div>
+                        <strong>Multiverse Board</strong>
+                        <span class="toolbar-hint">横向 = 时间 T · 纵向 = Timeline L</span>
+                    </div>
+                    <div class="toolbar-actions">
+                        <button class="tool-btn" onclick="zoomBoards(-16)" title="缩小棋盘">−</button>
+                        <button class="tool-btn" onclick="zoomBoards(16)" title="放大棋盘">＋</button>
+                        <button class="tool-btn wide" onclick="scrollToCurrent()">定位 Present</button>
+                        <button class="tool-btn wide" onclick="refreshState()">刷新</button>
+                    </div>
+                </div>
+
+                <div id="multiverse-viewport">
+                    <div id="timeline-canvas">
+                        <svg id="timeline-links" aria-hidden="true"></svg>
+                        <div id="timeline-lanes"></div>
+                    </div>
+                </div>
+            </main>
+
+            <aside id="side-panel">
+                <section class="panel-card action-card">
+                    <div class="panel-title-row">
+                        <h2>当前 Action</h2>
+                        <span id="check-badge" class="mini-badge danger hidden">CHECK</span>
+                    </div>
+                    <div id="action-summary"></div>
+                    <button id="submit-action-btn" class="submit-btn" onclick="submitAction()" disabled>
+                        Submit Action
+                    </button>
+                    <p id="action-help" class="panel-help"></p>
+                </section>
+
+                <section class="panel-card">
+                    <h2>棋盘状态</h2>
+                    <div id="board-inspector" class="inspector muted">
+                        点击任意棋盘可查看 BoardCoord；点击可行动棋盘上的棋子开始走子。
+                    </div>
+                </section>
+
+                <section class="panel-card">
+                    <h2>图例</h2>
+                    <div class="legend-grid">
+                        <span><i class="legend present"></i>Present</span>
+                        <span><i class="legend required"></i>Required</span>
+                        <span><i class="legend movable"></i>Movable</span>
+                        <span><i class="legend inactive"></i>Inactive</span>
+                        <span><i class="legend target"></i>5D Target</span>
+                        <span><i class="legend last"></i>Last Move</span>
+                    </div>
+                </section>
+
+                <section id="replay-panel" class="panel-card hidden">
+                    <h2>Replay</h2>
+                    <div class="button-grid">
+                        <button class="side-btn" onclick="replayAction('start')">⏮</button>
+                        <button class="side-btn" onclick="replayAction('backward')">◀</button>
+                        <button class="side-btn" onclick="replayAction('toggle')">▶ / ⏸</button>
+                        <button class="side-btn" onclick="replayAction('forward')">▶</button>
+                        <button class="side-btn" onclick="replayAction('end')">⏭</button>
+                        <button class="side-btn" onclick="replayJump()">跳转</button>
+                    </div>
+                    <button class="side-btn full" onclick="replayLoadFile()">加载 .5dpgn</button>
+                </section>
+
+                <section class="panel-card history-card">
+                    <h2>走子历史</h2>
+                    <div id="move-history">(无)</div>
+                </section>
+            </aside>
+        </div>
+    </section>
+</div>
+
+<div id="toast" role="status"></div>
+<script src="/static/js/game.js?v=7"></script>
 </body>
 </html>
