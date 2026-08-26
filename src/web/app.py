@@ -20,6 +20,7 @@ from src.engine.coordinates import BoardCoord
 from src.engine.multiverse import MultiverseBoardView
 from src.engine.royal_rules import RoyalRules
 from src.engine.timeline_rules import TimelineRules
+from src.data.pgn_parser import FiveDPGN
 from src.modes import PvEMode, PvPMode, ReplayMode
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
@@ -278,6 +279,71 @@ def api_game_state():
     return jsonify(get_game_state())
 
 
+@app.route("/api/game/save", methods=["POST"])
+def api_save_game():
+    """Persist the active canonical engine without changing the live session."""
+    instance = _get_mode_instance()
+    if instance is None or _game_session["mode"] == "replay":
+        return jsonify({"error": "当前模式没有可保存的进行中游戏"}), 400
+
+    data = request.get_json() or {}
+    filepath = data.get("filepath")
+    if not filepath:
+        return jsonify({"error": "缺少保存路径"}), 400
+
+    metadata = {
+        "mode": _game_session["mode"],
+        "difficulty": _game_session.get("ai_difficulty"),
+        "player_color": _game_session.get("player_color"),
+    }
+    if not FiveDPGN.save(str(filepath), instance.engine, metadata):
+        return jsonify({"error": f"无法保存棋局: {filepath}"}), 500
+    return jsonify({"success": True, "filepath": str(filepath), **get_game_state()})
+
+
+@app.route("/api/game/load", methods=["POST"])
+def api_load_game():
+    """Restore a canonical archive into an interactive session for continuation."""
+    data = request.get_json() or {}
+    filepath = data.get("filepath")
+    if not filepath:
+        return jsonify({"error": "缺少棋谱路径"}), 400
+
+    payload = FiveDPGN.load_archive(str(filepath))
+    if payload is None:
+        return jsonify({"error": f"无法加载棋局: {filepath}"}), 400
+
+    mode = data.get("mode") or payload.metadata.get("mode") or "pvp"
+    difficulty = (
+        data.get("difficulty")
+        or payload.metadata.get("difficulty")
+        or "medium"
+    )
+    player_color = (
+        data.get("player_color")
+        or payload.metadata.get("player_color")
+        or "white"
+    )
+    if mode == "pvp":
+        instance = PvPMode(payload.engine)
+    elif mode == "pve":
+        instance = PvEMode(
+            payload.engine,
+            player_color=ChessColor(player_color),
+            ai_difficulty=difficulty,
+        )
+    else:
+        return jsonify({"error": f"棋局模式不能继续: {mode}"}), 400
+
+    _game_session.update({
+        "mode": mode,
+        "mode_instance": instance,
+        "ai_difficulty": difficulty,
+        "player_color": player_color,
+    })
+    return jsonify({"success": True, "filepath": str(filepath), **get_game_state()})
+
+
 @app.route("/api/game/legal_moves_5d", methods=["POST"])
 def api_legal_moves_5d():
     """Return canonical legal moves from one selected BoardCoord/piece."""
@@ -468,12 +534,13 @@ def replay_load():
     data = request.get_json() or {}
     filepath = data.get("filepath")
     if filepath:
-        from src.data.pgn_parser import FiveDPGN
-
-        moves, timeline_manager = FiveDPGN.load(filepath)
-        if moves is None:
+        payload = FiveDPGN.load_archive(str(filepath))
+        if payload is None:
             return jsonify({"error": f"无法加载棋谱: {filepath}"}), 400
-        instance.load_from_moves(moves, timeline_manager)
+        instance.load_from_engine(
+            payload.engine,
+            strict=payload.schema_version >= 2,
+        )
 
     instance.start()
     return jsonify({"success": True, **get_game_state()})
