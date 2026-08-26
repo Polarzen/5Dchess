@@ -81,11 +81,18 @@ class ActionRules:
         action: Action,
         timelines: Mapping[int, "Timeline"],
     ) -> bool:
-        """Submission is legal once The Present belongs to the opponent."""
+        """Submission requires both Present progress and multiverse royal safety."""
         if action.submitted:
             return False
         present = TimelineRules.present(timelines)
-        return bool(present is not None and present.side != action.color)
+        if present is None or present.side == action.color:
+            return False
+
+        # Lazy import keeps Action's data model independent while making the
+        # final submission boundary the owner of royal-safety enforcement.
+        from src.engine.royal_rules import RoyalRules
+
+        return RoyalRules(timelines).is_action_safe(action.color)
 
     @classmethod
     def submit(

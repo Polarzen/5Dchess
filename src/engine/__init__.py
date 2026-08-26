@@ -12,4 +12,5 @@ from src.engine.move_validator import MoveValidator
 from src.engine.timeline import Timeline, TimelineManager
 from src.engine.timeline_rules import PresentState, TimelineRules
 from src.engine.action import Action, ActionRules
+from src.engine.royal_rules import RoyalRules, RoyalThreat
 from src.engine.rules import RulesEngine
