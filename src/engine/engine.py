@@ -11,6 +11,7 @@ from src.engine.piece import Piece
 from src.engine.board import Position
 from src.engine.move_generator import Move, MoveGenerator
 from src.engine.move_validator import MoveValidator
+from src.engine.pawn_rules import PawnRules
 from src.engine.timeline import TimelineManager
 from src.engine.rules import RulesEngine
 
@@ -85,6 +86,8 @@ class FiveDEngine:
         new_pos.time_point = current_pos.time_point + 1
         new_pos.turn = current_pos.turn.opposite()
         new_pos.move_number = self.move_counter + 1
+        # En passant exists only for the immediately following same-board move.
+        new_pos.en_passant_target = None
 
         new_pos.move_piece(move.from_x, move.from_y, move.to_x, move.to_y)
 
@@ -96,11 +99,19 @@ class FiveDEngine:
                 new_pos.move_piece(0, row, 3, row)
 
         if move.is_en_passant:
-            direction = -1 if current_pos.turn == ChessColor.WHITE else 1
-            new_pos.set_piece(move.to_x, move.to_y - direction, None)
+            new_pos.set_piece(move.to_x, move.from_y, None)
 
         if move.promotion:
             new_pos.set_piece(move.to_x, move.to_y, Piece(move.promotion, current_pos.turn))
+
+        if (
+            move.piece.piece_type == PieceType.PAWN
+            and PawnRules.is_spatial_double(move.vector)
+        ):
+            new_pos.en_passant_target = (
+                move.from_x,
+                (move.from_y + move.to_y) // 2,
+            )
 
         self._update_castling_rights(new_pos, move)
 
@@ -125,7 +136,6 @@ class FiveDEngine:
         if move.to_time not in target_tl.positions:
             return False
         if move.to_time >= target_tl.latest_time:
-            # Branching is defined by landing on a historical board.
             return False
 
         new_tl = self.timeline_manager.create_branch(
@@ -144,11 +154,13 @@ class FiveDEngine:
         new_target_pos.time_point = move.to_time + 1
         new_target_pos.turn = past_pos.turn.opposite()
         new_target_pos.move_number = self.move_counter + 1
+        new_target_pos.en_passant_target = None
         new_target_pos.set_piece(move.to_x, move.to_y, move.piece)
         new_tl.add_position(new_target_pos)
 
         # The source history remains immutable; removal happens in a successor.
         new_source_pos = current_pos.copy()
+        new_source_pos.en_passant_target = None
         new_source_pos.set_piece(move.from_x, move.from_y, None)
         new_source_pos.time_point = current_pos.time_point + 1
         new_source_pos.turn = current_pos.turn.opposite()
@@ -180,7 +192,6 @@ class FiveDEngine:
         if target_time not in target_tl.positions:
             return False
         if target_time != target_tl.latest_time:
-            # Landing on history must use the branching execution path instead.
             return False
 
         target_pos = target_tl.positions[target_time]
@@ -191,10 +202,11 @@ class FiveDEngine:
         new_target_pos.time_point = target_pos.time_point + 1
         new_target_pos.turn = target_pos.turn.opposite()
         new_target_pos.move_number = self.move_counter + 1
+        new_target_pos.en_passant_target = None
         new_target_pos.set_piece(move.to_x, move.to_y, move.piece)
 
-        # Never mutate the stored source board. Create its successor first.
         new_source_pos = current_pos.copy()
+        new_source_pos.en_passant_target = None
         new_source_pos.set_piece(move.from_x, move.from_y, None)
         new_source_pos.time_point = current_pos.time_point + 1
         new_source_pos.turn = current_pos.turn.opposite()

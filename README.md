@@ -6,7 +6,7 @@
 
 > 🚧 **当前状态：核心规则重构中。**
 >
-> 目前已经完成 canonical 4D 坐标、时间/时间线模型、4D 路径检查、非 Pawn 棋子的真实 4D 走子生成，以及跨棋盘走子的双棋盘验证。Pawn 的完整 5D 规则、Action / The Present、完整跨棋盘王安全规则以及界面层的 5D 交互仍在继续实现。
+> 目前已经完成 canonical 4D 坐标、时间/时间线模型、4D 路径检查、六类标准棋子的 5D 走子生成，以及跨棋盘走子的双棋盘验证。接下来重点是 Canonical Engine Execution、Action / The Present、完整跨棋盘王安全规则以及界面层的 5D 交互。
 
 ---
 
@@ -91,9 +91,9 @@ Black 创建的分支：L-1, L-2, ...
 
 规则代码因此不需要到处直接操作 legacy `time_point`。
 
-### PieceMovementRules
+### PieceMovementRules / PawnRules
 
-目前非 Pawn 棋子使用真正的 4D 几何规则：
+标准棋子的 5D 走子几何已经按两层规则组织：
 
 | 棋子 | 当前几何规则 |
 |---|---|
@@ -102,9 +102,24 @@ Black 创建的分支：L-1, L-2, ...
 | Queen | 沿 1–4 个维度等距离移动 |
 | King | Queen 方向的 4D 一步移动 |
 | Knight | 任意两个维度组成 `1 + 2` 的 L 型跳跃 |
-| Pawn | 当前仍使用传统二维规则，完整 5D Pawn 规则待实现 |
+| Pawn | 颜色相关前进；沿 Y 或 L 前进；只在 X/Y 或 T/L 平面捕获 |
 
-King 因此可以进行时间 / 时间线方向的一步移动；Knight 也可以在空间、时间和时间线轴之间组合跳跃。
+Rook / Bishop / Queen / King / Knight 使用对称的 `PieceMovementRules`；Pawn 使用独立的 `PawnRules`，因为它的规则依赖颜色、捕获状态和首次移动状态。
+
+当前 Pawn 规则包括：
+
+- White：空间前进 `-Y`，Timeline 前进 `-L`
+- Black：空间前进 `+Y`，Timeline 前进 `+L`
+- 非捕获时可沿 Y 或 L 前进一步
+- 首次移动可沿 Y 或 L 前进两步
+- 空间捕获仅允许 `X/Y` 对角
+- 时间捕获仅允许 `T/L` 对角
+- 不允许空间轴与时间轴混合捕获
+- Timeline 双步要求中间 Board 存在且目标格为空
+- Promotion 只允许升变为 Queen
+- En passant 只保留传统同一 Board 语义，不扩展到时间或 Timeline
+
+`Position` 会随不可变历史保存 Pawn 的首次移动状态，因此沿 Timeline 移动过的 Pawn 不会再次错误获得双步权利。
 
 ### PathRules
 
@@ -117,11 +132,11 @@ Rook / Bishop / Queen 的滑动路径已经支持四维检查。
 
 Knight / King 不使用滑动路径检查。
 
-### 真实非 Pawn 4D MoveGenerator
+### 真实 4D MoveGenerator
 
 旧的“同一格直接传送到过去”的简化时间旅行生成逻辑已经被替换。
 
-当前生成流程：
+非 Pawn 棋子的生成流程：
 
 ```text
 Playable source Board
@@ -143,7 +158,7 @@ PathRules（滑动棋子）
 生成 Move
 ```
 
-实现不会对每一张历史棋盘暴力扫描全部 64 个空间格，而是根据已知的 `dt / dl` 直接推导少量空间候选。
+Pawn 则使用颜色相关的 `PawnRules`，在空间 Board 内生成 Y 前进 / X-Y 捕获，在 multiverse 中生成 L 前进 / T-L 捕获。
 
 Historical Board 目标会生成 branching Move；另一条时间线上的 Playable Board 可以生成 cross-timeline Move。
 
@@ -170,6 +185,7 @@ destination_after
 - capture 元数据是否与目标棋盘一致
 - 4D movement geometry
 - slider 4D path
+- Pawn 的颜色方向、首次双步、中间 Board、捕获平面、Promotion / en passant 约束
 - source / destination 两张结果棋盘上的局部王安全
 
 这一层仍然是 **single-move + board-local safety**。完整跨棋盘 attack / check / checkmate 会在后续 `ActionRules / RoyalRules` 中实现。
@@ -202,9 +218,6 @@ Move.destination
 
 以下内容目前 **不应视为已经完整实现**：
 
-- Pawn 的完整 5D 移动规则
-- Pawn 在 `T/L` 平面的捕获规则
-- 5D Pawn 首步、升变与 en passant 的完整组合语义
 - 一个玩家回合包含多个 Move 的 `Action` 模型
 - `The Present` 推进与 Submit Turn
 - active / inactive Timeline 的完整官方规则
@@ -212,7 +225,7 @@ Move.destination
 - 完整 5D check / checkmate / stalemate
 - Action 级合法走子搜索
 
-因此当前项目已经具备真实 4D **走子几何与跨棋盘状态基础**，但还不能把现阶段的 `RulesEngine` 等同于完整的最终 5D Chess 规则实现。
+因此当前项目已经具备标准棋子的真实 4D **走子几何与跨棋盘状态基础**，但还不能把现阶段的 `RulesEngine` 等同于完整的最终 5D Chess 规则实现。
 
 ---
 
@@ -262,12 +275,13 @@ feat/local-ai-training
 │   ├── main.py
 │   ├── engine/
 │   │   ├── coordinates.py       # BoardCoord / Square5D / Vector4D
-│   │   ├── board.py             # legacy Position 棋盘状态
+│   │   ├── board.py             # Position + Pawn 首次移动状态
 │   │   ├── piece.py             # 棋子定义
-│   │   ├── piece_movement.py    # 非 Pawn 4D 几何规则
+│   │   ├── piece_movement.py    # R/B/Q/K/N 4D 几何规则
+│   │   ├── pawn_rules.py        # 标准 Pawn 5D 规则
 │   │   ├── path_rules.py        # 4D 滑动路径与阻挡检查
 │   │   ├── multiverse.py        # canonical Board resolver / board role
-│   │   ├── move_generator.py    # 2D + 非 Pawn 真实 4D 走子生成
+│   │   ├── move_generator.py    # 标准棋子真实 4D 走子生成
 │   │   ├── move_validator.py    # 空间与跨棋盘走子验证
 │   │   ├── timeline.py          # 有符号 L 轴 / Timeline 管理
 │   │   ├── engine.py            # 状态变更与走子执行
@@ -371,17 +385,15 @@ python -m pytest -q
 近期规则层优先级：
 
 ```text
-1. Pawn 5D Rules
+1. Canonical Engine Execution
         ↓
-2. Canonical Engine Execution
+2. Action / The Present
         ↓
-3. Action / The Present
+3. RoyalRules
         ↓
-4. RoyalRules
+4. 完整 check / checkmate / stalemate
         ↓
-5. 完整 check / checkmate / stalemate
-        ↓
-6. GUI / Web 5D 交互适配
+5. GUI / Web 5D 交互适配
 ```
 
 AI 本地训练作为独立开发方向，在核心规则接口稳定后从 `feat/local-ai-training` 继续推进。

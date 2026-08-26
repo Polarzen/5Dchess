@@ -24,7 +24,29 @@ class Position:
         "black_kingside": True,
         "black_queenside": True,
     })
-    en_passant_target: tuple[int, int] | None = None  # 过路兵目标
+    en_passant_target: tuple[int, int] | None = None  # 仅限同一棋盘的过路兵目标
+    # Coordinates of pawns that have never moved in this board history. Pawn
+    # identity is not stored in Piece, so the state belongs to each immutable
+    # Position and is copied with timeline history.
+    unmoved_pawns: set[tuple[int, int]] | None = None
+
+    def __post_init__(self):
+        if self.unmoved_pawns is None:
+            # Backward-compatible inference for old saves / manually-created
+            # positions: only pawns still on their standard starting ranks are
+            # assumed to be unmoved.
+            inferred: set[tuple[int, int]] = set()
+            for x in range(BOARD_SIZE):
+                if self.board[6][x] == "P":
+                    inferred.add((x, 6))
+                if self.board[1][x] == "p":
+                    inferred.add((x, 1))
+            self.unmoved_pawns = inferred
+        else:
+            self.unmoved_pawns = {
+                (int(coord[0]), int(coord[1]))
+                for coord in self.unmoved_pawns
+            }
 
     @classmethod
     def initial(cls, timeline_id: int = 0, time_point: int = 0) -> "Position":
@@ -50,15 +72,31 @@ class Position:
         return self.board[y][x]
 
     def set_piece(self, x: int, y: int, piece: Piece | None):
-        """放置棋子"""
+        """放置棋子。
+
+        ``set_piece`` is used for captures, promotion and cross-board arrivals.
+        Any pawn placed this way is considered to have moved already; initial
+        unmoved state is created by Position construction instead.
+        """
+        self.unmoved_pawns.discard((x, y))
         self.board[y][x] = piece.char if piece else ""
 
     def move_piece(self, fx: int, fy: int, tx: int, ty: int) -> Piece | None:
-        """移动棋子，返回被吃掉的棋子"""
+        """移动棋子，返回被吃掉的棋子并维护 Pawn 首次移动状态。"""
         captured = self.get_piece(tx, ty)
+        self.unmoved_pawns.discard((fx, fy))
+        self.unmoved_pawns.discard((tx, ty))
         self.board[ty][tx] = self.board[fy][fx]
         self.board[fy][fx] = ""
         return captured
+
+    def is_pawn_unmoved(self, x: int, y: int) -> bool:
+        piece = self.get_piece(x, y)
+        return bool(
+            piece
+            and piece.piece_type == PieceType.PAWN
+            and (x, y) in self.unmoved_pawns
+        )
 
     def is_empty(self, x: int, y: int) -> bool:
         return self.get_piece(x, y) is None
@@ -120,10 +158,17 @@ class Position:
             "move_number": self.move_number,
             "castling_rights": self.castling_rights.copy(),
             "en_passant_target": self.en_passant_target,
+            "unmoved_pawns": [list(coord) for coord in sorted(self.unmoved_pawns)],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Position":
+        raw_unmoved = data.get("unmoved_pawns") if "unmoved_pawns" in data else None
+        unmoved = (
+            {tuple(coord) for coord in raw_unmoved}
+            if raw_unmoved is not None
+            else None
+        )
         return cls(
             board=[row[:] for row in data["board"]],
             turn=ChessColor(data["turn"]),
@@ -132,6 +177,7 @@ class Position:
             move_number=data.get("move_number", 0),
             castling_rights=data.get("castling_rights", {}).copy(),
             en_passant_target=data.get("en_passant_target"),
+            unmoved_pawns=unmoved,
         )
 
     def __repr__(self) -> str:

@@ -13,6 +13,7 @@ from src.engine.board import Position
 from src.engine.coordinates import BoardCoord, Square5D, Vector4D
 from src.engine.multiverse import MultiverseBoardView
 from src.engine.path_rules import PathRules
+from src.engine.pawn_rules import PawnRules
 from src.engine.piece_movement import PieceMovementRules
 
 
@@ -59,9 +60,6 @@ class Move:
         return self.source.timeline != self.destination.timeline
 
     # ---- Legacy compatibility accessors ---------------------------------
-    # Engine/Replay/storage still index Position objects by half-move
-    # ``time_point``. Canonical BoardCoord uses full turns, so convert only at
-    # this boundary instead of contaminating 4D movement geometry.
     @property
     def from_x(self) -> int:
         return self.source.x
@@ -114,9 +112,9 @@ class Move:
 class MoveGenerator:
     """走子生成器 — 生成所有伪合法走子。
 
-    普通二维走法仍从当前 ``Position`` 枚举。非兵棋子的跨棋盘走法则通过
-    canonical ``BoardCoord`` / ``Vector4D``、``PieceMovementRules`` 和
-    ``PathRules`` 生成；历史棋盘只可作为目标，不可作为起点。
+    R/B/Q/K/N use symmetric 4D geometry. Pawns use a dedicated color-relative
+    rule layer: forward is Y or L, captures are confined to the X/Y or T/L
+    plane, and multiverse en-passant is intentionally not generalized.
     """
 
     KNIGHT_MOVES = [
@@ -182,7 +180,6 @@ class MoveGenerator:
         color = self.position.turn
         source_board = self._board_coord()
 
-        # 当提供完整 multiverse 时，历史棋盘不能作为走子起点。
         if self.timelines:
             source = self.board_view.describe(source_board)
             if source is not None and not source.is_playable:
@@ -231,47 +228,66 @@ class MoveGenerator:
             raise ValueError(
                 f"generated move violates {piece.piece_type.name} geometry: {move.vector}"
             )
-
         return move
 
     def _gen_pawn_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
-        moves = []
-        direction = -1 if piece.color == ChessColor.WHITE else 1
-        start_row = 6 if piece.color == ChessColor.WHITE else 1
-        promotion_row = 0 if piece.color == ChessColor.WHITE else 7
+        """Generate same-board pawn moves using standard 5D pawn semantics."""
+        moves: list[Move] = []
+        direction = PawnRules.spatial_forward(piece.color)
+        promotion_row = PawnRules.promotion_rank(piece.color)
         enemy_color = piece.color.opposite()
+        unmoved = self.position.is_pawn_unmoved(x, y)
 
         ny = y + direction
         if self._in_bounds(x, ny) and self.position.is_empty(x, ny):
-            if ny == promotion_row:
-                for pt in [PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT]:
-                    moves.append(self._make_move(piece, x, y, x, ny, promotion=pt))
-            else:
-                moves.append(self._make_move(piece, x, y, x, ny))
+            promotion = PieceType.QUEEN if ny == promotion_row else None
+            moves.append(self._make_move(
+                piece, x, y, x, ny, promotion=promotion
+            ))
 
-            if y == start_row:
+            if unmoved:
                 nny = y + 2 * direction
                 if self._in_bounds(x, nny) and self.position.is_empty(x, nny):
                     moves.append(self._make_move(piece, x, y, x, nny))
 
-        for dx in [-1, 1]:
+        for dx in (-1, 1):
             nx = x + dx
             if not self._in_bounds(nx, ny):
                 continue
+
             target = self.position.get_piece(nx, ny)
             if target and target.color == enemy_color:
-                if ny == promotion_row:
-                    for pt in [PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT]:
-                        moves.append(self._make_move(piece, x, y, nx, ny, captured=target, promotion=pt))
-                else:
-                    moves.append(self._make_move(piece, x, y, nx, ny, captured=target))
-
-            ep = self.position.en_passant_target
-            if ep and ep == (nx, ny):
+                promotion = PieceType.QUEEN if ny == promotion_row else None
                 moves.append(self._make_move(
-                    piece, x, y, nx, ny,
-                    captured=Piece(PieceType.PAWN, enemy_color),
-                    is_en_passant=True
+                    piece,
+                    x,
+                    y,
+                    nx,
+                    ny,
+                    captured=target,
+                    promotion=promotion,
+                ))
+                continue
+
+            # En passant remains a same-board rule only. Require the actual
+            # adjacent enemy pawn instead of synthesizing a capture blindly.
+            ep = self.position.en_passant_target
+            adjacent = self.position.get_piece(nx, y)
+            if (
+                target is None
+                and ep == (nx, ny)
+                and adjacent is not None
+                and adjacent.color == enemy_color
+                and adjacent.piece_type == PieceType.PAWN
+            ):
+                moves.append(self._make_move(
+                    piece,
+                    x,
+                    y,
+                    nx,
+                    ny,
+                    captured=adjacent,
+                    is_en_passant=True,
                 ))
 
         return moves
@@ -352,7 +368,7 @@ class MoveGenerator:
         return moves
 
     def _gen_multiverse_moves(self, color: ChessColor) -> list[Move]:
-        """按真实 4D 几何生成非 Pawn 的跨棋盘伪合法走子。"""
+        """Generate cross-board moves for all pieces on the source board."""
         if not self.timelines:
             return []
 
@@ -365,9 +381,16 @@ class MoveGenerator:
         moves: list[Move] = []
 
         for x, y, piece in self.position.get_all_pieces(color):
+            if piece.piece_type == PieceType.PAWN:
+                moves.extend(self._gen_pawn_multiverse_moves(
+                    x,
+                    y,
+                    piece,
+                    target_boards,
+                ))
+                continue
+
             if not PieceMovementRules.supports(piece.piece_type):
-                # Pawn keeps its current spatial-only implementation until its
-                # color-relative 5D rule set is implemented separately.
                 continue
 
             source = Square5D(source_board, x, y)
@@ -414,18 +437,65 @@ class MoveGenerator:
 
         return moves
 
+    def _gen_pawn_multiverse_moves(
+        self,
+        x: int,
+        y: int,
+        piece: Piece,
+        target_boards,
+    ) -> list[Move]:
+        """Generate pawn advances/captures in the temporal T/L plane."""
+        source = Square5D(self._board_coord(), x, y)
+        unmoved = self.position.is_pawn_unmoved(x, y)
+        moves: list[Move] = []
+
+        for target_board in target_boards:
+            if target_board.coord == source.board:
+                continue
+
+            # Standard temporal pawn movement never changes X/Y.
+            destination = Square5D(target_board.coord, x, y)
+            target = target_board.position.get_piece(x, y)
+            if target is not None and target.color == piece.color:
+                continue
+
+            vector = source.vector_to(destination)
+            capture = target is not None
+            if not PawnRules.is_valid_vector(
+                piece.color,
+                vector,
+                capture=capture,
+                unmoved=unmoved,
+            ):
+                continue
+
+            if PawnRules.is_timeline_double(vector):
+                intermediate_coord = BoardCoord(
+                    timeline=source.timeline + PawnRules.timeline_forward(piece.color),
+                    turn=source.turn,
+                    side=source.side,
+                )
+                intermediate = self.board_view.resolve(intermediate_coord)
+                if intermediate is None or intermediate.get_piece(x, y) is not None:
+                    continue
+
+            moves.append(Move(
+                piece=piece,
+                source=source,
+                destination=destination,
+                captured=target,
+                is_branching=target_board.is_historical,
+            ))
+
+        return moves
+
     @staticmethod
     def _candidate_spatial_offsets(
         piece_type: PieceType,
         dt: int,
         dl: int,
     ) -> tuple[tuple[int, int], ...]:
-        """Infer the small set of (dx, dy) candidates from fixed T/L deltas.
-
-        This avoids scanning all 64 squares on every historical board. The
-        returned candidates are still verified by ``PieceMovementRules`` before
-        a Move is emitted.
-        """
+        """Infer the small set of (dx, dy) candidates from fixed T/L deltas."""
         board_components = tuple(value for value in (dt, dl) if value != 0)
         if not board_components:
             return ()
