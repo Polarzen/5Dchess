@@ -1,19 +1,17 @@
-"""
-5D Chess - 异步数据库写入器
-不阻塞游戏主循环，通过队列+工作线程批量写入
-"""
+"""Asynchronous MySQL writer for canonical replay/storage records."""
 from __future__ import annotations
 
 import threading
 import time
-from queue import Queue, Empty
-from src.config import ASYNC_WRITE_INTERVAL, ASYNC_QUEUE_MAXSIZE
+from queue import Empty, Queue
+
+from src.config import ASYNC_QUEUE_MAXSIZE, ASYNC_WRITE_INTERVAL
 from src.data.db import db
 from src.utils.logger import logger
 
 
 class AsyncDBWriter:
-    """异步数据库写入器（单例）"""
+    """Non-blocking batch writer. Database availability remains optional."""
 
     _instance: "AsyncDBWriter" | None = None
 
@@ -35,159 +33,202 @@ class AsyncDBWriter:
         self._last_flush = time.time()
 
     def start(self):
-        """启动工作线程"""
         if self._running:
             return
         self._running = True
-        self._worker = threading.Thread(target=self._run, daemon=True, name="AsyncDBWriter")
+        self._worker = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="AsyncDBWriter",
+        )
         self._worker.start()
         logger.info("异步写入器启动")
 
     def stop(self):
-        """停止工作线程"""
         self._running = False
         self._flush_buffer()
         if self._worker:
             self._worker.join(timeout=5.0)
         logger.info("异步写入器停止")
 
-    def write_move(self, move_data: dict):
-        """写入走子"""
-        self._enqueue("move", move_data)
+    def write_move(self, data: dict):
+        self._enqueue("move", data)
 
-    def write_position(self, pos_data: dict):
-        """写入棋盘快照"""
-        self._enqueue("position", pos_data)
+    def write_action(self, data: dict):
+        self._enqueue("action", data)
 
-    def write_game(self, game_data: dict):
-        """写入游戏记录"""
-        self._enqueue("game", game_data)
+    def write_position(self, data: dict):
+        self._enqueue("position", data)
 
-    def write_timeline(self, timeline_data: dict):
-        """写入时间线"""
-        self._enqueue("timeline", timeline_data)
+    def write_game(self, data: dict):
+        self._enqueue("game", data)
 
-    def write_stats(self, stats_data: dict):
-        """写入统计"""
-        self._enqueue("stats", stats_data)
+    def write_timeline(self, data: dict):
+        self._enqueue("timeline", data)
+
+    def write_stats(self, data: dict):
+        self._enqueue("stats", data)
 
     def _enqueue(self, op: str, data: dict):
-        """入队"""
         try:
             self._queue.put_nowait((op, data))
         except Exception:
             logger.warning("异步写入队列已满，丢弃数据")
 
     def _run(self):
-        """工作线程主循环"""
         while self._running:
             try:
                 op, data = self._queue.get(timeout=0.5)
                 self._batch_buffer.append((op, data))
-
                 if len(self._batch_buffer) >= self._batch_size:
                     self._flush_buffer()
                 elif time.time() - self._last_flush > ASYNC_WRITE_INTERVAL:
                     self._flush_buffer()
-
             except Empty:
                 if self._batch_buffer:
                     self._flush_buffer()
-            except Exception as e:
-                logger.error(f"异步写入异常: {e}")
+            except Exception as exc:
+                logger.error(f"异步写入异常: {exc}")
 
     def _flush_buffer(self):
-        """批量写入缓冲区"""
         if not self._batch_buffer:
             return
-
         buffer = self._batch_buffer[:]
         self._batch_buffer.clear()
         self._last_flush = time.time()
-
         if not db.is_available:
             return
 
         try:
-            # 按操作类型分组
-            moves = [d for op, d in buffer if op == "move"]
-            positions = [d for op, d in buffer if op == "position"]
-            games = [d for op, d in buffer if op == "game"]
-            timelines = [d for op, d in buffer if op == "timeline"]
-            stats = [d for op, d in buffer if op == "stats"]
-
+            games = [data for op, data in buffer if op == "game"]
+            timelines = [data for op, data in buffer if op == "timeline"]
+            actions = [data for op, data in buffer if op == "action"]
+            moves = [data for op, data in buffer if op == "move"]
+            positions = [data for op, data in buffer if op == "position"]
+            stats = [data for op, data in buffer if op == "stats"]
             if games:
                 self._insert_games(games)
             if timelines:
                 self._insert_timelines(timelines)
+            if actions:
+                self._insert_actions(actions)
             if moves:
                 self._insert_moves(moves)
             if positions:
                 self._insert_positions(positions)
             if stats:
                 self._insert_stats(stats)
-
             logger.debug(f"批量写入完成: {len(buffer)} 条")
-        except Exception as e:
-            logger.error(f"批量写入失败: {e}")
+        except Exception as exc:
+            logger.error(f"批量写入失败: {exc}")
 
     def _insert_games(self, games: list[dict]):
-        sql = """INSERT INTO games (mode, player_white, player_black, ai_difficulty,
-                 result, start_time, total_moves, total_timelines)
-                 VALUES (%(mode)s, %(player_white)s, %(player_black)s, %(ai_difficulty)s,
-                 %(result)s, %(start_time)s, %(total_moves)s, %(total_timelines)s)"""
-        db.execute_many(sql, [(g["mode"], g["player_white"], g["player_black"],
-                               g.get("ai_difficulty"), g.get("result", "ongoing"),
-                               g["start_time"], g.get("total_moves", 0),
-                               g.get("total_timelines", 1)) for g in games])
-
-    def _insert_moves(self, moves: list[dict]):
-        sql = """INSERT INTO moves (game_id, timeline_id, turn_number, piece_type, piece_color,
-                 from_timeline_id, from_x, from_y, from_time, to_timeline_id, to_x, to_y, to_time,
-                 is_branching, new_timeline_id, notation)
-                 VALUES (%(game_id)s, %(timeline_id)s, %(turn_number)s, %(piece_type)s, %(piece_color)s,
-                 %(from_timeline_id)s, %(from_x)s, %(from_y)s, %(from_time)s, %(to_timeline_id)s,
-                 %(to_x)s, %(to_y)s, %(to_time)s, %(is_branching)s, %(new_timeline_id)s, %(notation)s)"""
-        tuples = []
-        for m in moves:
-            tuples.append((
-                m.get("game_id"), m["timeline_id"], m.get("turn_number", 0),
-                m["piece_type"], m["piece_color"],
-                m["from_timeline_id"], m["from_x"], m["from_y"], m["from_time"],
-                m["to_timeline_id"], m["to_x"], m["to_y"], m["to_time"],
-                m.get("is_branching", False), m.get("new_timeline_id"),
-                m.get("notation", "")
-            ))
+        sql = """INSERT INTO games
+                 (mode, player_white, player_black, ai_difficulty, result,
+                  start_time, total_moves, total_actions, total_timelines, archive_version)
+                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+        tuples = [
+            (
+                game["mode"], game["player_white"], game["player_black"],
+                game.get("ai_difficulty"), game.get("result", "ongoing"),
+                game["start_time"], game.get("total_moves", 0),
+                game.get("total_actions", 0), game.get("total_timelines", 1),
+                game.get("archive_version", 2),
+            )
+            for game in games
+        ]
         db.execute_many(sql, tuples)
 
     def _insert_timelines(self, timelines: list[dict]):
-        sql = """INSERT INTO timelines (game_id, parent_id, branch_move_id, branch_turn)
-                 VALUES (%(game_id)s, %(parent_id)s, %(branch_move_id)s, %(branch_turn)s)"""
-        tuples = [(t["game_id"], t.get("parent_id"), t.get("branch_move_id"),
-                   t.get("branch_turn")) for t in timelines]
+        sql = """INSERT INTO timelines
+                 (game_id, lane_id, parent_lane_id, branch_move_id, branch_turn,
+                  owner, is_active)
+                 VALUES (%s, %s, %s, %s, %s, %s, %s)"""
+        tuples = [
+            (
+                item["game_id"], item["lane_id"], item.get("parent_lane_id"),
+                item.get("branch_move_id"), item.get("branch_turn"),
+                item.get("owner"), item.get("is_active", True),
+            )
+            for item in timelines
+        ]
+        db.execute_many(sql, tuples)
+
+    def _insert_actions(self, actions: list[dict]):
+        sql = """INSERT INTO actions
+                 (game_id, action_index, color, starting_present_json, submitted, move_count)
+                 VALUES (%s, %s, %s, %s, %s, %s)"""
+        tuples = [
+            (
+                item["game_id"], item["action_index"], item["color"],
+                item.get("starting_present_json", "null"),
+                item.get("submitted", False), item.get("move_count", 0),
+            )
+            for item in actions
+        ]
+        db.execute_many(sql, tuples)
+
+    def _insert_moves(self, moves: list[dict]):
+        sql = """INSERT INTO moves
+                 (game_id, action_index, move_index, piece_type, piece_color,
+                  source_timeline, source_turn, source_side, source_x, source_y,
+                  destination_timeline, destination_turn, destination_side,
+                  destination_x, destination_y, from_time, to_time,
+                  is_branching, is_cross_timeline, is_castling, is_en_passant,
+                  created_timeline, captured_type, captured_color, promotion, notation)
+                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                         %s, %s, %s, %s, %s, %s)"""
+        tuples = []
+        for item in moves:
+            tuples.append((
+                item.get("game_id"), item.get("action_index", 0),
+                item.get("move_index", 0), item["piece_type"], item["piece_color"],
+                item["source_timeline"], item["source_turn"], item["source_side"],
+                item["source_x"], item["source_y"],
+                item["destination_timeline"], item["destination_turn"],
+                item["destination_side"], item["destination_x"],
+                item["destination_y"], item.get("from_time", 0),
+                item.get("to_time", 0), item.get("is_branching", False),
+                item.get("is_cross_timeline", False),
+                item.get("is_castling", False), item.get("is_en_passant", False),
+                item.get("created_timeline"), item.get("captured_type"),
+                item.get("captured_color"), item.get("promotion"),
+                item.get("notation", ""),
+            ))
         db.execute_many(sql, tuples)
 
     def _insert_positions(self, positions: list[dict]):
-        sql = """INSERT INTO positions (timeline_id, turn_number, time_point, board_fen,
-                 board_json, active_color, is_check, is_checkmate)
-                 VALUES (%(timeline_id)s, %(turn_number)s, %(time_point)s, %(board_fen)s,
-                 %(board_json)s, %(active_color)s, %(is_check)s, %(is_checkmate)s)"""
-        tuples = [(p["timeline_id"], p.get("turn_number", 0), p["time_point"],
-                   p.get("board_fen", ""), p.get("board_json", ""),
-                   p.get("active_color", "white"), p.get("is_check", False),
-                   p.get("is_checkmate", False)) for p in positions]
+        sql = """INSERT INTO positions
+                 (game_id, lane_id, board_turn, board_side, time_point,
+                  board_fen, board_json, is_playable, is_check, is_checkmate)
+                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+        tuples = [
+            (
+                item["game_id"], item["lane_id"], item.get("board_turn", 0),
+                item.get("board_side", "white"), item.get("time_point", 0),
+                item.get("board_fen", ""), item.get("board_json", "{}"),
+                item.get("is_playable", False), item.get("is_check", False),
+                item.get("is_checkmate", False),
+            )
+            for item in positions
+        ]
         db.execute_many(sql, tuples)
 
     def _insert_stats(self, stats: list[dict]):
-        sql = """INSERT INTO game_stats (game_id, avg_branch_depth, max_timelines,
-                 white_time_travels, black_time_travels)
-                 VALUES (%(game_id)s, %(avg_branch_depth)s, %(max_timelines)s,
-                 %(white_time_travels)s, %(black_time_travels)s)"""
-        tuples = [(s["game_id"], s.get("avg_branch_depth", 0), s.get("max_timelines", 0),
-                   s.get("white_time_travels", 0), s.get("black_time_travels", 0))
-                  for s in stats]
+        sql = """INSERT INTO game_stats
+                 (game_id, avg_branch_depth, max_timelines,
+                  white_time_travels, black_time_travels)
+                 VALUES (%s, %s, %s, %s, %s)"""
+        tuples = [
+            (
+                item["game_id"], item.get("avg_branch_depth", 0),
+                item.get("max_timelines", 0), item.get("white_time_travels", 0),
+                item.get("black_time_travels", 0),
+            )
+            for item in stats
+        ]
         db.execute_many(sql, tuples)
 
 
-# 全局异步写入器
 async_writer = AsyncDBWriter()

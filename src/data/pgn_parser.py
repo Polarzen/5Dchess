@@ -1,170 +1,188 @@
-"""
-5D Chess - .5dpgn 棋谱文件解析器
-扩展PGN格式，支持时间线和分支信息
+"""5D Chess .5dpgn storage.
+
+Version 2 stores canonical BoardCoord/Square5D moves and explicit Action submit
+boundaries.  Version 1 files remain readable through GameArchive's legacy
+adapter.
 """
 from __future__ import annotations
+
 import json
-import re
+from datetime import datetime
 from pathlib import Path
-from src.utils.logger import logger
+from typing import Any
+
+from src.data.archive import (
+    ARCHIVE_SCHEMA_VERSION,
+    ArchivePayload,
+    GameArchive,
+)
+from src.engine.engine import FiveDEngine
 from src.engine.move_generator import Move
 from src.engine.timeline import TimelineManager
+from src.utils.logger import logger
 
 
 class FiveDPGN:
-    """.5dpgn 棋谱文件格式解析/导出"""
+    """Read/write the project's replayable .5dpgn JSON archive."""
 
-    HEADER_PATTERN = re.compile(r'\[(\w+)\s+"([^"]*)"\]')
+    FORMAT_NAME = "5dpgn"
+    FORMAT_VERSION = "2.0"
 
     @classmethod
-    def save(cls, filepath: str, engine, game_metadata: dict = None) -> bool:
-        """
-        导出游戏为 .5dpgn 文件
-        格式：JSON文件（便于程序解析）+ 人类可读的文本
-        """
+    def save(
+        cls,
+        filepath: str,
+        engine: FiveDEngine,
+        game_metadata: dict | None = None,
+    ) -> bool:
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
-
         try:
-            engine_data = engine.to_dict()
             metadata = {
-                "format": "5dpgn",
-                "version": "1.0",
-                "date": __import__("datetime").datetime.now().isoformat(),
+                "format": cls.FORMAT_NAME,
+                "version": cls.FORMAT_VERSION,
+                "schema_version": ARCHIVE_SCHEMA_VERSION,
+                "date": datetime.now().isoformat(),
                 **(game_metadata or {}),
             }
-
             data = {
                 "metadata": metadata,
-                "game": engine_data,
+                "game": GameArchive.capture(engine),
             }
-
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-
-            logger.info(f"棋谱已保存: {filepath}")
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+            logger.info(
+                f"棋谱已保存: {filepath} "
+                f"({len(engine.action_history)} Actions / {engine.move_counter} Moves)"
+            )
             return True
-        except Exception as e:
-            logger.error(f"棋谱保存失败: {e}")
+        except Exception as exc:
+            logger.error(f"棋谱保存失败: {exc}")
             return False
 
     @classmethod
-    def save_text(cls, filepath: str, engine, game_metadata: dict = None) -> bool:
-        """
-        导出为人类可读的文本格式 .5dpgn
-        """
-        path = Path(filepath)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            lines = []
-            meta = game_metadata or {}
-
-            lines.append('[Game "5D Chess"]')
-            lines.append(f'[Mode "{meta.get("mode", "pvp")}"]')
-            lines.append(f'[Date "{meta.get("date", "")}"]')
-            lines.append(f'[White "{meta.get("white", "Player1")}"]')
-            lines.append(f'[Black "{meta.get("black", "Player2")}"]')
-            lines.append(f'[Result "{meta.get("result", "ongoing")}"]')
-            lines.append(f'[TotalTimelines "{len(engine.timeline_manager.timelines)}"]')
-            lines.append(f'[TotalMoves "{engine.move_counter}"]')
-            lines.append("")
-
-            current_turn = 0
-            current_timeline = 0
-            for move in engine.move_history:
-                if move.from_time != current_turn or move.from_timeline_id != current_timeline:
-                    current_turn = move.from_time
-                    current_timeline = move.from_timeline_id
-                    lines.append(f"{current_turn + 1}. (T{current_timeline})")
-
-                notation = move.to_notation()
-                if move.is_branching:
-                    lines.append(f"  {notation} [BRANCH → T{move.to_timeline_id}]")
-                elif move.is_cross_timeline:
-                    lines.append(f"  {notation} [CROSS]")
-                else:
-                    lines.append(f"  {notation}")
-
-            lines.append("")
-            lines.append(f"# Result: {meta.get('result', '?')}")
-
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines))
-
-            logger.info(f"文本棋谱已保存: {filepath}")
-            return True
-        except Exception as e:
-            logger.error(f"文本棋谱保存失败: {e}")
-            return False
-
-    @classmethod
-    def load(cls, filepath: str) -> tuple[list[Move] | None, TimelineManager | None]:
-        """
-        从 .5dpgn 文件加载棋谱
-        返回 (moves, timeline_manager)
-        """
+    def load_archive(cls, filepath: str) -> ArchivePayload | None:
         path = Path(filepath)
         if not path.exists():
             logger.error(f"棋谱文件不存在: {filepath}")
-            return None, None
-
+            return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            metadata = dict(data.get("metadata", {}))
+            if metadata.get("format", cls.FORMAT_NAME) != cls.FORMAT_NAME:
+                raise ValueError("not a 5dpgn archive")
+            game_data = data.get("game")
+            if not isinstance(game_data, dict):
+                raise ValueError("archive is missing game payload")
+            engine = GameArchive.restore(game_data)
+            version = int(game_data.get("schema_version", 1))
+            logger.info(
+                f"棋谱已加载: {filepath} "
+                f"(schema={version}, {len(engine.action_history)} Actions, "
+                f"{engine.move_counter} Moves)"
+            )
+            return ArchivePayload(
+                engine=engine,
+                metadata=metadata,
+                schema_version=version,
+            )
+        except Exception as exc:
+            logger.error(f"棋谱加载失败: {exc}")
+            return None
 
-            game_data = data.get("game", {})
-            tl_mgr = TimelineManager.from_dict(game_data.get("timeline_manager", {}))
+    @classmethod
+    def load_engine(cls, filepath: str) -> FiveDEngine | None:
+        payload = cls.load_archive(filepath)
+        return payload.engine if payload else None
 
-            moves = []
-            for m_data in game_data.get("move_history", []):
-                from src.engine.coordinates import BoardCoord, Square5D
-                from src.engine.piece import Piece
-                from src.utils.constants import PieceType, ChessColor
+    @classmethod
+    def load(cls, filepath: str) -> tuple[list[Move] | None, TimelineManager | None]:
+        """Compatibility API returning (moves, timeline_manager).
 
-                piece = Piece(
-                    PieceType(m_data["piece_type"]),
-                    ChessColor(m_data["piece_color"]),
-                )
-                captured = None
-                if m_data.get("captured"):
-                    captured = Piece(
-                        PieceType(m_data["captured"]),
-                        piece.color.opposite(),
-                    )
-                promotion = None
-                if m_data.get("promotion"):
-                    promotion = PieceType(m_data["promotion"])
-
-                # .5dpgn stores the legacy half-move indices for compatibility.
-                # Convert them at the serialization boundary so Move itself keeps
-                # canonical full-turn coordinates.
-                source_board = BoardCoord.from_legacy_time_point(
-                    timeline=m_data["from_timeline_id"],
-                    time_point=m_data["from_time"],
-                    side=piece.color,
-                )
-                destination_board = BoardCoord.from_legacy_time_point(
-                    timeline=m_data["to_timeline_id"],
-                    time_point=m_data["to_time"],
-                    side=piece.color,
-                )
-
-                move = Move(
-                    piece=piece,
-                    source=Square5D(source_board, m_data["from_x"], m_data["from_y"]),
-                    destination=Square5D(destination_board, m_data["to_x"], m_data["to_y"]),
-                    is_branching=m_data.get("is_branching", False),
-                    is_castling=m_data.get("is_castling", False),
-                    is_en_passant=m_data.get("is_en_passant", False),
-                    captured=captured,
-                    promotion=promotion,
-                    created_timeline=m_data.get("created_timeline"),
-                )
-                moves.append(move)
-
-            logger.info(f"棋谱已加载: {filepath} ({len(moves)} 步)")
-            return moves, tl_mgr
-        except Exception as e:
-            logger.error(f"棋谱加载失败: {e}")
+        New Replay code should prefer ``load_engine`` so explicit Action/Submit
+        boundaries are retained.  The returned TimelineManager carries the
+        decoded Action metadata for older callers of ReplayMode.load_from_moves.
+        """
+        payload = cls.load_archive(filepath)
+        if payload is None:
             return None, None
+        engine = payload.engine
+        manager = engine.timeline_manager
+        # Compatibility bridge for callers that still use the old two-tuple.
+        # This is storage metadata, not a rule input.
+        manager._replay_action_history = list(engine.action_history)
+        manager._replay_current_action = engine.current_action
+        manager._replay_game_state = engine.game_state
+        manager._replay_current_turn_color = engine.current_turn_color
+        return list(engine.move_history), manager
+
+    @classmethod
+    def save_text(
+        cls,
+        filepath: str,
+        engine: FiveDEngine,
+        game_metadata: dict | None = None,
+    ) -> bool:
+        """Write a human-readable transcript that preserves Action boundaries."""
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            meta = game_metadata or {}
+            lines = [
+                '[Game "5D Chess"]',
+                f'[FormatVersion "{cls.FORMAT_VERSION}"]',
+                f'[Mode "{meta.get("mode", "pvp")}"]',
+                f'[Date "{meta.get("date", "")}"]',
+                f'[White "{meta.get("white", "Player1")}"]',
+                f'[Black "{meta.get("black", "Player2")}"]',
+                f'[Result "{meta.get("result", engine.game_state.name)}"]',
+                f'[TotalTimelines "{len(engine.timeline_manager.timelines)}"]',
+                f'[TotalActions "{len(engine.action_history)}"]',
+                f'[TotalMoves "{engine.move_counter}"]',
+                "",
+            ]
+
+            for action_index, action in enumerate(engine.action_history, start=1):
+                present = action.starting_present
+                if present is None:
+                    present_label = "none"
+                else:
+                    lanes = ",".join(f"L{lane:+d}" for lane in present.timeline_ids)
+                    present_label = (
+                        f"t={present.legacy_time_point} {present.side.value} [{lanes}]"
+                    )
+                lines.append(
+                    f"Action {action_index} {action.color.value} "
+                    f"Present({present_label})"
+                )
+                for move_index, move in enumerate(action.moves, start=1):
+                    tags = []
+                    if move.is_branching:
+                        tags.append(
+                            f"BRANCH→L{move.created_timeline:+d}"
+                            if move.created_timeline is not None
+                            else "BRANCH"
+                        )
+                    if move.is_cross_timeline:
+                        tags.append("CROSS")
+                    suffix = f" [{' '.join(tags)}]" if tags else ""
+                    lines.append(f"  {move_index}. {move.to_notation()}{suffix}")
+                lines.append("  SUBMIT")
+                lines.append("")
+
+            current = engine.current_action
+            if current is not None and current.moves:
+                lines.append(f"CurrentAction {current.color.value} (UNSUBMITTED)")
+                for move_index, move in enumerate(current.moves, start=1):
+                    lines.append(f"  {move_index}. {move.to_notation()}")
+                lines.append("")
+
+            lines.append(f"# Result: {meta.get('result', engine.game_state.name)}")
+            with path.open("w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines))
+            logger.info(f"文本棋谱已保存: {filepath}")
+            return True
+        except Exception as exc:
+            logger.error(f"文本棋谱保存失败: {exc}")
+            return False
