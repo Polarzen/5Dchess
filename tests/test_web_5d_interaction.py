@@ -169,3 +169,50 @@ def test_historical_board_cannot_be_reused_as_action_source(client):
     )
     assert response.status_code == 200
     assert response.get_json()["moves"] == []
+
+
+def test_web_save_reload_replay_and_continue_roundtrip(client, tmp_path):
+    state = _start_pvp(client)
+    source_board = state["boards"][0]
+    moves = client.post(
+        "/api/game/legal_moves_5d",
+        json={"board": source_board["coord"], "x": 4, "y": 6},
+    ).get_json()["moves"]
+    first_move = next(item for item in moves if item["destination"]["y"] == 4)
+    assert client.post(
+        "/api/game/move_5d",
+        json={"source": first_move["source"], "destination": first_move["destination"]},
+    ).get_json()["success"]
+    assert client.post("/api/game/submit_action", json={}).get_json()["success"]
+
+    filepath = tmp_path / "web-e2e.5dpgn"
+    saved = client.post("/api/game/save", json={"filepath": str(filepath)})
+    assert saved.status_code == 200
+    saved_state = saved.get_json()
+    assert saved_state["turn"] == "black"
+    assert saved_state["move_counter"] == 1
+
+    replayed = client.post("/api/replay/load", json={"filepath": str(filepath)})
+    assert replayed.status_code == 200
+    assert replayed.get_json()["current_index"] == 0
+    replay_end = client.post("/api/replay/step", json={"action": "end"}).get_json()
+    assert replay_end["move_counter"] == 1
+    assert replay_end["turn"] == "black"
+
+    loaded = client.post("/api/game/load", json={"filepath": str(filepath)})
+    assert loaded.status_code == 200
+    loaded_state = loaded.get_json()
+    assert loaded_state["mode"] == "pvp"
+    assert loaded_state["turn"] == "black"
+    black_board = next(board for board in loaded_state["boards"] if board["playable"])
+    black_moves = client.post(
+        "/api/game/legal_moves_5d",
+        json={"board": black_board["coord"], "x": 4, "y": 1},
+    ).get_json()["moves"]
+    reply = next(item for item in black_moves if item["destination"]["y"] == 3)
+    continued = client.post(
+        "/api/game/move_5d",
+        json={"source": reply["source"], "destination": reply["destination"]},
+    ).get_json()
+    assert continued["success"]
+    assert continued["move_counter"] == 2

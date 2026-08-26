@@ -164,6 +164,7 @@ class Position:
     @classmethod
     def from_dict(cls, data: dict) -> "Position":
         raw_unmoved = data.get("unmoved_pawns") if "unmoved_pawns" in data else None
+        raw_en_passant = data.get("en_passant_target")
         unmoved = (
             {tuple(coord) for coord in raw_unmoved}
             if raw_unmoved is not None
@@ -176,7 +177,9 @@ class Position:
             time_point=data["time_point"],
             move_number=data.get("move_number", 0),
             castling_rights=data.get("castling_rights", {}).copy(),
-            en_passant_target=data.get("en_passant_target"),
+            en_passant_target=(
+                tuple(raw_en_passant) if raw_en_passant is not None else None
+            ),
             unmoved_pawns=unmoved,
         )
 

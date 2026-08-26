@@ -11,6 +11,8 @@ from src.engine import (
     Timeline,
     TimelineManager,
 )
+from src.data.archive import GameArchive
+from src.modes.replay import ReplayMode
 from src.utils.constants import ChessColor, GameState
 
 
@@ -65,6 +67,16 @@ def install_state(
     engine.current_turn_color = color
     engine.current_action = ActionRules.begin(color, manager.timelines)
     return engine
+
+
+def assert_terminal_state_roundtrips(engine: FiveDEngine):
+    restored = GameArchive.restore(GameArchive.capture(engine))
+    assert restored.game_state == engine.game_state
+    replay = ReplayMode()
+    replay.load_from_engine(restored, strict=True)
+    replay.start()
+    replay.jump_to_end()
+    assert replay.engine.game_state == engine.game_state
 
 
 def test_initial_position_has_complete_legal_action():
@@ -199,6 +211,7 @@ def test_submit_sets_engine_checkmate_from_complete_action_search():
         [timeline_with(0, position)],
         ChessColor.BLACK,
     )
+    GameArchive.set_replay_origin(engine)
 
     move = next(
         move
@@ -214,6 +227,7 @@ def test_submit_sets_engine_checkmate_from_complete_action_search():
     assert engine.execute_move(move)
     assert engine.current_turn_color == ChessColor.WHITE
     assert engine.game_state == GameState.CHECKMATE
+    assert_terminal_state_roundtrips(engine)
 
 
 def test_submit_sets_engine_stalemate_from_complete_action_search():
@@ -232,6 +246,7 @@ def test_submit_sets_engine_stalemate_from_complete_action_search():
         [timeline_with(0, position)],
         ChessColor.BLACK,
     )
+    GameArchive.set_replay_origin(engine)
 
     move = next(
         move
@@ -247,3 +262,4 @@ def test_submit_sets_engine_stalemate_from_complete_action_search():
     assert engine.execute_move(move)
     assert engine.current_turn_color == ChessColor.WHITE
     assert engine.game_state == GameState.STALEMATE
+    assert_terminal_state_roundtrips(engine)
