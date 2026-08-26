@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from src.engine.board import Position
+from src.engine.timeline_rules import TimelineRules
 from src.utils.constants import ChessColor
 
 
@@ -55,7 +56,12 @@ class TimelineManager:
         self.max_timelines = max_timelines
         self._next_positive_id = 1
         self._next_negative_id = -1
+        # Compatibility/UI selection pointer.  This is not the same concept as
+        # Timeline.is_active; activity is derived by TimelineRules.
         self.active_timeline_id = 0
+
+    def refresh_activity(self) -> None:
+        TimelineRules.refresh_activity(self.timelines)
 
     def create_initial_timeline(self) -> Timeline:
         """创建主时间线 L0。"""
@@ -64,6 +70,7 @@ class TimelineManager:
         tl = Timeline(timeline_id=0, parent_id=None, owner=None)
         self.timelines[0] = tl
         self.active_timeline_id = 0
+        self.refresh_activity()
         return tl
 
     def _allocate_timeline_id(self, creator: ChessColor) -> int:
@@ -93,6 +100,8 @@ class TimelineManager:
         White branches occupy +L lanes and Black branches occupy -L lanes.
         ``creator`` defaults to WHITE only for compatibility with older direct
         callers; engine execution always supplies the moving piece's color.
+        Timeline activity is derived after creation; extra branches may be
+        inactive until the opponent creates enough timelines.
         """
         if len(self.timelines) >= self.max_timelines:
             return None
@@ -120,9 +129,11 @@ class TimelineManager:
             copied.timeline_id = timeline_id
             tl.positions[time_point] = copied
 
+        self.refresh_activity()
         return tl
 
     def get_active_timelines(self) -> list[Timeline]:
+        self.refresh_activity()
         return [tl for tl in self.timelines.values() if tl.is_active]
 
     def get_active_boards(self) -> list[Position]:
@@ -137,6 +148,7 @@ class TimelineManager:
         return self.timelines.get(timeline_id)
 
     def switch_active(self, timeline_id: int):
+        """Select a timeline for legacy UI callers; does not change activity."""
         if timeline_id in self.timelines:
             self.active_timeline_id = timeline_id
 
@@ -149,6 +161,8 @@ class TimelineManager:
 
     def build_tree(self) -> dict:
         """构建时间线树（timeline_id 同时是可显示的 L 坐标）。"""
+        self.refresh_activity()
+
         def build_node(tl_id: int) -> dict | None:
             tl = self.timelines.get(tl_id)
             if tl is None:
@@ -174,6 +188,7 @@ class TimelineManager:
         return root if root else {}
 
     def to_dict(self) -> dict:
+        self.refresh_activity()
         return {
             "max_timelines": self.max_timelines,
             # Keep next_id as a compatibility hint for old readers.
@@ -239,4 +254,6 @@ class TimelineManager:
             negatives = [tid for tid in mgr.timelines if tid < 0]
             mgr._next_negative_id = min([*(tid - 1 for tid in negatives), -1])
 
+        # Activity is a derived rule, not trusted serialized state.
+        mgr.refresh_activity()
         return mgr
