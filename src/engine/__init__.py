@@ -10,4 +10,6 @@ from src.engine.multiverse import BoardRole, ResolvedBoard, MultiverseBoardView
 from src.engine.move_generator import Move, MoveGenerator
 from src.engine.move_validator import MoveValidator
 from src.engine.timeline import Timeline, TimelineManager
+from src.engine.timeline_rules import PresentState, TimelineRules
+from src.engine.action import Action, ActionRules
 from src.engine.rules import RulesEngine
