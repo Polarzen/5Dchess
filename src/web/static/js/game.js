@@ -21,11 +21,11 @@ async function api(path, method = 'GET', body = null) {
     try {
         const response = await fetch(path, options);
         const data = await response.json();
-        if (!response.ok && !data.error) data.error = `HTTP ${response.status}`;
+        if (!response.ok && !data.error) data.error = `网络请求失败（HTTP ${response.status}）`;
         return data;
     } catch (error) {
-        console.error('API error', error);
-        return { error: error.message };
+        console.error('接口错误', error);
+        return { error: `网络连接失败：${error.message}` };
     }
 }
 
@@ -82,7 +82,7 @@ async function submitAction() {
     gameState = result;
     clearSelection(false);
     updateAll();
-    showToast('Action 已提交');
+    showToast('行动已提交');
 
     if (mode === 'pve' && shouldRunAI()) {
         setTimeout(runAIAction, 220);
@@ -101,10 +101,10 @@ function shouldRunAI() {
 async function runAIAction() {
     if (!shouldRunAI()) return;
     const info = document.getElementById('game-info');
-    if (info) info.textContent = 'AI 正在完成 Action…';
+    if (info) info.textContent = '电脑正在完成行动…';
     const result = await api('/api/game/ai_move', 'POST', {});
     if (result.error) {
-        showToast(`AI：${result.error}`, true);
+        showToast(`电脑：${result.error}`, true);
         await refreshState();
         return;
     }
@@ -175,7 +175,7 @@ async function selectSource(board, x, y) {
         return;
     }
     if (!result.moves?.length) {
-        showToast('该棋子在当前 Action 中没有合法走子');
+        showToast('该棋子在当前行动中没有合法走子');
         clearSelection();
         return;
     }
@@ -280,17 +280,17 @@ function updateAll() {
 function renderTopStatus() {
     const info = document.getElementById('game-info');
     const present = gameState.present;
-    info.textContent = `${modeLabel(mode)} · 第 ${gameState.move_counter || 0} 个 Move`;
+    info.textContent = `${modeLabel(mode)} · 第 ${gameState.move_counter || 0} 步`;
 
     const status = document.getElementById('top-status');
     status.innerHTML = '';
     const pills = [
-        { text: `Turn ${gameState.turn}`, cls: 'emphasis' },
-        { text: present ? `Present t${present.time_point} · ${present.side}` : 'Present —', cls: '' },
-        { text: `${gameState.summary?.active_timelines ?? 0} active / ${gameState.summary?.total_timelines ?? 0} lanes`, cls: '' },
-        { text: gameState.game_state, cls: gameState.game_state === 'PLAYING' ? '' : 'danger' },
+        { text: `当前玩家：${colorLabel(gameState.turn)}`, cls: 'emphasis' },
+        { text: present ? `当前时刻：t${present.time_point} · ${colorLabel(present.side)}` : '当前时刻：—', cls: '' },
+        { text: `${gameState.summary?.active_timelines ?? 0} 条活动时间线 / 共 ${gameState.summary?.total_timelines ?? 0} 条`, cls: '' },
+        { text: gameStateLabel(gameState.game_state), cls: gameState.game_state === 'PLAYING' ? '' : 'danger' },
     ];
-    if (gameState.in_check) pills.push({ text: 'CHECK', cls: 'danger' });
+    if (gameState.in_check) pills.push({ text: '将军', cls: 'danger' });
     for (const item of pills) {
         const pill = document.createElement('span');
         pill.className = `status-pill ${item.cls}`.trim();
@@ -326,7 +326,7 @@ function renderMultiverse() {
 
         const label = document.createElement('div');
         label.className = 'lane-label';
-        label.innerHTML = `<strong>${escapeHtml(timeline.name)}</strong><small>${timeline.is_active ? 'ACTIVE' : 'INACTIVE'}${timeline.owner ? ` · ${escapeHtml(timeline.owner)}` : ''}</small>`;
+        label.innerHTML = `<strong>${escapeHtml(timeline.name)}</strong><small>${timeline.is_active ? '活动' : '非活动'}${timeline.owner ? ` · ${escapeHtml(colorLabel(timeline.owner))}` : ''}</small>`;
         lane.appendChild(label);
 
         const track = document.createElement('div');
@@ -370,14 +370,14 @@ function createBoardCard(board, targetBoardKeys) {
         focusBoard(board.key);
     };
     const laneName = board.coord.timeline === 0 ? 'L0' : `L${board.coord.timeline > 0 ? '+' : ''}${board.coord.timeline}`;
-    header.innerHTML = `<span class="board-coord-label">${laneName} · T${board.coord.turn} · ${escapeHtml(board.coord.side)}</span>`;
+    header.innerHTML = `<span class="board-coord-label">${laneName} · T${board.coord.turn} · ${escapeHtml(colorLabel(board.coord.side))}</span>`;
 
     const badges = document.createElement('span');
     badges.className = 'board-badges';
-    if (board.is_present) badges.appendChild(makeBadge('PRESENT', 'present'));
-    if (board.is_required) badges.appendChild(makeBadge('REQ', 'required'));
-    if (board.playable && !board.is_required) badges.appendChild(makeBadge('PLAY', 'playable'));
-    if (!board.timeline_active) badges.appendChild(makeBadge('OFF', 'inactive'));
+    if (board.is_present) badges.appendChild(makeBadge('当前', 'present'));
+    if (board.is_required) badges.appendChild(makeBadge('必走', 'required'));
+    if (board.playable && !board.is_required) badges.appendChild(makeBadge('可走', 'playable'));
+    if (!board.timeline_active) badges.appendChild(makeBadge('停用', 'inactive'));
     header.appendChild(badges);
     card.appendChild(header);
 
@@ -520,13 +520,13 @@ function renderActionPanel() {
     const required = action.required_boards || [];
 
     const presentText = present
-        ? `T${present.turn} / t${present.time_point} / ${present.side}`
+        ? `T${present.turn} / t${present.time_point} / ${colorLabel(present.side)}`
         : '—';
     summary.innerHTML = `
-        <div class="action-row"><span>玩家</span><strong>${escapeHtml(action.color || gameState.turn || '?')}</strong></div>
-        <div class="action-row"><span>The Present</span><strong>${escapeHtml(presentText)}</strong></div>
-        <div class="action-row"><span>Action Moves</span><strong>${action.move_count || 0}</strong></div>
-        <div class="action-row"><span>Required</span><strong>${required.length}</strong></div>
+        <div class="action-row"><span>玩家</span><strong>${escapeHtml(colorLabel(action.color || gameState.turn))}</strong></div>
+        <div class="action-row"><span>当前时刻</span><strong>${escapeHtml(presentText)}</strong></div>
+        <div class="action-row"><span>本次行动步数</span><strong>${action.move_count || 0}</strong></div>
+        <div class="action-row"><span>必须行动棋盘</span><strong>${required.length}</strong></div>
         <div class="board-chip-list" id="required-board-chips"></div>
     `;
 
@@ -542,7 +542,7 @@ function renderActionPanel() {
     } else {
         const empty = document.createElement('span');
         empty.className = 'muted';
-        empty.textContent = action.can_submit ? 'Present 已推进完成' : '无 required board';
+        empty.textContent = action.can_submit ? '当前时刻已推进完成' : '无必须行动棋盘';
         chips.appendChild(empty);
     }
 
@@ -553,14 +553,14 @@ function renderActionPanel() {
     const help = document.getElementById('action-help');
     if (mode === 'pvp') {
         help.textContent = action.can_submit
-            ? '可以提交。若需要，你仍可先在其他 future / inactive playable board 上走可选 Move。'
+            ? '可以提交。如有需要，也可以先在其他未来或非活动但可落子的棋盘上完成可选走子。'
             : required.length
-                ? '红框棋盘必须继续推进；只有 The Present 到达对手且 RoyalRules 安全时才能提交。'
+                ? '红框棋盘必须继续推进；只有当前时刻到达对手且王安全规则满足时才能提交。'
                 : '选择橙色可行动棋盘上的棋子。';
     } else if (mode === 'pve') {
-        help.textContent = 'PvE 暂沿用现有 AI 兼容路径；本地训练与 Action 级 AI 将在独立分支继续。';
+        help.textContent = '人机对弈暂时沿用旧版电脑对手；本地训练与行动级电脑策略将在独立分支继续。';
     } else {
-        help.textContent = 'Replay 模式展示当前回放状态中的全部时间线棋盘。';
+        help.textContent = '棋谱回放模式会展示当前回放状态中的全部时间线棋盘。';
     }
 
     document.getElementById('check-badge').classList.toggle('hidden', !gameState.in_check);
@@ -571,30 +571,30 @@ function renderInspector() {
     const board = focusedBoardKey ? findBoard(focusedBoardKey) : null;
     if (!board) {
         panel.className = 'inspector muted';
-        panel.textContent = '点击任意棋盘可查看 BoardCoord；点击可行动棋盘上的棋子开始走子。';
+        panel.textContent = '点击任意棋盘可查看棋盘坐标；点击可行动棋盘上的棋子开始走子。';
         return;
     }
 
     panel.className = 'inspector';
     const flags = [
-        board.playable ? 'PLAYABLE' : 'HISTORICAL',
-        board.timeline_active ? 'ACTIVE' : 'INACTIVE',
-        board.is_present ? 'PRESENT' : null,
-        board.is_required ? 'REQUIRED' : null,
-        board.is_movable ? 'MOVABLE' : null,
+        board.playable ? '可落子棋盘' : '历史棋盘',
+        board.timeline_active ? '活动时间线' : '非活动时间线',
+        board.is_present ? '当前时刻' : null,
+        board.is_required ? '必须行动' : null,
+        board.is_movable ? '可行动' : null,
     ].filter(Boolean).join(' · ');
     let extra = '';
     if (selectedSource?.boardKey === board.key) {
         extra = `<br><strong>已选棋子：</strong>(${selectedSource.x}, ${selectedSource.y}) · ${legalMoves.length} 个合法目标`;
     } else if (legalMoves.some(move => move.destination.board.key === board.key)) {
         const count = legalMoves.filter(move => move.destination.board.key === board.key).length;
-        extra = `<br><strong>5D 目标：</strong>${count} 个`;
+        extra = `<br><strong>五维目标：</strong>${count} 个`;
     }
 
     panel.innerHTML = `
         <strong>${coordLabel(board.coord)}</strong><br>
-        Canonical turn: T${board.coord.turn} · side: ${escapeHtml(board.coord.side)}<br>
-        Legacy time: t${board.coord.time_point}<br>
+        规范回合：T${board.coord.turn} · 阶段：${escapeHtml(colorLabel(board.coord.side))}<br>
+        兼容时间点：t${board.coord.time_point}<br>
         ${escapeHtml(flags)}${extra}
     `;
 }
@@ -663,19 +663,34 @@ function checkGameOver() {
 function coordLabel(coord) {
     if (!coord) return '—';
     const lane = coord.timeline === 0 ? 'L0' : `L${coord.timeline > 0 ? '+' : ''}${coord.timeline}`;
-    return `${lane} · T${coord.turn} · ${coord.side}`;
+    return `${lane} · T${coord.turn} · ${colorLabel(coord.side)}`;
 }
 
 function modeLabel(value) {
-    return ({ pvp: 'PvP', pve: 'PvE', replay: 'Replay' })[value] || value || '?';
+    return ({ pvp: '双人对弈', pve: '人机对弈', replay: '棋谱回放' })[value] || '未知模式';
+}
+
+function colorLabel(value) {
+    return ({ white: '白方', black: '黑方' })[value] || '未知';
+}
+
+function gameStateLabel(value) {
+    return ({
+        WAITING: '等待开始',
+        PLAYING: '对局进行中',
+        CHECK: '将军',
+        CHECKMATE: '将杀',
+        STALEMATE: '逼和',
+        DRAW: '和棋',
+    })[value] || '未知状态';
 }
 
 function resultLabel(value) {
     return ({
-        CHECKMATE: 'Checkmate · 将杀',
-        STALEMATE: 'Stalemate · 逼和',
-        DRAW: 'Draw · 和棋',
-    })[value] || value;
+        CHECKMATE: '将杀',
+        STALEMATE: '逼和',
+        DRAW: '和棋',
+    })[value] || gameStateLabel(value);
 }
 
 function switchToScreen(id) {

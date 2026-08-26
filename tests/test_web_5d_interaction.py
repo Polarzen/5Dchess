@@ -50,6 +50,46 @@ def test_index_is_multiverse_canvas_not_single_board(client):
     assert "/api/game/submit_action" in javascript
 
 
+def test_web_ui_visible_labels_are_chinese(client):
+    html = client.get("/").get_data(as_text=True)
+    javascript = client.get("/static/js/game.js").get_data(as_text=True)
+
+    for label in (
+        "5D 象棋",
+        "多时间线棋盘",
+        "当前行动",
+        "提交行动",
+        "必须行动",
+        "棋谱回放",
+    ):
+        assert label in html
+
+    for label in (
+        "当前玩家：",
+        "当前时刻：",
+        "对局进行中",
+        "白方",
+        "黑方",
+        "活动时间线",
+        "规范回合：",
+        "本次行动步数",
+    ):
+        assert label in javascript
+
+    for english_label in (
+        "5D Chess",
+        "Multiverse Board",
+        "Submit Action",
+        "Legacy AI compatibility",
+        ">Present<",
+        ">Required<",
+        ">Movable<",
+        ">Inactive<",
+        ">Replay<",
+    ):
+        assert english_label not in html
+
+
 def test_start_state_serializes_canonical_present_board(client):
     state = _start_pvp(client)
 
