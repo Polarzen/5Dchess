@@ -1,6 +1,6 @@
 """Canonical replay/storage archive helpers for 5D Chess.
 
-The storage boundary owns serialization.  Engine rules keep using BoardCoord,
+The storage boundary owns serialization. Engine rules keep using BoardCoord,
 Square5D, Move and Action directly; files/databases convert those objects to a
 stable JSON-friendly schema here.
 """
@@ -27,7 +27,6 @@ def board_coord_to_dict(coord: BoardCoord) -> dict[str, Any]:
         "timeline": coord.timeline,
         "turn": coord.turn,
         "side": coord.side.value,
-        # Redundant compatibility/debug hint; canonical readers use turn+side.
         "time_point": coord.legacy_time_point,
     }
 
@@ -45,11 +44,7 @@ def board_coord_from_dict(data: dict[str, Any]) -> BoardCoord:
 
 
 def square_to_dict(square: Square5D) -> dict[str, Any]:
-    return {
-        "board": board_coord_to_dict(square.board),
-        "x": square.x,
-        "y": square.y,
-    }
+    return {"board": board_coord_to_dict(square.board), "x": square.x, "y": square.y}
 
 
 def square_from_dict(data: dict[str, Any]) -> Square5D:
@@ -63,10 +58,7 @@ def square_from_dict(data: dict[str, Any]) -> Square5D:
 def piece_to_dict(piece: Piece | None) -> dict[str, str] | None:
     if piece is None:
         return None
-    return {
-        "type": piece.piece_type.value,
-        "color": piece.color.value,
-    }
+    return {"type": piece.piece_type.value, "color": piece.color.value}
 
 
 def piece_from_dict(data: dict[str, Any] | None) -> Piece | None:
@@ -76,7 +68,6 @@ def piece_from_dict(data: dict[str, Any] | None) -> Piece | None:
 
 
 def move_to_dict(move: Move) -> dict[str, Any]:
-    """Serialize one Move using canonical coordinates as the primary schema."""
     return {
         "piece": piece_to_dict(move.piece),
         "source": square_to_dict(move.source),
@@ -111,15 +102,11 @@ def move_from_dict(data: dict[str, Any]) -> Move:
 
 def legacy_move_from_dict(data: dict[str, Any]) -> Move:
     """Read the v1 half-move based Move representation."""
-    piece = Piece(
-        PieceType(data["piece_type"]),
-        ChessColor(data["piece_color"]),
-    )
+    piece = Piece(PieceType(data["piece_type"]), ChessColor(data["piece_color"]))
     captured = None
     if data.get("captured"):
         captured = Piece(PieceType(data["captured"]), piece.color.opposite())
     promotion = PieceType(data["promotion"]) if data.get("promotion") else None
-
     source_board = BoardCoord.from_legacy_time_point(
         timeline=int(data["from_timeline_id"]),
         time_point=int(data["from_time"]),
@@ -133,11 +120,7 @@ def legacy_move_from_dict(data: dict[str, Any]) -> Move:
     return Move(
         piece=piece,
         source=Square5D(source_board, int(data["from_x"]), int(data["from_y"])),
-        destination=Square5D(
-            destination_board,
-            int(data["to_x"]),
-            int(data["to_y"]),
-        ),
+        destination=Square5D(destination_board, int(data["to_x"]), int(data["to_y"])),
         captured=captured,
         promotion=promotion,
         is_castling=bool(data.get("is_castling", False)),
@@ -164,9 +147,8 @@ def present_from_dict(data: dict[str, Any] | None) -> PresentState | None:
     boards = tuple(board_coord_from_dict(item) for item in data.get("boards", []))
     side = ChessColor(data["side"])
     if boards:
-        canonical = boards[0]
-        turn = canonical.turn
-        time_point = canonical.legacy_time_point
+        turn = boards[0].turn
+        time_point = boards[0].legacy_time_point
     else:
         turn = int(data["turn"])
         time_point = int(data["legacy_time_point"])
@@ -202,20 +184,70 @@ def action_from_dict(data: dict[str, Any]) -> Action:
 
 @dataclass(frozen=True, slots=True)
 class ArchivePayload:
-    """Decoded archive plus optional user metadata."""
-
     engine: FiveDEngine
     metadata: dict[str, Any]
     schema_version: int
 
 
 class GameArchive:
-    """Capture/restore an exact engine state using storage schema v2."""
+    """Capture/restore exact engine state plus the multiverse replay origin."""
+
+    @staticmethod
+    def capture_origin(engine: FiveDEngine) -> dict[str, Any]:
+        """Capture the state from which replay Move history must begin."""
+        return {
+            "max_timelines": engine.max_timelines,
+            "max_turns": engine.max_turns,
+            "timeline_manager": engine.timeline_manager.to_dict(),
+            "game_state": engine.game_state.name,
+            "current_turn_color": engine.current_turn_color.value,
+        }
+
+    @classmethod
+    def set_replay_origin(cls, engine: FiveDEngine) -> dict[str, Any]:
+        """Mark the current no-history position as a custom replay starting point."""
+        if engine.move_history or engine.action_history:
+            raise ValueError("replay origin must be marked before recording Moves")
+        origin = cls.capture_origin(engine)
+        engine._replay_origin = origin
+        return origin
+
+    @classmethod
+    def default_origin(cls, max_timelines: int = 32, max_turns: int = 500) -> dict[str, Any]:
+        standard = FiveDEngine(max_timelines=max_timelines, max_turns=max_turns)
+        return cls.capture_origin(standard)
+
+    @classmethod
+    def restore_origin(cls, data: dict[str, Any]) -> FiveDEngine:
+        engine = FiveDEngine(
+            max_timelines=int(data.get("max_timelines", 32)),
+            max_turns=int(data.get("max_turns", 500)),
+        )
+        engine.timeline_manager = TimelineManager.from_dict(data["timeline_manager"])
+        engine.timeline_manager.max_timelines = engine.max_timelines
+        engine.game_state = GameState[data.get("game_state", "PLAYING")]
+        engine.current_turn_color = ChessColor(data.get("current_turn_color", "white"))
+        engine.move_history = []
+        engine.action_history = []
+        engine.move_counter = 0
+        engine.current_action = ActionRules.begin(
+            engine.current_turn_color,
+            engine.timeline_manager.timelines,
+        )
+        engine._replay_origin = data
+        return engine
 
     @classmethod
     def capture(cls, engine: FiveDEngine) -> dict[str, Any]:
+        origin = getattr(engine, "_replay_origin", None)
+        if origin is None:
+            if engine.move_counter == 0:
+                origin = cls.capture_origin(engine)
+            else:
+                origin = cls.default_origin(engine.max_timelines, engine.max_turns)
         return {
             "schema_version": ARCHIVE_SCHEMA_VERSION,
+            "replay_origin": origin,
             "max_timelines": engine.max_timelines,
             "max_turns": engine.max_turns,
             "timeline_manager": engine.timeline_manager.to_dict(),
@@ -224,11 +256,7 @@ class GameArchive:
             "current_turn_color": engine.current_turn_color.value,
             "move_history": [move_to_dict(move) for move in engine.move_history],
             "action_history": [action_to_dict(action) for action in engine.action_history],
-            "current_action": (
-                action_to_dict(engine.current_action)
-                if engine.current_action is not None
-                else None
-            ),
+            "current_action": action_to_dict(engine.current_action) if engine.current_action else None,
         }
 
     @classmethod
@@ -241,7 +269,7 @@ class GameArchive:
 
         engine = FiveDEngine(
             max_timelines=int(data.get("max_timelines", 32)),
-            max_turns=int(data.get("max_turns", 1000)),
+            max_turns=int(data.get("max_turns", 500)),
         )
         engine.timeline_manager = TimelineManager.from_dict(data["timeline_manager"])
         engine.timeline_manager.max_timelines = engine.max_timelines
@@ -249,27 +277,25 @@ class GameArchive:
         engine.current_turn_color = ChessColor(data.get("current_turn_color", "white"))
         engine.move_history = [move_from_dict(item) for item in data.get("move_history", [])]
         engine.move_counter = int(data.get("move_counter", len(engine.move_history)))
-        engine.action_history = [
-            action_from_dict(item) for item in data.get("action_history", [])
-        ]
+        engine.action_history = [action_from_dict(item) for item in data.get("action_history", [])]
         current = data.get("current_action")
         engine.current_action = (
             action_from_dict(current)
             if current
-            else ActionRules.begin(
-                engine.current_turn_color,
-                engine.timeline_manager.timelines,
-            )
+            else ActionRules.begin(engine.current_turn_color, engine.timeline_manager.timelines)
+        )
+        engine._replay_origin = data.get("replay_origin") or cls.default_origin(
+            engine.max_timelines,
+            engine.max_turns,
         )
         cls.validate(engine)
         return engine
 
     @classmethod
     def restore_legacy(cls, data: dict[str, Any]) -> FiveDEngine:
-        """Restore legacy Engine.to_dict() data and infer missing Action boundaries."""
         engine = FiveDEngine(
             max_timelines=int(data.get("max_timelines", 32)),
-            max_turns=int(data.get("max_turns", 1000)),
+            max_turns=int(data.get("max_turns", 500)),
         )
         engine.timeline_manager = TimelineManager.from_dict(data["timeline_manager"])
         engine.timeline_manager.max_timelines = engine.max_timelines
@@ -279,14 +305,10 @@ class GameArchive:
         engine.move_history = moves
         engine.move_counter = int(data.get("move_counter", len(moves)))
 
-        inferred = FiveDEngine(
-            max_timelines=engine.max_timelines,
-            max_turns=engine.max_turns,
-        )
+        origin = cls.default_origin(engine.max_timelines, engine.max_turns)
+        inferred = cls.restore_origin(origin)
         for move in moves:
             if not inferred.execute_action_move(move):
-                # Old archives were produced before Action semantics existed;
-                # retain the final board snapshot even if exact inference fails.
                 break
             if inferred.can_submit_action():
                 inferred.submit_action()
@@ -295,6 +317,7 @@ class GameArchive:
             engine.current_turn_color,
             engine.timeline_manager.timelines,
         )
+        engine._replay_origin = origin
         return engine
 
     @staticmethod
@@ -313,11 +336,7 @@ class GameArchive:
             if engine.current_action.color != engine.current_turn_color:
                 raise ValueError("current_action color disagrees with current_turn_color")
 
-        flattened = [
-            move
-            for action in engine.action_history
-            for move in action.moves
-        ]
+        flattened = [move for action in engine.action_history for move in action.moves]
         if engine.current_action is not None:
             flattened.extend(engine.current_action.moves)
         if flattened and flattened != engine.move_history:

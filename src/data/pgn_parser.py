@@ -1,21 +1,16 @@
 """5D Chess .5dpgn storage.
 
-Version 2 stores canonical BoardCoord/Square5D moves and explicit Action submit
-boundaries.  Version 1 files remain readable through GameArchive's legacy
-adapter.
+Version 2 stores canonical BoardCoord/Square5D moves, replay origin, and explicit
+Action submit boundaries. Version 1 files remain readable through GameArchive's
+legacy adapter.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from src.data.archive import (
-    ARCHIVE_SCHEMA_VERSION,
-    ArchivePayload,
-    GameArchive,
-)
+from src.data.archive import ARCHIVE_SCHEMA_VERSION, ArchivePayload, GameArchive
 from src.engine.engine import FiveDEngine
 from src.engine.move_generator import Move
 from src.engine.timeline import TimelineManager
@@ -45,10 +40,7 @@ class FiveDPGN:
                 "date": datetime.now().isoformat(),
                 **(game_metadata or {}),
             }
-            data = {
-                "metadata": metadata,
-                "game": GameArchive.capture(engine),
-            }
+            data = {"metadata": metadata, "game": GameArchive.capture(engine)}
             with path.open("w", encoding="utf-8") as handle:
                 json.dump(data, handle, ensure_ascii=False, indent=2)
             logger.info(
@@ -100,21 +92,22 @@ class FiveDPGN:
     def load(cls, filepath: str) -> tuple[list[Move] | None, TimelineManager | None]:
         """Compatibility API returning (moves, timeline_manager).
 
-        New Replay code should prefer ``load_engine`` so explicit Action/Submit
-        boundaries are retained.  The returned TimelineManager carries the
-        decoded Action metadata for older callers of ReplayMode.load_from_moves.
+        New Replay code should prefer ``load_engine``/``load_archive``. Metadata
+        attached to the returned manager lets legacy Web callers retain Action
+        boundaries without changing the public two-tuple immediately.
         """
         payload = cls.load_archive(filepath)
         if payload is None:
             return None, None
         engine = payload.engine
         manager = engine.timeline_manager
-        # Compatibility bridge for callers that still use the old two-tuple.
-        # This is storage metadata, not a rule input.
         manager._replay_action_history = list(engine.action_history)
         manager._replay_current_action = engine.current_action
         manager._replay_game_state = engine.game_state
         manager._replay_current_turn_color = engine.current_turn_color
+        manager._replay_origin = getattr(engine, "_replay_origin", None)
+        manager._replay_max_timelines = engine.max_timelines
+        manager._replay_max_turns = engine.max_turns
         return list(engine.move_history), manager
 
     @classmethod
@@ -153,8 +146,7 @@ class FiveDPGN:
                         f"t={present.legacy_time_point} {present.side.value} [{lanes}]"
                     )
                 lines.append(
-                    f"Action {action_index} {action.color.value} "
-                    f"Present({present_label})"
+                    f"Action {action_index} {action.color.value} Present({present_label})"
                 )
                 for move_index, move in enumerate(action.moves, start=1):
                     tags = []

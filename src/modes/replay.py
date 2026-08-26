@@ -32,14 +32,11 @@ class ReplayMode(GameModeBase):
         self.move_list: list[Move] = []
         self.action_list: list[Action] = []
         self.steps: list[ReplayStep] = []
-        # snapshots[i] is the exact engine state after i visible Moves.
         self.snapshots: list[dict] = []
         self.is_playing: bool = False
         self.play_speed: float = 1.0
         self.selected_timeline_id: int = 0
         self._play_timer: float = 0.0
-
-    # ─── Loading ───────────────────────────────────────
 
     def load_from_engine(self, engine: FiveDEngine, *, strict: bool = True):
         """Load canonical history from an exact stored engine state."""
@@ -62,7 +59,10 @@ class ReplayMode(GameModeBase):
         """Compatibility loader for old callers of FiveDPGN.load()."""
         stored_actions = getattr(timeline_manager, "_replay_action_history", None)
         if stored_actions is not None:
-            final_engine = FiveDEngine()
+            final_engine = FiveDEngine(
+                max_timelines=getattr(timeline_manager, "_replay_max_timelines", 32),
+                max_turns=getattr(timeline_manager, "_replay_max_turns", 500),
+            )
             final_engine.timeline_manager = timeline_manager
             final_engine.move_history = list(moves)
             final_engine.move_counter = len(moves)
@@ -82,10 +82,17 @@ class ReplayMode(GameModeBase):
                 "_replay_current_turn_color",
                 final_engine.current_turn_color,
             )
+            final_engine._replay_origin = getattr(
+                timeline_manager,
+                "_replay_origin",
+                GameArchive.default_origin(
+                    final_engine.max_timelines,
+                    final_engine.max_turns,
+                ),
+            )
             self.load_from_engine(final_engine, strict=True)
             return
 
-        # Legacy v1 had no Action boundaries. Infer the old auto-submit behavior.
         inferred = FiveDEngine()
         for move in moves:
             if not inferred.execute_action_move(move):
@@ -133,29 +140,26 @@ class ReplayMode(GameModeBase):
         return steps
 
     def _rebuild_snapshots(self, final_engine: FiveDEngine, *, strict: bool):
-        temp = FiveDEngine(
-            max_timelines=final_engine.max_timelines,
-            max_turns=final_engine.max_turns,
-        )
+        origin = getattr(final_engine, "_replay_origin", None)
+        if origin is None:
+            origin = GameArchive.default_origin(
+                final_engine.max_timelines,
+                final_engine.max_turns,
+            )
+        temp = GameArchive.restore_origin(origin)
         self.snapshots = [GameArchive.capture(temp)]
         for step in self.steps:
             if not temp.execute_action_move(step.move):
                 raise ValueError(f"Replay Move failed while rebuilding: {step.move}")
             if step.submit_after and not temp.submit_action():
-                raise ValueError(
-                    f"Replay Action submit failed after move: {step.move}"
-                )
+                raise ValueError(f"Replay Action submit failed after move: {step.move}")
             self.snapshots.append(GameArchive.capture(temp))
 
         if strict:
             expected = GameArchive.capture(final_engine)
             actual = self.snapshots[-1]
-            # Date/user metadata is outside GameArchive, so exact equality here is
-            # a strong replay determinism check for every rule-relevant field.
             if actual != expected:
                 raise ValueError("stored game state is not reproducible from its Actions")
-
-    # ─── Replay controls ───────────────────────────────
 
     def start(self):
         self.current_index = 0
@@ -169,10 +173,7 @@ class ReplayMode(GameModeBase):
         logger.info("Replay模式启动")
         self.emit(
             "replay_started",
-            {
-                "total_moves": len(self.steps),
-                "total_actions": len(self.action_list),
-            },
+            {"total_moves": len(self.steps), "total_actions": len(self.action_list)},
         )
 
     def step_forward(self) -> bool:
@@ -234,8 +235,6 @@ class ReplayMode(GameModeBase):
                 self.emit("play_completed", {})
                 break
 
-    # ─── Timeline / statistics ─────────────────────────
-
     def select_timeline(self, timeline_id: int):
         if self.engine.timeline_manager.get_timeline(timeline_id):
             self.selected_timeline_id = timeline_id
@@ -293,9 +292,7 @@ class ReplayMode(GameModeBase):
             "total_timelines": len(timelines),
             "active_timelines": len(self.engine.timeline_manager.get_active_timelines()),
             "branching_moves": sum(1 for move in self.move_list if move.is_branching),
-            "cross_timeline_moves": sum(
-                1 for move in self.move_list if move.is_cross_timeline
-            ),
+            "cross_timeline_moves": sum(1 for move in self.move_list if move.is_cross_timeline),
             "white_time_travels": white_time_travels,
             "black_time_travels": black_time_travels,
             "max_branch_depth": max(depths) if depths else 0,

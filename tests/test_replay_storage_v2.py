@@ -50,6 +50,7 @@ def _two_move_action_engine() -> FiveDEngine:
     engine.current_turn_color = ChessColor.WHITE
     engine.action_history = []
     engine.current_action = ActionRules.begin(ChessColor.WHITE, manager.timelines)
+    GameArchive.set_replay_origin(engine)
 
     present_move = Move(
         piece=rook,
@@ -97,6 +98,7 @@ def test_archive_roundtrip_preserves_action_submit_boundary_and_state():
     restored = GameArchive.restore(archive)
 
     assert archive["schema_version"] == 2
+    assert "replay_origin" in archive
     assert len(restored.action_history) == 1
     assert restored.action_history[0].submitted
     assert len(restored.action_history[0].moves) == 2
@@ -112,6 +114,7 @@ def test_5dpgn_v2_roundtrip_is_exact(tmp_path):
     raw = json.loads(filepath.read_text(encoding="utf-8"))
     assert raw["metadata"]["version"] == "2.0"
     assert raw["game"]["schema_version"] == 2
+    assert "replay_origin" in raw["game"]
     assert len(raw["game"]["action_history"]) == 1
     stored_move = raw["game"]["action_history"][0]["moves"][0]
     assert "source" in stored_move and "destination" in stored_move
@@ -133,8 +136,6 @@ def test_replay_steps_moves_but_submits_only_at_recorded_action_end():
 
     assert replay.step_forward()
     assert replay.current_index == 1
-    # First Move already made The Present submittable, but the stored Action had
-    # an optional future Move before Submit, so replay must keep White's Action open.
     assert replay.engine.current_turn_color == ChessColor.WHITE
     assert len(replay.engine.current_action.moves) == 1
 
