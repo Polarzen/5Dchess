@@ -9,8 +9,10 @@ from src.utils.constants import ChessColor, PieceType, GameState
 from src.utils.logger import logger
 from src.engine.piece import Piece
 from src.engine.board import Position
+from src.engine.coordinates import BoardCoord
 from src.engine.move_generator import Move, MoveGenerator
 from src.engine.move_validator import MoveValidator
+from src.engine.multiverse import MultiverseBoardView
 from src.engine.pawn_rules import PawnRules
 from src.engine.timeline import TimelineManager
 from src.engine.rules import RulesEngine
@@ -42,6 +44,62 @@ class FiveDEngine:
         self.move_counter = 0
         self.current_turn_color = ChessColor.WHITE
         logger.info("游戏初始化完成")
+
+    def _board_view(self) -> MultiverseBoardView:
+        """Return the canonical lookup layer over the current multiverse."""
+        return MultiverseBoardView(self.timeline_manager.timelines)
+
+    def _resolve_position(self, coord: BoardCoord) -> Position | None:
+        """Resolve a canonical board coordinate at the legacy storage boundary."""
+        return self._board_view().resolve(coord)
+
+    def _build_successor(self, position: Position) -> Position:
+        """Create the next immutable board state for one timeline.
+
+        Timeline storage still uses legacy half-move integer keys. Conversion is
+        intentionally centralized here rather than spread through move execution.
+        """
+        before = BoardCoord.from_legacy_time_point(
+            timeline=position.timeline_id,
+            time_point=position.time_point,
+            side=position.turn,
+        )
+        after = before.next()
+
+        successor = position.copy()
+        successor.time_point = after.legacy_time_point
+        successor.turn = after.side
+        successor.move_number = self.move_counter + 1
+        successor.en_passant_target = None
+        return successor
+
+    def _build_source_departure_successor(
+        self,
+        position: Position,
+        move: Move,
+    ) -> Position:
+        successor = self._build_successor(position)
+        successor.set_piece(move.source.x, move.source.y, None)
+        self._update_castling_rights(successor, move)
+        return successor
+
+    def _build_destination_arrival_successor(
+        self,
+        position: Position,
+        move: Move,
+    ) -> Position:
+        successor = self._build_successor(position)
+        arriving_piece = (
+            Piece(move.promotion, move.piece.color)
+            if move.promotion is not None
+            else move.piece
+        )
+        successor.set_piece(
+            move.destination.x,
+            move.destination.y,
+            arriving_piece,
+        )
+        return successor
 
     def get_current_position(self) -> Position:
         """获取当前活跃时间线的最新棋盘"""
@@ -80,45 +138,54 @@ class FiveDEngine:
             return False
 
     def _execute_normal_move(self, move: Move) -> bool:
-        """执行同一棋盘上的普通空间移动。"""
-        current_pos = self.get_current_position()
-        new_pos = current_pos.copy()
-        new_pos.time_point = current_pos.time_point + 1
-        new_pos.turn = current_pos.turn.opposite()
-        new_pos.move_number = self.move_counter + 1
-        # En passant exists only for the immediately following same-board move.
-        new_pos.en_passant_target = None
+        """执行同一 canonical Board 上的普通空间移动。"""
+        source = move.source
+        destination = move.destination
+        if source.board != destination.board:
+            return False
 
-        new_pos.move_piece(move.from_x, move.from_y, move.to_x, move.to_y)
+        resolved = self._board_view().describe(source.board)
+        if resolved is None or not resolved.is_playable:
+            return False
+        current_pos = resolved.position
+        if current_pos.get_piece(source.x, source.y) != move.piece:
+            return False
+
+        new_pos = self._build_successor(current_pos)
+        new_pos.move_piece(source.x, source.y, destination.x, destination.y)
 
         if move.is_castling:
-            row = move.to_y
-            if move.to_x == 6:
+            row = destination.y
+            if destination.x == 6:
                 new_pos.move_piece(7, row, 5, row)
-            elif move.to_x == 2:
+            elif destination.x == 2:
                 new_pos.move_piece(0, row, 3, row)
 
         if move.is_en_passant:
-            new_pos.set_piece(move.to_x, move.from_y, None)
+            new_pos.set_piece(destination.x, source.y, None)
 
         if move.promotion:
-            new_pos.set_piece(move.to_x, move.to_y, Piece(move.promotion, current_pos.turn))
+            new_pos.set_piece(
+                destination.x,
+                destination.y,
+                Piece(move.promotion, move.piece.color),
+            )
 
         if (
             move.piece.piece_type == PieceType.PAWN
             and PawnRules.is_spatial_double(move.vector)
         ):
             new_pos.en_passant_target = (
-                move.from_x,
-                (move.from_y + move.to_y) // 2,
+                source.x,
+                (source.y + destination.y) // 2,
             )
 
         self._update_castling_rights(new_pos, move)
 
-        tl = self.timeline_manager.get_timeline(move.to_timeline_id)
-        if tl is None:
+        timeline = self.timeline_manager.get_timeline(source.board.timeline)
+        if timeline is None:
             return False
-        tl.add_position(new_pos)
+        timeline.add_position(new_pos)
 
         self.move_counter += 1
         self.move_history.append(move)
@@ -127,93 +194,97 @@ class FiveDEngine:
         return True
 
     def _execute_branching_move(self, move: Move) -> bool:
-        """执行落到历史棋盘并创建新时间线的走子。"""
-        current_pos = self.get_current_position()
-        source_tl = self.timeline_manager.get_timeline(move.from_timeline_id)
-        target_tl = self.timeline_manager.get_timeline(move.to_timeline_id)
-        if source_tl is None or target_tl is None:
+        """执行落到 historical canonical Board 并创建新时间线的走子。"""
+        source = move.source
+        destination = move.destination
+        board_view = self._board_view()
+        source_board = board_view.describe(source.board)
+        destination_board = board_view.describe(destination.board)
+
+        if source_board is None or not source_board.is_playable:
             return False
-        if move.to_time not in target_tl.positions:
+        if destination_board is None or not destination_board.is_historical:
             return False
-        if move.to_time >= target_tl.latest_time:
+        if source_board.position.get_piece(source.x, source.y) != move.piece:
             return False
 
-        new_tl = self.timeline_manager.create_branch(
-            parent_id=move.to_timeline_id,
-            branch_turn=current_pos.time_point,
+        source_timeline = self.timeline_manager.get_timeline(source.board.timeline)
+        if source_timeline is None:
+            return False
+
+        target_time = destination.board.legacy_time_point
+        new_timeline = self.timeline_manager.create_branch(
+            parent_id=destination.board.timeline,
+            branch_turn=source.board.legacy_time_point,
             branch_move_id=self.move_counter + 1,
-            target_time=move.to_time,
+            target_time=target_time,
             creator=move.piece.color,
         )
-        if new_tl is None:
+        if new_timeline is None:
             logger.warning("无法创建新时间线：已达上限或目标棋盘不存在")
             return False
 
-        past_pos = new_tl.positions[move.to_time]
-        new_target_pos = past_pos.copy()
-        new_target_pos.time_point = move.to_time + 1
-        new_target_pos.turn = past_pos.turn.opposite()
-        new_target_pos.move_number = self.move_counter + 1
-        new_target_pos.en_passant_target = None
-        new_target_pos.set_piece(move.to_x, move.to_y, move.piece)
-        new_tl.add_position(new_target_pos)
+        branch_target = new_timeline.positions.get(target_time)
+        if branch_target is None:
+            return False
+
+        new_target_pos = self._build_destination_arrival_successor(
+            branch_target,
+            move,
+        )
+        new_timeline.add_position(new_target_pos)
 
         # The source history remains immutable; removal happens in a successor.
-        new_source_pos = current_pos.copy()
-        new_source_pos.en_passant_target = None
-        new_source_pos.set_piece(move.from_x, move.from_y, None)
-        new_source_pos.time_point = current_pos.time_point + 1
-        new_source_pos.turn = current_pos.turn.opposite()
-        new_source_pos.move_number = self.move_counter + 1
-        source_tl.add_position(new_source_pos)
+        new_source_pos = self._build_source_departure_successor(
+            source_board.position,
+            move,
+        )
+        source_timeline.add_position(new_source_pos)
 
-        self.timeline_manager.switch_active(new_tl.timeline_id)
+        self.timeline_manager.switch_active(new_timeline.timeline_id)
 
-        recorded_move = replace(move, created_timeline=new_tl.timeline_id)
+        recorded_move = replace(move, created_timeline=new_timeline.timeline_id)
         self.move_counter += 1
         self.move_history.append(recorded_move)
         self.current_turn_color = new_source_pos.turn
 
         logger.info(
-            f"时间线分支: L{new_tl.timeline_id:+d} ← "
-            f"L{new_tl.parent_id:+d} @ t={move.to_time}"
+            f"时间线分支: L{new_timeline.timeline_id:+d} ← "
+            f"L{new_timeline.parent_id:+d} @ {destination.board}"
         )
         return True
 
     def _execute_cross_timeline_move(self, move: Move) -> bool:
-        """执行两个可走棋盘之间的跨时间线移动。"""
-        current_pos = self.get_current_position()
-        source_tl = self.timeline_manager.get_timeline(move.from_timeline_id)
-        target_tl = self.timeline_manager.get_timeline(move.to_timeline_id)
-        if source_tl is None or target_tl is None:
+        """执行两个 playable canonical Board 之间的跨时间线移动。"""
+        source = move.source
+        destination = move.destination
+        board_view = self._board_view()
+        source_board = board_view.describe(source.board)
+        destination_board = board_view.describe(destination.board)
+
+        if source_board is None or not source_board.is_playable:
+            return False
+        if destination_board is None or not destination_board.is_playable:
+            return False
+        if source_board.position.get_piece(source.x, source.y) != move.piece:
             return False
 
-        target_time = move.to_time
-        if target_time not in target_tl.positions:
-            return False
-        if target_time != target_tl.latest_time:
-            return False
-
-        target_pos = target_tl.positions[target_time]
-        if target_pos.turn != current_pos.turn:
+        source_timeline = self.timeline_manager.get_timeline(source.board.timeline)
+        target_timeline = self.timeline_manager.get_timeline(destination.board.timeline)
+        if source_timeline is None or target_timeline is None:
             return False
 
-        new_target_pos = target_pos.copy()
-        new_target_pos.time_point = target_pos.time_point + 1
-        new_target_pos.turn = target_pos.turn.opposite()
-        new_target_pos.move_number = self.move_counter + 1
-        new_target_pos.en_passant_target = None
-        new_target_pos.set_piece(move.to_x, move.to_y, move.piece)
+        new_source_pos = self._build_source_departure_successor(
+            source_board.position,
+            move,
+        )
+        new_target_pos = self._build_destination_arrival_successor(
+            destination_board.position,
+            move,
+        )
 
-        new_source_pos = current_pos.copy()
-        new_source_pos.en_passant_target = None
-        new_source_pos.set_piece(move.from_x, move.from_y, None)
-        new_source_pos.time_point = current_pos.time_point + 1
-        new_source_pos.turn = current_pos.turn.opposite()
-        new_source_pos.move_number = self.move_counter + 1
-
-        target_tl.add_position(new_target_pos)
-        source_tl.add_position(new_source_pos)
+        source_timeline.add_position(new_source_pos)
+        target_timeline.add_position(new_target_pos)
 
         self.move_counter += 1
         self.move_history.append(move)
@@ -224,6 +295,7 @@ class FiveDEngine:
         """更新王车易位权"""
         rights = position.castling_rights
         piece = move.piece
+        source = move.source
 
         if piece.piece_type == PieceType.KING:
             if piece.color == ChessColor.WHITE:
@@ -235,14 +307,14 @@ class FiveDEngine:
 
         if piece.piece_type == PieceType.ROOK:
             if piece.color == ChessColor.WHITE:
-                if move.from_x == 7 and move.from_y == 7:
+                if source.x == 7 and source.y == 7:
                     rights["white_kingside"] = False
-                if move.from_x == 0 and move.from_y == 7:
+                if source.x == 0 and source.y == 7:
                     rights["white_queenside"] = False
             else:
-                if move.from_x == 7 and move.from_y == 0:
+                if source.x == 7 and source.y == 0:
                     rights["black_kingside"] = False
-                if move.from_x == 0 and move.from_y == 0:
+                if source.x == 0 and source.y == 0:
                     rights["black_queenside"] = False
 
     def _check_game_result(self, position: Position):
