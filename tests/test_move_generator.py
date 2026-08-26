@@ -40,7 +40,7 @@ class TestPawnMoves:
         assert len(captures) >= 1
 
     def test_promotion(self):
-        """测试兵升变"""
+        """标准 5D Pawn 到底线后只能升变为 Queen。"""
         board = [["" for _ in range(8)] for _ in range(8)]
         board[0][4] = ""
         board[1][4] = "P"
@@ -50,7 +50,8 @@ class TestPawnMoves:
         gen = MoveGenerator(pos)
         moves = gen.generate_all()
         promotions = [m for m in moves if m.promotion]
-        assert len(promotions) == 4
+        assert len(promotions) == 1
+        assert promotions[0].promotion == PieceType.QUEEN
 
 
 class TestKnightMoves:
