@@ -1,16 +1,16 @@
 # ♟️ 5D Chess with Multiverse Time Travel
 
-一个使用 Python 实现的 **5D Chess / 多时间线国际象棋项目**。核心引擎以 canonical 4D 坐标描述空间、时间与时间线移动，并通过不可变历史棋盘、Action / The Present、RoyalRules 与 Action 级终局搜索实现完整的 5D 对局规则基础。
+一个使用 Python 实现的 **5D Chess / 多时间线国际象棋项目**。核心引擎使用 canonical 4D 坐标描述空间、时间与时间线移动，并通过不可变历史棋盘、Action / The Present、RoyalRules、Action 级终局搜索以及多棋盘 Web 界面实现完整的 5D 对局基础。
 
-> **当前状态：核心规则层已基本完成，Web 5D 交互界面已进入主界面阶段。**
+> **当前状态：核心规则、Web 5D Interaction 与 Replay / Storage v2 已完成。**
 >
-> 当前重点从规则重构转向多棋盘 Web GUI、Replay / Storage 适配，以及后续独立的本地 AI 训练工作。
+> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training` 分支中。
 
 ---
 
-## ✅ 当前已完成
+## ✅ 核心规则
 
-### Canonical 坐标与棋盘模型
+### Canonical 坐标
 
 规则层统一使用：
 
@@ -30,13 +30,11 @@ Square5D
 Vector4D(dx, dy, dt, dl)
 ```
 
-`side` 用于描述棋盘阶段，不作为额外移动轴。旧存储仍可以使用 half-move `time_point`，但规则几何统一通过 `BoardCoord` 转换。
+`side` 用于描述棋盘阶段，不作为额外移动维度。旧 half-move `time_point` 只保留在兼容 / 存储边界，规则几何使用 canonical `BoardCoord`。
 
 ### PieceMovementRules / PawnRules
 
-标准棋子的 5D 几何规则已经实现：
-
-| 棋子 | 规则 |
+| 棋子 | 5D 几何规则 |
 |---|---|
 | Rook | 恰好沿 1 个维度移动任意距离 |
 | Bishop | 恰好沿 2 个维度等距离移动 |
@@ -45,29 +43,29 @@ Vector4D(dx, dy, dt, dl)
 | Knight | 任意两维组成 `1 + 2` 跳跃 |
 | Pawn | 颜色相关的 Y / L 前进与 X-Y / T-L 捕获 |
 
-Pawn 还包含首次双步、Timeline 双步中间 Board 检查、Queen promotion 与同 Board en passant。
+Pawn 另外支持首次双步、Timeline 双步中间 Board 检查、Queen promotion 与同 Board en passant。
 
 ### PathRules / MultiverseBoardView
 
 - Rook / Bishop / Queen 使用真实 4D 路径检查。
-- 中间 Board 缺失会阻断滑动路径。
-- 中间格有棋子会阻断路径。
-- `MultiverseBoardView` 负责 `BoardCoord → Position` 解析以及 Historical / Playable Board 分类。
+- 缺失的中间 Board 会阻断滑动路径。
+- 中间格被占用会阻断路径。
+- `MultiverseBoardView` 负责 `BoardCoord → Position`、Historical / Playable Board 分类与 canonical 遍历。
 
 ### Signed Timeline L
 
-主时间线为 `L0`：
+主时间线固定为 `L0`：
 
 ```text
-White 创建的分支：L+1, L+2, ...
-Black 创建的分支：L-1, L-2, ...
+White 创建分支：L+1, L+2, ...
+Black 创建分支：L-1, L-2, ...
 ```
 
-active / inactive timeline 由 `TimelineRules` 推导，不再由单一 UI 选中时间线决定。
+active / inactive timeline 由 `TimelineRules` 推导；`active_timeline_id` 仅保留为 legacy UI 选择指针。
 
-### 真实 4D MoveGenerator / MoveValidator
+### 4D MoveGenerator / MoveValidator
 
-走子生成器已经支持：
+已支持：
 
 - 同 Board 空间移动
 - 同 Timeline 时间移动
@@ -75,20 +73,21 @@ active / inactive timeline 由 `TimelineRules` 推导，不再由单一 UI 选�
 - 不同 playable timeline 之间的 cross-timeline move
 - Pawn 的 Y / L 前进与 T-L 捕获
 
-`MoveValidator` 负责单 Move 几何、路径、目标占用与 board-local 合法性；完整 multiverse 王安全由更高层规则负责。
+`MoveValidator` 负责单 Move 的几何、路径、目标占用和 board-local 合法性；全局王安全由 `RoyalRules` 负责。
 
 ### Canonical Engine Execution
 
-Engine 执行层已经统一使用 `Move.source / Move.destination`：
+Engine 执行层统一使用 `Move.source / Move.destination`：
 
-- 普通 Move 创建 source Board successor
-- branching move 从目标历史 Board 创建新 Timeline，同时保持原历史不可变
+- 普通 Move 创建 successor Board
+- branching move 从历史目标创建新 Timeline
+- 原历史 Board 不会被原地修改
 - cross-timeline move 分别创建 source / destination successor
-- Pawn 首次移动状态、promotion、castling、en passant 均随 successor 保存
+- Pawn 首次移动状态、promotion、castling、en passant 随 successor 保存
 
 ### Action / The Present
 
-一个玩家回合不再等同于单个 Move。
+一个玩家回合是一个 `Action`，可以包含多个 `Move`：
 
 ```text
 Action
@@ -105,58 +104,42 @@ Submit Action
 
 已经实现：
 
-- `Action`
-- `ActionRules`
+- `Action` / `ActionRules`
 - `TimelineRules`
 - active / inactive timeline
 - The Present
 - required boards
 - movable / optional boards
+- `execute_action_move()`
 - 显式 `submit_action()`
 
-Board-local successor 每次 Move 都会正常推进 side，但 `current_turn_color` 只在 Action Submit 后切换。
+Board-local successor 每个 Move 都推进自己的 side，但 `current_turn_color` 只有在 Action Submit 后切换。
 
-### RoyalRules / 5D Check
+### RoyalRules / Check / Checkmate / Stalemate
 
-`RoyalRules` 会检查整个 multiverse 中的王实例与 4D 攻击关系，包括：
+`RoyalRules` 检查整个 multiverse 的 4D 攻击，包括历史 King 实例与跨时间 / 跨 Timeline 攻击。
 
-- Rook / Bishop / Queen 的 4D 滑动攻击
-- Knight 4D 跳跃
-- King 4D 邻接
-- Pawn 5D 捕获几何
-- 历史 King 实例
-- inactive timeline 上仍可作为 optional move source 的 playable Board
-- The Present 的虚拟 pass check 语义
-
-Action 只有在 The Present 推进完成且所有王安全时才能 Submit。
-
-### Checkmate / Stalemate
-
-终局已经升级为 **Action 级搜索**，不再使用“单张棋盘无合法 Move”作为 5D 终局条件。
-
-`ActionSearch` 会搜索当前玩家是否存在至少一个可以：
-
-1. 从合法 movable Board 开始；
-2. 完成所有 required Present Board；
-3. 必要时使用 future / inactive Board、branching 或 cross-timeline move；
-4. 最终推进 The Present；
-5. 通过 RoyalRules；
-6. 成功 Submit。
-
-如果不存在完整合法 Action：
+终局采用 Action 级搜索：
 
 ```text
-处于 5D Check     → CHECKMATE
-不处于 5D Check   → STALEMATE
+是否存在至少一个完整合法 Action？
+        │
+        ├─ 是 → 继续游戏
+        │
+        └─ 否
+            ├─ 当前处于 5D Check → CHECKMATE
+            └─ 当前不在 Check     → STALEMATE
 ```
+
+因此“某一张棋盘没有合法 Move”不会被错误当成整个 multiverse 的终局。
 
 ---
 
-## 🖥️ Web 5D GUI
+## 🖥️ Web 5D Interaction
 
-Web 是当前项目的**主 5D 交互界面**。Pygame GUI 仍保留为 legacy 原型，但后续不会再维护两套完整 5D 交互逻辑。
+Web 是项目的**主 5D GUI**；Pygame GUI 只保留为 legacy 原型。
 
-当前 Web 界面采用多棋盘 multiverse canvas：
+界面使用多棋盘时间线画布：
 
 ```text
 纵向：Timeline L
@@ -169,21 +152,18 @@ L0    [Board] → [Board] → [Board] → ...
 L-1        [Board] → [Board]
 ```
 
-已支持：
+当前支持：
 
 - 同屏显示所有 stored BoardCoord
-- 小棋盘按 Timeline / Time 排列
-- 紫色时间轨道与分支曲线
-- Present 高亮
-- required Board 强高亮
-- movable / inactive / historical 状态区分
+- Timeline / Time 排列的小棋盘
+- 时间轨道和分支曲线
+- Present / required / movable / inactive / historical 状态高亮
 - BoardCoord 信息查看
-- 在任意 movable Board 选择棋子
+- 从任意合法 movable Board 选择棋子
 - 跨多个 Board 同时显示合法 5D 目标
 - branching / cross-board 候选曲线
-- canonical BoardCoord API
-- PvP 中 `execute_action_move()` + 显式 `Submit Action`
-- Replay 多时间线概览基础
+- canonical BoardCoord Web API
+- PvP `execute_action_move()` + 显式 `Submit Action`
 - 棋盘缩放与 Present 定位
 
 启动：
@@ -192,7 +172,7 @@ L-1        [Board] → [Board]
 python src/main.py --web
 ```
 
-或直接：
+或者：
 
 ```bash
 python src/main.py
@@ -206,45 +186,147 @@ http://127.0.0.1:5000
 
 ---
 
+## 💾 Replay / Storage v2
+
+Replay / Storage 已迁移到 canonical v2 格式。
+
+### `.5dpgn` v2
+
+新文件写入：
+
+```text
+schema_version = 2
+format version = 2.0
+```
+
+每个 Move 以 canonical 坐标保存：
+
+```text
+Move
+├── piece
+├── source
+│   ├── BoardCoord(timeline, turn, side)
+│   ├── x
+│   └── y
+└── destination
+    ├── BoardCoord(timeline, turn, side)
+    ├── x
+    └── y
+```
+
+文件同时保存：
+
+- 完整 `move_history`
+- 完整 `action_history`
+- 每个 Action 的 starting Present
+- Action 内 Move 顺序
+- `submitted` 边界
+- 当前尚未提交的 Action
+- branching / cross-timeline 元数据
+- `created_timeline`
+- promotion / castling / en passant / capture 信息
+- 最终 TimelineManager 状态
+- `Replay Origin`
+
+### Replay Origin
+
+v2 不再假设所有棋谱都从标准初始棋盘开始。
+
+对于标准新游戏，系统会使用标准起点；如果调用方先构造自定义 multiverse / 测试局面，应在第一步 Move 前调用：
+
+```python
+GameArchive.set_replay_origin(engine)
+```
+
+这样 Replay 可以从真实起始 multiverse 严格重建整局。
+
+### Action-aware Replay
+
+Replay UI 仍然一次前进一个可见 Move，但会保留原始 Submit 边界。
+
+例如：
+
+```text
+White Action
+├── Move A   ← 此时其实已经可以 Submit
+├── Move B   ← 玩家当时选择继续走 optional future Board
+└── SUBMIT
+```
+
+Replay 时：
+
+```text
+step 1 → Move A，仍然是 White
+step 2 → Move B + 原记录的 SUBMIT，切换 Black
+```
+
+不会因为 Replay 调用旧 `execute_move()` 而提前换方。
+
+Replay 会从 Replay Origin 重建每一步精确快照，并在 v2 文件加载时验证最终重建状态与存档状态一致。
+
+### v1 文件兼容
+
+旧 `.5dpgn` v1 仍可读取。
+
+v1 没有显式 Action / Submit 信息，因此读取时会通过旧 auto-submit 行为推断 Action 边界。新文件统一写 v2，不再继续生成 v1。
+
+### MySQL canonical schema
+
+数据库 baseline schema 已同步到 v2：
+
+```text
+games
+├── total_actions
+└── archive_version
+
+timelines
+├── timeline_row_id      # DB 内部主键
+├── lane_id              # canonical signed L，可为负数
+├── parent_lane_id
+└── owner
+
+actions
+├── game_id
+├── action_index
+├── color
+├── starting_present_json
+├── submitted
+└── move_count
+
+moves
+├── action_index / move_index
+├── source_timeline / source_turn / source_side / x / y
+├── destination_timeline / destination_turn / destination_side / x / y
+├── branching / cross-timeline flags
+└── created_timeline / capture / promotion / notation
+```
+
+数据库中的 `timeline_row_id` 与规则里的 `lane_id` 已分离，因此 `L-1`、`L-2` 等 Black-created timeline 可以正常持久化。
+
+`from_time / to_time` 暂时只作为兼容 / debug hint 保留，不再是新存储格式的主语义。
+
+> **数据库兼容说明：** `.5dpgn` v1 有读取兼容层；旧版 MySQL v1 schema 没有足够的 Action / signed-L 信息进行无损自动迁移，因此当前不伪造自动迁移。已有旧数据库需要根据实际数据选择重建 v2 schema 或单独编写迁移流程。
+
+---
+
 ## 🤖 AI 状态
 
-仓库保留已有 legacy 搜索型 AI：
+仓库仍保留 legacy 搜索型 AI：
 
 - Random AI
 - Alpha-Beta AI
 - Evaluation
 - Opening Book
 
-这些 AI 目前仍主要基于早期单 Move 搜索接口，仅作为兼容功能保留。
+这些实现仍主要基于早期单 Move 搜索接口，仅作为兼容功能保留。
 
-本地模型训练、自对弈数据、模型结构与 checkpoint 管理将在独立分支：
+本地模型训练、自对弈数据、模型结构与 checkpoint 管理继续放在独立分支：
 
 ```text
 feat/local-ai-training
 ```
 
-中继续，不与当前规则 / Web GUI 开发混合。
-
----
-
-## 💾 Replay / Storage
-
-当前仓库仍包含：
-
-- `.5dpgn` 棋谱解析
-- ReplayMode
-- MySQL / SQLAlchemy 数据层
-- 异步写入模块
-
-这些模块仍有部分接口建立在早期 legacy Move / timeline 表示上。
-
-下一阶段将重点完成：
-
-- Action history 持久化
-- canonical source / destination 保存
-- branching / cross-timeline replay 一致性
-- Web multiverse Replay 适配
-- legacy 存档兼容边界整理
+规则、Web 与 Replay / Storage 主线不会直接混入本地训练实现。
 
 ---
 
@@ -273,11 +355,20 @@ src/
 │   ├── app.py
 │   ├── templates/
 │   └── static/
-├── gui/                  # legacy Pygame prototype
 ├── modes/
-├── ai/
+│   └── replay.py
 ├── data/
+│   ├── archive.py
+│   ├── pgn_parser.py
+│   ├── models.py
+│   ├── async_writer.py
+│   └── db.py
+├── gui/                  # legacy Pygame prototype
+├── ai/
 └── main.py
+
+sql/
+└── schema.sql
 ```
 
 ---
@@ -287,7 +378,7 @@ src/
 推荐：
 
 - Python 3.11
-- MySQL 8.0（数据库相关测试 / 功能）
+- MySQL 8.0（数据库存储 / CI integration）
 
 安装依赖：
 
@@ -317,7 +408,7 @@ python src/main.py --web
 
 ## 🧪 GitHub Actions
 
-当前 CI 在 Pull Request / `main` 更新时执行：
+Pull Request / `main` 更新会运行 Python 3.11 + MySQL 8.0 CI，验证：
 
 ```text
 MySQL 8.0 service
@@ -326,10 +417,14 @@ pip install -r requirements.txt
         ↓
 python -m compileall -q src
         ↓
-python -m pytest -q
+pytest
+├── 核心规则回归
+├── Web 5D Interaction
+├── Replay / Storage v2
+└── MySQL v2 schema + signed L / Action / canonical Move integration
 ```
 
-开发流程保持：
+开发流程：
 
 ```text
 feature branch
@@ -358,9 +453,10 @@ Action / The Present           ✅
 RoyalRules / 5D Check          ✅
 Checkmate / Stalemate          ✅
 Web 5D Interaction             ✅
+Replay / Storage v2            ✅
 
-Replay / Storage               ← 下一阶段
-AI Local Training              独立分支
+AI Local Training              独立分支 / 下一大阶段
+EXE                            已移出项目范围
 ```
 
 ---
