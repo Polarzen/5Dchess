@@ -6,6 +6,7 @@ stable JSON-friendly schema here.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,16 @@ from src.utils.constants import ChessColor, GameState, PieceType
 
 
 ARCHIVE_SCHEMA_VERSION = 2
+
+
+def _json_normalize(data: Any) -> Any:
+    """Return the exact JSON data model that a file round-trip will produce.
+
+    TimelineManager.to_dict() intentionally uses integer dictionary keys because
+    it is also an in-memory compatibility API. JSON object keys are strings, so
+    storage-owned snapshots normalize that difference at the boundary.
+    """
+    return json.loads(json.dumps(data, ensure_ascii=False))
 
 
 def board_coord_to_dict(coord: BoardCoord) -> dict[str, Any]:
@@ -194,14 +205,14 @@ class GameArchive:
 
     @staticmethod
     def capture_origin(engine: FiveDEngine) -> dict[str, Any]:
-        """Capture the state from which replay Move history must begin."""
-        return {
+        """Capture the JSON-canonical state from which replay history begins."""
+        return _json_normalize({
             "max_timelines": engine.max_timelines,
             "max_turns": engine.max_turns,
             "timeline_manager": engine.timeline_manager.to_dict(),
             "game_state": engine.game_state.name,
             "current_turn_color": engine.current_turn_color.value,
-        }
+        })
 
     @classmethod
     def set_replay_origin(cls, engine: FiveDEngine) -> dict[str, Any]:
@@ -219,14 +230,15 @@ class GameArchive:
 
     @classmethod
     def restore_origin(cls, data: dict[str, Any]) -> FiveDEngine:
+        normalized = _json_normalize(data)
         engine = FiveDEngine(
-            max_timelines=int(data.get("max_timelines", 32)),
-            max_turns=int(data.get("max_turns", 500)),
+            max_timelines=int(normalized.get("max_timelines", 32)),
+            max_turns=int(normalized.get("max_turns", 500)),
         )
-        engine.timeline_manager = TimelineManager.from_dict(data["timeline_manager"])
+        engine.timeline_manager = TimelineManager.from_dict(normalized["timeline_manager"])
         engine.timeline_manager.max_timelines = engine.max_timelines
-        engine.game_state = GameState[data.get("game_state", "PLAYING")]
-        engine.current_turn_color = ChessColor(data.get("current_turn_color", "white"))
+        engine.game_state = GameState[normalized.get("game_state", "PLAYING")]
+        engine.current_turn_color = ChessColor(normalized.get("current_turn_color", "white"))
         engine.move_history = []
         engine.action_history = []
         engine.move_counter = 0
@@ -234,7 +246,7 @@ class GameArchive:
             engine.current_turn_color,
             engine.timeline_manager.timelines,
         )
-        engine._replay_origin = data
+        engine._replay_origin = normalized
         return engine
 
     @classmethod
@@ -245,6 +257,8 @@ class GameArchive:
                 origin = cls.capture_origin(engine)
             else:
                 origin = cls.default_origin(engine.max_timelines, engine.max_turns)
+        else:
+            origin = _json_normalize(origin)
         return {
             "schema_version": ARCHIVE_SCHEMA_VERSION,
             "replay_origin": origin,
@@ -284,9 +298,9 @@ class GameArchive:
             if current
             else ActionRules.begin(engine.current_turn_color, engine.timeline_manager.timelines)
         )
-        engine._replay_origin = data.get("replay_origin") or cls.default_origin(
-            engine.max_timelines,
-            engine.max_turns,
+        engine._replay_origin = _json_normalize(
+            data.get("replay_origin")
+            or cls.default_origin(engine.max_timelines, engine.max_turns)
         )
         cls.validate(engine)
         return engine
