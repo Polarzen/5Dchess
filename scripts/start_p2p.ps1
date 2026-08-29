@@ -1,10 +1,7 @@
-param(
-    [int]$Port = 5000
-)
-
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $ProjectRoot
+$Port = 5000
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) {
@@ -28,21 +25,12 @@ if (-not $cloudflared) {
 }
 
 Write-Host "[5D Chess] 启动本地 Flask 服务: http://127.0.0.1:$Port"
-$server = Start-Process \
-    -FilePath $python.Source \
-    -ArgumentList @("src/main.py", "--web") \
-    -WorkingDirectory $ProjectRoot \
-    -PassThru
+$server = Start-Process -FilePath $python.Source -ArgumentList @("src/main.py", "--web") -WorkingDirectory $ProjectRoot -PassThru
 
 try {
     Start-Sleep -Seconds 2
     if ($server.HasExited) {
         throw "Flask 服务启动失败，请先运行 python src/main.py --web 查看错误。"
-    }
-
-    if ($Port -ne 5000) {
-        Write-Warning "当前 src/main.py --web 固定使用 5000 端口；已改用 5000 建立 Tunnel。"
-        $Port = 5000
     }
 
     Write-Host "[5D Chess] 正在创建 Cloudflare Quick Tunnel..."
