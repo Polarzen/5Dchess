@@ -24,13 +24,13 @@ if (-not $cloudflared) {
     $cloudflaredPath = $cloudflared.Source
 }
 
-Write-Host "[5D Chess] 启动本地 Flask 服务: http://127.0.0.1:$Port"
-$server = Start-Process -FilePath $python.Source -ArgumentList @("src/main.py", "--web") -WorkingDirectory $ProjectRoot -PassThru
+Write-Host "[5D Chess] 启动本地 P2P Flask 服务: http://127.0.0.1:$Port (debug=False)"
+$server = Start-Process -FilePath $python.Source -ArgumentList @("scripts/run_p2p_server.py") -WorkingDirectory $ProjectRoot -PassThru
 
 try {
     Start-Sleep -Seconds 2
     if ($server.HasExited) {
-        throw "Flask 服务启动失败，请先运行 python src/main.py --web 查看错误。"
+        throw "Flask 服务启动失败，请先运行 python scripts/run_p2p_server.py 查看错误。"
     }
 
     Write-Host "[5D Chess] 正在创建 Cloudflare Quick Tunnel..."
