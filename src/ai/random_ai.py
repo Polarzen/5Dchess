@@ -15,6 +15,7 @@ class RandomAI(AIPlayer):
         super().__init__(color, AIDifficulty.EASY)
 
     def choose_move(self, engine: FiveDEngine) -> Move | None:
+        self._guard_action_progress(engine)
         moves = engine.get_legal_moves()
         if not moves:
             return None

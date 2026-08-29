@@ -25,10 +25,21 @@ class AlphaBetaAI(AIPlayer):
         self._nodes_searched = 0
 
     def choose_move(self, engine: FiveDEngine) -> Move | None:
-        """Alpha-Beta 搜索选择最佳走子"""
-        position = engine.get_current_position()
-        moves = engine.get_legal_moves(position)
+        """Alpha-Beta 搜索选择最佳走子。"""
+        self._guard_action_progress(engine)
+
+        # Do not bind the AI to the legacy UI-selected timeline.  In a
+        # multi-board Action the previously selected board may already have
+        # flipped to the opponent while another Present board is still required.
+        # The engine's no-argument selector always falls forward to a required
+        # board first, which is exactly what the compatibility-path AI needs in
+        # order to finish and submit its Action.
+        moves = engine.get_legal_moves()
         if not moves:
+            return None
+
+        position = engine._resolve_position(moves[0].source.board)
+        if position is None:
             return None
 
         self._start_time = time.time()
