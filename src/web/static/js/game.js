@@ -7,6 +7,7 @@ let legalMoves = [];         // canonical Move payloads
 let focusedBoardKey = null;
 let boardZoom = 192;
 let toastTimer = null;
+let lastRuleWarning = null;
 
 const pieceSymbols = {
     K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘', P: '♙',
@@ -57,6 +58,7 @@ function backToMenu() {
     mode = null;
     clearSelection(false);
     focusedBoardKey = null;
+    lastRuleWarning = null;
     switchToScreen('menu-screen');
 }
 
@@ -82,7 +84,7 @@ async function submitAction() {
     gameState = result;
     clearSelection(false);
     updateAll();
-    showToast('Action 已提交');
+    if (!gameState.rule_warning) showToast('Action 已提交');
 
     if (mode === 'pve' && shouldRunAI()) {
         setTimeout(runAIAction, 220);
@@ -203,7 +205,7 @@ async function executeCanonicalMove(move) {
     focusedBoardKey = move.destination.board.key;
     clearSelection(false);
     updateAll();
-    showToast(move.notation || '走子完成');
+    if (!gameState.rule_warning) showToast(move.notation || '走子完成');
 
     if (shouldRunAI()) setTimeout(runAIAction, 220);
 }
@@ -274,7 +276,19 @@ function updateAll() {
     renderInspector();
     renderHistory();
     renderReplayPanel();
+    surfaceRuleWarning();
     checkGameOver();
+}
+
+function surfaceRuleWarning() {
+    const warning = gameState?.rule_warning || null;
+    if (!warning) {
+        lastRuleWarning = null;
+        return;
+    }
+    if (warning === lastRuleWarning) return;
+    lastRuleWarning = warning;
+    showToast(`规则保护：${warning}`, true);
 }
 
 function renderTopStatus() {
