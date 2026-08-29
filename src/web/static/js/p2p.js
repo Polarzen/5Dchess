@@ -4,6 +4,9 @@ const P2P_STORAGE_KEY = 'five-d-chess-p2p-session-v1';
 let p2pRoomCode = null;
 let p2pPlayerToken = null;
 let p2pPollTimer = null;
+let p2pPollInFlight = false;
+let p2pRecoveryTimer = null;
+let p2pRecoveryInFlight = false;
 
 const baseRefreshState = refreshState;
 const baseSubmitAction = submitAction;
@@ -66,7 +69,74 @@ function startP2PPolling() {
     p2pPollTimer = setInterval(pollP2PState, 1200);
 }
 
+function p2pErrorCode(result) {
+    return result?.code || result?.error || null;
+}
+
+function isStaleP2PState(result) {
+    const currentVersion = gameState?.p2p?.state_version;
+    const incomingVersion = result?.p2p?.state_version;
+    return Number.isFinite(currentVersion)
+        && Number.isFinite(incomingVersion)
+        && incomingVersion < currentVersion;
+}
+
+function applyP2PState(result) {
+    if (isStaleP2PState(result)) return false;
+    gameState = result;
+    clearSelection(false);
+    updateAll();
+    return true;
+}
+
+function isTerminalP2PError(result) {
+    return ['invalid_token', 'room_not_found', 'room_expired'].includes(p2pErrorCode(result));
+}
+
+function terminateP2PSession() {
+    stopP2PPolling();
+    if (p2pRecoveryTimer !== null) {
+        clearTimeout(p2pRecoveryTimer);
+        p2pRecoveryTimer = null;
+    }
+    clearStoredP2PSession();
+    p2pRoomCode = null;
+    p2pPlayerToken = null;
+    if (mode === 'p2p') baseBackToMenu();
+}
+
+async function recoverStoredP2PSession() {
+    if (mode === 'p2p' || p2pRecoveryInFlight) return;
+    const saved = readStoredP2PSession();
+    if (!saved) return;
+    p2pRecoveryInFlight = true;
+    try {
+        const result = await api('/api/p2p/join', 'POST', {
+            room_code: saved.room_code,
+            player_token: saved.player_token,
+        });
+        if (!result.error) {
+            enterP2PGame(result);
+            showToast(`已恢复房间 ${saved.room_code}`);
+        } else if (isTerminalP2PError(result)) {
+            terminateP2PSession();
+        } else if (p2pRecoveryTimer === null) {
+            console.warn('P2P recovery failed; retrying', p2pErrorCode(result));
+            p2pRecoveryTimer = setTimeout(() => {
+                p2pRecoveryTimer = null;
+                recoverStoredP2PSession();
+            }, 1200);
+        }
+    } finally {
+        p2pRecoveryInFlight = false;
+    }
+}
+
 function enterP2PGame(result) {
+    if (p2pRecoveryTimer !== null) {
+        clearTimeout(p2pRecoveryTimer);
+        p2pRecoveryTimer = null;
+    }
     mode = 'p2p';
     gameState = result;
     p2pRoomCode = result.room_code || result.p2p?.room_code || p2pRoomCode;
@@ -141,9 +211,7 @@ refreshState = async function() {
         showToast(result.error, true);
         return;
     }
-    gameState = result;
-    clearSelection(false);
-    updateAll();
+    applyP2PState(result);
 };
 
 canSelectSource = function(board, ch) {
@@ -192,10 +260,9 @@ executeCanonicalMove = async function(move) {
         return;
     }
 
-    gameState = result;
+    if (isStaleP2PState(result)) return;
     focusedBoardKey = move.destination.board.key;
-    clearSelection(false);
-    updateAll();
+    applyP2PState(result);
     if (!gameState.rule_warning) showToast(move.notation || '走子完成');
 };
 
@@ -207,9 +274,7 @@ submitAction = async function() {
         showToast(result.error, true);
         return;
     }
-    gameState = result;
-    clearSelection(false);
-    updateAll();
+    if (!applyP2PState(result)) return;
     if (!gameState.rule_warning) showToast('Action 已提交，等待对手');
 };
 
@@ -276,3 +341,45 @@ backToMenu = async function() {
     p2pPlayerToken = null;
     baseBackToMenu();
 };
+
+// Keep P2P transport failures recoverable.  The original API helper remains
+// the source of network/JSON behavior; this wrapper only handles terminal
+// session errors consistently across every P2P action.
+const baseP2PApi = api;
+api = async function(path, method = 'GET', body = null) {
+    const result = await baseP2PApi(path, method, body);
+    if (path.startsWith('/api/p2p/') && result.error && isTerminalP2PError(result)) {
+        terminateP2PSession();
+    }
+    return result;
+};
+
+// Override the polling routine after the legacy adapter is loaded so one
+// slow request cannot overlap the next interval and transient failures retry.
+pollP2PState = async function() {
+    if (p2pPollInFlight || mode !== 'p2p' || !p2pRoomCode || !p2pPlayerToken) return;
+    p2pPollInFlight = true;
+    const previousVersion = gameState?.p2p?.state_version;
+    const previousOpponent = Boolean(gameState?.p2p?.opponent_connected);
+    const previousWarning = gameState?.rule_warning || null;
+    try {
+        const result = await api('/api/p2p/state', 'POST', p2pCredentials());
+        if (result.error) {
+            if (!isTerminalP2PError(result)) console.warn('P2P poll failed; retrying');
+            return;
+        }
+        const nextVersion = result.p2p?.state_version;
+        const versionAdvanced = !isStaleP2PState(result);
+        const warningChanged = (result.rule_warning || null) !== previousWarning;
+        if (versionAdvanced && (nextVersion !== previousVersion || warningChanged)) {
+            applyP2PState(result);
+        }
+        if (!previousOpponent && Boolean(result.p2p?.opponent_connected) && versionAdvanced) {
+            showToast('Opponent connected');
+        }
+    } finally {
+        p2pPollInFlight = false;
+    }
+};
+
+window.addEventListener('load', recoverStoredP2PSession);

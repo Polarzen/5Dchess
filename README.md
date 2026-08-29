@@ -186,6 +186,33 @@ http://127.0.0.1:5000
 
 ---
 
+## 🌐 Online P2P / Cloudflare Tunnel
+
+在线 P2P 通过 Cloudflare Quick Tunnel 发布房主的 Web 服务；5D 引擎和对局状态始终由房主服务端权威维护。一个服务进程只开放一个房间和一个房间码：`White = host`（房主），`Black = joiner`（加入者）。
+
+Windows 下从项目根目录启动：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
+```
+
+脚本会启动 `debug=False` 的本地 Flask 服务，并创建临时的 `https://*.trycloudflare.com` Quick Tunnel。把终端显示的 HTTPS 地址发给对手，双方打开同一地址后，房主点击“创建真人房间”，对手输入房间码点击“加入真人房间”。需要手动分开启动时，可分别运行：
+
+```powershell
+python scripts/run_p2p_server.py
+cloudflared tunnel --url http://127.0.0.1:5000
+```
+
+浏览器将每位玩家的 bearer `player_token` 与房间码保存在本地；刷新或短暂断线后，使用同一房间码和令牌可以恢复原来的颜色。客户端每 1.2 秒轮询房间状态，这个轮询同时作为连接 heartbeat。服务端在 8 秒 lease 超时后把座位视为暂时离线，并保留 30 秒 reconnect grace；观察到连接状态变化时递增 `state_version`。超过 lease+grace 后，黑方座位释放，失联的房主房间也过期，不再阻塞新房间创建。
+
+对局规则与生命周期：
+
+- 对手离线时不能走子、提交 Action 或进行其他局面 mutation。
+- 白方显式返回菜单会关闭整个房间；黑方显式返回菜单会立即释放黑方座位。
+- 常见认证、房间和状态错误以 JSON 4xx 响应返回；`player_token` 不写入日志。
+
+---
+
 ## 💾 Replay / Storage v2
 
 Replay / Storage 已迁移到 canonical v2 格式。
@@ -454,6 +481,7 @@ RoyalRules / 5D Check          ✅
 Checkmate / Stalemate          ✅
 Web 5D Interaction             ✅
 Replay / Storage v2            ✅
+Online P2P / Cloudflare Tunnel ✅
 
 AI Local Training              独立分支 / 下一大阶段
 EXE                            已移出项目范围
