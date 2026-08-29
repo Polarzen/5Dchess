@@ -20,6 +20,8 @@ class HardAI(AIPlayer):
 
     def choose_move(self, engine: FiveDEngine) -> Move | None:
         """选择最佳走子"""
+        self._guard_action_progress(engine)
+
         # 1. 开局阶段尝试使用开局库
         if engine.move_counter < 10:
             book_move = self.opening_book.lookup(engine.move_history)
