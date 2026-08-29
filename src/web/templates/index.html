@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>5D Chess · Multiverse Board</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=7">
+    <link rel="stylesheet" href="/static/css/style.css?v=8">
 </head>
 <body>
 <div id="app">
@@ -17,10 +17,15 @@
             </div>
         </div>
         <div class="menu-grid">
-            <button class="menu-card primary" onclick="startGame('pvp')">
+            <button class="menu-card primary" onclick="createP2PRoom()">
                 <span class="menu-icon">♚</span>
-                <strong>真人对弈</strong>
-                <small>PvP · 完整 Action / The Present</small>
+                <strong>创建真人房间</strong>
+                <small>P2P · 房间码 · 服务器权威 Action</small>
+            </button>
+            <button class="menu-card primary" onclick="joinP2PRoom()">
+                <span class="menu-icon">⇄</span>
+                <strong>加入真人房间</strong>
+                <small>输入 6 位房间码远程对弈</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'easy')">
                 <span class="menu-icon">♞</span>
@@ -135,6 +140,7 @@
 </div>
 
 <div id="toast" role="status"></div>
-<script src="/static/js/game.js?v=7"></script>
+<script src="/static/js/game.js?v=8"></script>
+<script src="/static/js/p2p.js?v=1"></script>
 </body>
 </html>
