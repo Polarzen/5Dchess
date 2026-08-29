@@ -667,6 +667,7 @@ def get_game_state() -> dict[str, Any]:
         "present": present_payload,
         "action": action_payload,
         "in_check": in_check,
+        "rule_warning": getattr(engine, "rule_warning", None),
         "summary": summary,
         "player_color": _game_session.get("player_color"),
         "ai_difficulty": _game_session.get("ai_difficulty"),
