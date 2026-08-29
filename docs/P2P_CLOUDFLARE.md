@@ -27,6 +27,8 @@ Cloudflare Quick Tunnel 可以直接把房主的 `http://127.0.0.1:5000` 临时�
    powershell -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
    ```
 
+   启动脚本会使用专用的 `scripts/run_p2p_server.py`，明确以 `debug=False` 启动 Flask，避免把调试器暴露到公网 Tunnel。
+
 4. 等终端打印类似：
 
    ```text
@@ -35,7 +37,7 @@ Cloudflare Quick Tunnel 可以直接把房主的 `http://127.0.0.1:5000` 临时�
 
 5. 房主和对手都打开这个 HTTPS 地址。
 
-6. 房主点击 **创建真人房间**，页面会显示 6 位 `Room` 房间码。点击顶部的 `Room XXXXXXX` 可以复制房间码。
+6. 房主点击 **创建真人房间**，页面会显示 6 位 `Room` 房间码。点击顶部的 `Room XXXXXX` 可以复制房间码。
 
 7. 对手点击 **加入真人房间**，输入房间码。房主固定执白，对手固定执黑。
 
@@ -46,7 +48,7 @@ Cloudflare Quick Tunnel 可以直接把房主的 `http://127.0.0.1:5000` 临时�
 如果不使用脚本，可以开两个 PowerShell 窗口：
 
 ```powershell
-python src/main.py --web
+python scripts/run_p2p_server.py
 ```
 
 以及：
