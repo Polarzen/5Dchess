@@ -632,7 +632,7 @@ datasets/selfplay-001/metadata.json
 Copy-Item runs\run-001 D:\5dchess-backups\run-001 -Recurse
 ```
 
-不要依赖 GitHub 作为 checkpoint 存储。
+GitHub Actions checkpoint Artifact 有保留期限，不能替代永久备份；需要长期保存的权重仍应下载到独立磁盘。
 
 ## 18. 常见 Windows 问题
 
@@ -693,9 +693,103 @@ Local AI Training v2 第一版故意不包含：
 - MCTS
 - 大型 Transformer / GNN
 - 分布式训练
-- 云端长训
+- GPU 云端训练
 - 在线模型下载
 - Hugging Face pretrained model
 - 自动把 Neural AI 接进 Web Easy/Medium/Hard
 
 目标是先得到正确、可复现、可断点续训的 canonical Action training pipeline。
+
+## 20. GitHub Actions 云端 CPU 训练
+
+实验分支提供手动 workflow **Local AI Cloud Training**。操作路径：
+
+1. 打开 GitHub 仓库的 **Actions**。
+2. 选择 **Local AI Cloud Training**，点击 **Run workflow**。
+3. Branch 选择 `feat/local-ai-training-v2`，填写参数后再次点击 **Run workflow**。
+
+workflow 只支持 `workflow_dispatch`，不会因 push、pull request 或 schedule 自动长训。它固定使用
+GitHub 标准 `ubuntu-24.04`、Python 3.11 和 PyTorch 官方 CPU wheel；没有 CUDA，也不会下载外部模型。
+run 开始后，self-play、训练、Arena 和 Artifact 上传均由 GitHub-hosted runner 完成，因此浏览器和本地电脑可以关闭。
+
+### 参数与推荐组合
+
+`target_epochs` 是**目标总 epoch**。首次训练填 `2` 会训练到 epoch 2；从 epoch 2 的 Artifact
+续训到 epoch 3 应填 `3`，不是填 `1`。云端固定 `device=cpu`。其余输入包括 `games`、
+`teacher`（`easy/medium/hard/mixed`）、`batch_size`、模型 `preset`（`tiny/small/medium`）、
+`seed`、`max_actions`、Arena 开关/对手/局数、dataset 是否保留，以及跨 run 的
+`resume_run_id` / `resume_artifact`。输入在运行前 fail closed 校验；不会接受外部 checkpoint URL。
+
+推荐组合（可按实际 CPU 吞吐调整）：
+
+| 名称 | games / teacher | preset / target epochs | Arena | 用途 |
+|---|---|---|---|---|
+| `cloud-tiny` | 2–20 / easy | tiny / 2–5 | easy 2–4 | Actions 与 resume 验证 |
+| `cloud-small` | 约 100 / mixed | small / 约 20 | easy/medium 20 | 首次普通云训练 |
+| `cloud-long` | 按实测吞吐 / mixed | small 或 medium / 较高总目标 | 20–100 | 充分利用单次 runner |
+
+Easy、Medium、Hard、mixed 都通过 canonical `ActionPlanner` 产生完整合法 Action candidates。
+Hard 的 canonical reply search 明显更耗 CPU；长 run 前先用 tiny/small 测出单局时间。
+
+### 为什么不是“训练六小时”
+
+GitHub-hosted job 有硬执行上限。workflow 给 self-play job 330 分钟、train job 350 分钟、Arena job
+180 分钟，但程序内部预算分别最多约 300、320（5 小时 20 分）和 150 分钟。程序用单调时钟在
+安全边界主动停止，保存 metadata、`last`/`best`、报告并正常退出，再为 teardown 和 Artifact 上传
+保留约 30 分钟。不要把内部预算改为 360 分钟并依赖 runner 强杀。
+
+Self-play 达到预算会完成当前 game，保留已完成 NPZ shards，并在 dataset metadata 写入
+`generation_stop_reason=wall_time_budget`。训练在安全 batch/epoch 边界停止，始终刷新 `last`，
+并在 training summary/checkpoint metadata 记录 `stop_reason=wall_time_budget`。本地 CLI 不传
+`--max-wall-seconds` 时仍然无限制，Windows CPU/CUDA 用法不变。
+
+### Artifact、Summary 与保留期限
+
+每个 run 使用稳定名称：
+
+- `local-ai-dataset-<run_id>`：本 run 的 NPZ shards 和 metadata；`retain_dataset=false` 保留 1 天，
+  `true` 保留 7 天。
+- `local-ai-checkpoint-<run_id>`：保留 30 天；只含 `best/`、`last/`、`history.jsonl`、
+  `run-config.json`。`best/last` 各自包含 `model.safetensors`、
+  `metadata.json` 和项目生成的 trusted `resume_state.pt`。
+- `local-ai-report-<run_id>`：运行报告，包含 workflow inputs、hardware、dataset metadata、训练摘要和
+  （启用时）Arena result。
+
+页面的 Step Summary 展示 branch/SHA、请求/生成 games、sample 数、模型参数量、epoch/global step
+起止值、loss/accuracy、best epoch、elapsed/stop reason、Arena W/D/L 与 illegal/stale/budget counts，
+并直接提示下一次应填的 `resume_run_id`。并发组按 workflow+branch 隔离，`cancel-in-progress=false`；
+新 run 不会取消正在保存 checkpoint 的旧 run。若不再需要某个长 run，应在 Actions 页面手动取消；
+被平台强制取消时无法保证最后一次尚未上传的 checkpoint 可取回。
+
+### 跨 Actions Run 续训
+
+将 `resume_run_id` 设置为先前成功 run 的数字 ID；默认下载
+`local-ai-checkpoint-<resume_run_id>`。只有需要覆盖默认名称时才填写 `resume_artifact`。下载只允许
+同一 `Polarzen/5Dchess` repository 的官方 Actions Artifact。metadata、版本、model config、
+`model.safetensors` 或 `resume_state.pt` 任一缺失/不兼容都会失败，不会静默从头开始。
+
+常见错误：
+
+- `Artifact not found`：检查 run ID、Artifact 名称和 30 天 retention，或确认旧 run 是否成功上传。
+- `version mismatch` / `model config mismatch`：不要混用其他分支、旧 schema 或不同 preset；重新从兼容
+  checkpoint 开始。
+- dataset 已过期：每次 resume 默认重新生成本 run dataset，不依赖旧 dataset 的 Linux 绝对路径。
+- storage 不足：减少 games、关闭 dataset 长保留，或删除不再需要的历史 Artifact。
+
+### 下载到 Windows 后继续 CUDA 训练
+
+在 Actions run 页面下载 `local-ai-checkpoint-<run_id>.zip`，解压到例如
+`runs/cloud-<runid>/`，使其中存在 `last/metadata.json`、`last/model.safetensors` 和
+`last/resume_state.pt`。准备一个新的本地 dataset 后，最短续训命令是：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\training\resume_training.ps1 `
+    -Dataset "datasets\selfplay-local" `
+    -Run "runs\cloud-<runid>" `
+    -Checkpoint "runs\cloud-<runid>\last" `
+    -Epochs 100 `
+    -Device auto
+```
+
+`-Device auto` 会在已按 PyTorch 官方 selector 安装 NVIDIA CUDA build 时使用 CUDA，否则使用 CPU。
+checkpoint 不把 Actions 的 Linux dataset 绝对路径作为恢复依赖。

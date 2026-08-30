@@ -11,6 +11,7 @@ on:
       - "tests/training/**"
       - "requirements-training.txt"
       - ".github/workflows/training-ci.yml"
+      - ".github/workflows/local-ai-train.yml"
   workflow_dispatch:
 
 permissions:

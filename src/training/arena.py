@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import time
 from typing import Sequence
 
 from src.ai.action_planner import ActionSearchBudget, apply_action_plan
@@ -36,12 +37,28 @@ def evaluate_arena(
     seed: int,
     max_actions: int = 120,
     budget: ActionSearchBudget | None = None,
+    max_wall_seconds: float | None = None,
+    output: str = "text",
 ) -> dict:
-    if games < 1:
+    if isinstance(games, bool) or not isinstance(games, int) or games < 1:
         raise ValueError("games must be at least 1")
-    seed_everything(seed)
+    if isinstance(max_actions, bool) or not isinstance(max_actions, int) or not 1 <= max_actions <= 1000:
+        raise ValueError("max_actions must be an integer in the range 1..1000")
+    if max_wall_seconds is not None:
+        if isinstance(max_wall_seconds, bool) or not isinstance(max_wall_seconds, (int, float)):
+            raise ValueError("max_wall_seconds must be a non-negative number or null")
+        if float(max_wall_seconds) < 0.0:
+            raise ValueError("max_wall_seconds must be non-negative")
+    output = str(output).lower()
+    if output not in {"text", "json"}:
+        raise ValueError("output must be text or JSON")
+    quiet = output == "json"
+    # NumPy requires an unsigned seed; cloud workflow inputs intentionally
+    # allow signed decimal values.
+    seed_everything(int(seed) % (2**32))
     device = resolve_device(device_name)
-    print_device_report(device_name)
+    if not quiet:
+        print_device_report(device_name)
     model, metadata = load_checkpoint(checkpoint, device=device)
     budget = budget or ActionSearchBudget(
         max_states=256, max_actions=16, max_move_depth=32, max_seconds=0.5
@@ -51,8 +68,17 @@ def evaluate_arena(
     illegal = stale_failures = budget_terminations = 0
     action_counts: list[int] = []
     inference_times: list[float] = []
+    started = time.monotonic()
+    games_played = 0
 
     for game_index in range(games):
+        if (
+            max_wall_seconds is not None
+            and games_played > 0
+            and time.monotonic() - started >= float(max_wall_seconds)
+        ):
+            budget_terminations += 1
+            break
         neural_color = ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
         engine = FiveDEngine()
         neural = NeuralPolicyValueAgent(
@@ -93,6 +119,7 @@ def evaluate_arena(
             budget_terminations += 1
 
         action_counts.append(completed_actions)
+        games_played += 1
         if failed:
             losses += 1
         elif engine.game_state == GameState.CHECKMATE:
@@ -108,12 +135,13 @@ def evaluate_arena(
             # evaluation termination, not a fabricated win/loss.
             draws += 1
 
-        print(
-            f"arena game {game_index + 1}/{games}: neural={neural_color.value} "
-            f"actions={completed_actions} state={engine.game_state.name}"
-        )
+        if not quiet:
+            print(
+                f"arena game {game_index + 1}/{games}: neural={neural_color.value} "
+                f"actions={completed_actions} state={engine.game_state.name}"
+            )
 
-    total = games
+    total = games_played
     result = {
         "checkpoint": str(Path(checkpoint).resolve()),
         "opponent": opponent,
@@ -121,8 +149,8 @@ def evaluate_arena(
         "wins": wins,
         "draws": draws,
         "losses": losses,
-        "win_rate": wins / total,
-        "draw_rate": draws / total,
+        "win_rate": wins / max(1, total),
+        "draw_rate": draws / max(1, total),
         "average_actions": sum(action_counts) / max(1, len(action_counts)),
         "illegal_action_count": illegal,
         "stale_failure_count": stale_failures,
@@ -131,8 +159,10 @@ def evaluate_arena(
             sum(inference_times) / len(inference_times) if inference_times else 0.0
         ),
         "checkpoint_epoch": metadata.get("epoch"),
+        "games_requested": games,
     }
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if not quiet:
+        print(json.dumps(result, indent=2, sort_keys=True))
     return result
 
 
@@ -148,6 +178,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planner-actions", type=int, default=16)
     parser.add_argument("--planner-moves", type=int, default=32)
     parser.add_argument("--planner-seconds", type=float, default=0.5)
+    parser.add_argument("--max-wall-seconds", type=float, default=None)
+    parser.add_argument(
+        "--output",
+        choices=["text", "JSON", "json"],
+        default="text",
+        help="output format; JSON emits one machine-readable result object",
+    )
     return parser
 
 
@@ -166,7 +203,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_move_depth=args.planner_moves,
             max_seconds=args.planner_seconds,
         ),
+        max_wall_seconds=args.max_wall_seconds,
+        output=args.output,
     )
+    if str(args.output).lower() == "json":
+        print(json.dumps(result, indent=2, sort_keys=True))
     return 1 if (result["illegal_action_count"] or result["stale_failure_count"]) else 0
 
 

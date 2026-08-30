@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 import random
+import time
 from typing import Sequence
 
 from src.ai.action_planner import (
@@ -21,7 +22,7 @@ from src.engine.engine import FiveDEngine
 from src.training.config import PlannerConfig
 from src.training.dataset import DatasetWriter, TrainingSample
 from src.training.encoding import EncodedCandidates, EncodedState, encode_candidates, encode_state
-from src.training.utils import seed_everything
+from src.training.utils import seed_everything, write_json
 from src.utils.constants import ChessColor, GameState
 
 
@@ -155,10 +156,24 @@ def generate_selfplay(
     shard_size: int = 256,
     resume: bool = False,
     deterministic_planner: bool = False,
+    max_wall_seconds: float | None = None,
 ) -> dict:
-    if games < 1:
-        raise ValueError("games must be at least 1")
-    seed_everything(seed)
+    if isinstance(games, bool) or not isinstance(games, int) or not 1 <= games <= 5000:
+        raise ValueError("games must be an integer in the range 1..5000")
+    if isinstance(max_actions, bool) or not isinstance(max_actions, int) or not 1 <= max_actions <= 1000:
+        raise ValueError("max_actions must be an integer in the range 1..1000")
+    teacher = str(teacher).lower().strip()
+    if teacher not in {"easy", "medium", "hard", "mixed"}:
+        raise ValueError("teacher must be easy, medium, hard, or mixed")
+    if max_wall_seconds is not None:
+        if isinstance(max_wall_seconds, bool) or not isinstance(max_wall_seconds, (int, float)):
+            raise ValueError("max_wall_seconds must be a non-negative number or null")
+        if max_wall_seconds < 0:
+            raise ValueError("max_wall_seconds must be non-negative")
+    # NumPy's seed API is unsigned while the cloud contract deliberately
+    # accepts signed decimal seeds.  Preserve the user-visible seed in
+    # metadata but map it deterministically for the underlying RNGs.
+    seed_everything(int(seed) % (2**32))
     rng = random.Random(seed)
     generator_config = {
         "games_requested": int(games),
@@ -167,6 +182,8 @@ def generate_selfplay(
         "planner": planner_config.to_dict(),
         "deterministic_planner": bool(deterministic_planner),
     }
+    if max_wall_seconds is not None:
+        generator_config["max_wall_seconds"] = float(max_wall_seconds)
     writer = DatasetWriter(
         output,
         generator_config=generator_config,
@@ -177,6 +194,9 @@ def generate_selfplay(
     start_game_id = writer.game_count
     teacher_counts = {"easy": 0, "medium": 0, "hard": 0}
     termination_counts: dict[str, int] = {}
+    started = time.monotonic()
+    games_generated = 0
+    stop_reason = "completed"
     try:
         for local_game in range(games):
             game_id = start_game_id + local_game
@@ -251,20 +271,49 @@ def generate_selfplay(
                     )
                 )
             writer.finish_game()
+            games_generated += 1
             termination_counts[termination_reason] = termination_counts.get(termination_reason, 0) + 1
             print(
                 f"self-play game {local_game + 1}/{games}: "
                 f"actions={len(pending)} termination={termination_reason}"
             )
+            # A game is the smallest safe self-play commit unit.  Do not
+            # interrupt an in-progress engine episode; DatasetWriter has now
+            # recorded the completed game and its metadata before we stop.
+            if (
+                max_wall_seconds is not None
+                and time.monotonic() - started >= float(max_wall_seconds)
+                and games_generated < games
+            ):
+                stop_reason = "wall_time_budget"
+                break
     finally:
         writer.close()
 
+    elapsed = max(0.0, time.monotonic() - started)
+    # Keep the status in the dataset itself so a workflow can inspect an
+    # artifact without trusting stdout.  This write happens after close(),
+    # which means pending shard data and the status are both durable.
+    writer.metadata["games_requested"] = int(games)
+    writer.metadata["games_generated"] = int(games_generated)
+    writer.metadata["requested_games"] = int(games)
+    writer.metadata["generated_games"] = int(games_generated)
+    writer.metadata["samples"] = int(writer.metadata["sample_count"])
+    writer.metadata["generation_stop_reason"] = stop_reason
+    writer.metadata["generation_elapsed_seconds"] = float(elapsed)
+    write_json(writer.metadata_path, writer.metadata)
+
     result = {
         "output": str(Path(output)),
-        "games_generated": games,
+        "games_requested": int(games),
+        "games_generated": int(games_generated),
         "sample_count": writer.metadata["sample_count"],
+        "samples": writer.metadata["sample_count"],
         "teacher_counts": teacher_counts,
         "termination_counts": termination_counts,
+        "elapsed_seconds": float(elapsed),
+        "stop_reason": stop_reason,
+        "generation_stop_reason": stop_reason,
     }
     print(result)
     return result
@@ -283,6 +332,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planner-moves", type=int, default=32)
     parser.add_argument("--planner-seconds", type=float, default=0.5)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--max-wall-seconds",
+        type=float,
+        default=None,
+        help="stop after the current completed game (default: unlimited)",
+    )
     parser.add_argument(
         "--deterministic-planner",
         action="store_true",
@@ -310,6 +365,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             shard_size=args.shard_size,
             resume=args.resume,
             deterministic_planner=args.deterministic_planner,
+            max_wall_seconds=args.max_wall_seconds,
         )
     except KeyboardInterrupt:
         print("self-play interrupted; completed shards remain readable")

@@ -1,0 +1,404 @@
+name: Local AI Cloud Training
+
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: Canonical self-play games (1..5000)
+        required: true
+        type: number
+        default: 100
+      teacher:
+        description: Canonical teacher; Hard is substantially slower on CPU
+        required: true
+        type: choice
+        options: [easy, medium, hard, mixed]
+        default: mixed
+      target_epochs:
+        description: Total target epoch, including epochs already completed by resume
+        required: true
+        type: number
+        default: 20
+      batch_size:
+        description: CPU training batch size (1..2048)
+        required: true
+        type: number
+        default: 64
+      preset:
+        description: PolicyValueModel preset
+        required: true
+        type: choice
+        options: [tiny, small, medium]
+        default: small
+      seed:
+        description: Signed integer random seed
+        required: true
+        type: string
+        default: "42"
+      max_actions:
+        description: Maximum complete Actions per self-play/Arena game (1..1000)
+        required: true
+        type: number
+        default: 120
+      run_arena:
+        description: Run canonical Arena from this run's best checkpoint
+        required: true
+        type: boolean
+        default: true
+      arena_opponent:
+        description: Canonical Arena opponent
+        required: true
+        type: choice
+        options: [easy, medium, hard]
+        default: easy
+      arena_games:
+        description: Arena games, alternating neural White/Black (0..500)
+        required: true
+        type: number
+        default: 20
+      retain_dataset:
+        description: Keep dataset Artifact 7 days instead of 1 day
+        required: true
+        type: boolean
+        default: false
+      resume_run_id:
+        description: Prior successful run ID in this repository; blank starts fresh
+        required: false
+        type: string
+        default: ""
+      resume_artifact:
+        description: Optional explicit checkpoint Artifact name for resume_run_id
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: local-ai-cloud-training-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate bounded cloud inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate and record workflow inputs
+        env:
+          INPUT_GAMES: ${{ inputs.games }}
+          INPUT_TEACHER: ${{ inputs.teacher }}
+          INPUT_TARGET_EPOCHS: ${{ inputs.target_epochs }}
+          INPUT_BATCH_SIZE: ${{ inputs.batch_size }}
+          INPUT_PRESET: ${{ inputs.preset }}
+          INPUT_SEED: ${{ inputs.seed }}
+          INPUT_MAX_ACTIONS: ${{ inputs.max_actions }}
+          INPUT_RUN_ARENA: ${{ inputs.run_arena }}
+          INPUT_ARENA_OPPONENT: ${{ inputs.arena_opponent }}
+          INPUT_ARENA_GAMES: ${{ inputs.arena_games }}
+          INPUT_RETAIN_DATASET: ${{ inputs.retain_dataset }}
+          INPUT_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          INPUT_RESUME_ARTIFACT: ${{ inputs.resume_artifact }}
+        run: |
+          mkdir -p _work/inputs
+          python -m src.training.cloud validate \
+            --games "$INPUT_GAMES" \
+            --teacher "$INPUT_TEACHER" \
+            --target-epochs "$INPUT_TARGET_EPOCHS" \
+            --batch-size "$INPUT_BATCH_SIZE" \
+            --preset "$INPUT_PRESET" \
+            --seed "$INPUT_SEED" \
+            --max-actions "$INPUT_MAX_ACTIONS" \
+            --run-arena "$INPUT_RUN_ARENA" \
+            --arena-opponent "$INPUT_ARENA_OPPONENT" \
+            --arena-games "$INPUT_ARENA_GAMES" \
+            --retain-dataset "$INPUT_RETAIN_DATASET" \
+            --resume-run-id "$INPUT_RESUME_RUN_ID" \
+            --resume-artifact "$INPUT_RESUME_ARTIFACT" \
+            --run-id "${{ github.run_id }}" \
+            --selfplay-wall-seconds 18000 \
+            --train-wall-seconds 19200 \
+            --arena-wall-seconds 9000 \
+            > _work/inputs/workflow-inputs.json
+
+      - name: Upload validated input report part
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-report-part-inputs-${{ github.run_id }}
+          path: _work/inputs/workflow-inputs.json
+          retention-days: 1
+          if-no-files-found: error
+
+  selfplay:
+    name: Canonical CPU self-play
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+
+      - name: Install game and CPU training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+
+      - name: Generate canonical self-play dataset within five-hour budget
+        env:
+          INPUT_GAMES: ${{ inputs.games }}
+          INPUT_TEACHER: ${{ inputs.teacher }}
+          INPUT_SEED: ${{ inputs.seed }}
+          INPUT_MAX_ACTIONS: ${{ inputs.max_actions }}
+        run: |
+          python -m src.training.selfplay \
+            --games "$INPUT_GAMES" \
+            --teacher "$INPUT_TEACHER" \
+            --output _work/dataset \
+            --seed "$INPUT_SEED" \
+            --max-actions "$INPUT_MAX_ACTIONS" \
+            --max-wall-seconds 18000
+          mkdir -p _work/selfplay-report
+          cp _work/dataset/metadata.json _work/selfplay-report/dataset-metadata.json
+
+      - name: Upload short-lived dataset
+        if: ${{ !inputs.retain_dataset }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-dataset-${{ github.run_id }}
+          path: _work/dataset
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload retained dataset
+        if: ${{ inputs.retain_dataset }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-dataset-${{ github.run_id }}
+          path: _work/dataset
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload self-play report part
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-report-part-selfplay-${{ github.run_id }}
+          path: _work/selfplay-report/dataset-metadata.json
+          retention-days: 1
+          if-no-files-found: error
+
+  train:
+    name: CPU policy/value training
+    needs: [validate, selfplay]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+
+      - name: Install game and CPU training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+
+      - name: Download this run's dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-dataset-${{ github.run_id }}
+          path: _work/dataset
+
+      - name: Download trusted checkpoint from prior run
+        if: ${{ inputs.resume_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.resume_artifact != '' && inputs.resume_artifact || format('local-ai-checkpoint-{0}', inputs.resume_run_id) }}
+          path: _work/resume
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.resume_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate prior checkpoint and train to total target epoch
+        env:
+          INPUT_TARGET_EPOCHS: ${{ inputs.target_epochs }}
+          INPUT_BATCH_SIZE: ${{ inputs.batch_size }}
+          INPUT_PRESET: ${{ inputs.preset }}
+          INPUT_SEED: ${{ inputs.seed }}
+          INPUT_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        run: |
+          resume_args=()
+          if [[ -n "$INPUT_RESUME_RUN_ID" ]]; then
+            python -m src.training.cloud check-resume --checkpoint _work/resume/last --preset "$INPUT_PRESET"
+            python -m src.training.cloud check-resume --checkpoint _work/resume/best --preset "$INPUT_PRESET"
+            mkdir -p _work/run
+            cp -R _work/resume/best _work/run/best
+            resume_args=(--resume _work/resume/last)
+          fi
+          python -m src.training.train \
+            --dataset _work/dataset \
+            --output _work/run \
+            --epochs "$INPUT_TARGET_EPOCHS" \
+            --batch-size "$INPUT_BATCH_SIZE" \
+            --preset "$INPUT_PRESET" \
+            --seed "$INPUT_SEED" \
+            --device cpu \
+            --num-workers 2 \
+            --save-every 5 \
+            --no-mixed-precision \
+            --max-wall-seconds 19200 \
+            "${resume_args[@]}"
+
+      - name: Record CPU hardware and Torch build
+        run: |
+          mkdir -p _work/train-report
+          python -c "from src.training.utils import device_report,write_json; write_json('_work/train-report/hardware.json', device_report('cpu'))"
+          cp _work/run/training-summary.json _work/train-report/training-summary.json
+
+      - name: Upload stable checkpoint Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-checkpoint-${{ github.run_id }}
+          path: |
+            _work/run/best
+            _work/run/last
+            _work/run/history.jsonl
+            _work/run/run-config.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload training report part
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-report-part-training-${{ github.run_id }}
+          path: _work/train-report
+          retention-days: 1
+          if-no-files-found: error
+
+  arena:
+    name: Canonical Arena safety gate
+    if: ${{ inputs.run_arena && inputs.arena_games > 0 }}
+    needs: train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+
+      - name: Install game and CPU training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+
+      - name: Download this run's checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-${{ github.run_id }}
+          path: _work/checkpoint
+
+      - name: Run Arena and fail on illegal or stale application
+        env:
+          INPUT_ARENA_OPPONENT: ${{ inputs.arena_opponent }}
+          INPUT_ARENA_GAMES: ${{ inputs.arena_games }}
+          INPUT_SEED: ${{ inputs.seed }}
+          INPUT_MAX_ACTIONS: ${{ inputs.max_actions }}
+        run: |
+          mkdir -p _work/arena-report
+          python -m src.training.arena \
+            --checkpoint _work/checkpoint/best \
+            --opponent "$INPUT_ARENA_OPPONENT" \
+            --games "$INPUT_ARENA_GAMES" \
+            --device cpu \
+            --seed "$INPUT_SEED" \
+            --max-actions "$INPUT_MAX_ACTIONS" \
+            --max-wall-seconds 9000 \
+            --output json \
+            > _work/arena-report/arena-result.json
+
+      - name: Upload Arena report part
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-report-part-arena-${{ github.run_id }}
+          path: _work/arena-report/arena-result.json
+          retention-days: 1
+          if-no-files-found: error
+
+  report:
+    name: Publish training report and Step Summary
+    if: ${{ always() && needs.train.result == 'success' && (needs.arena.result == 'success' || needs.arena.result == 'skipped') }}
+    needs: [validate, selfplay, train, arena]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download report parts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: local-ai-report-part-*-${{ github.run_id }}
+          path: _work/report-input
+          merge-multiple: true
+
+      - name: Build report and GitHub Step Summary
+        run: |
+          python -m src.training.cloud report \
+            --input-dir _work/report-input \
+            --output-dir _work/report \
+            --run-id "${{ github.run_id }}" \
+            --branch "${{ github.ref_name }}" \
+            --sha "${{ github.sha }}" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-report-${{ github.run_id }}
+          path: _work/report
+          retention-days: 30
+          if-no-files-found: error
