@@ -4,6 +4,10 @@
 """
 from src.utils.constants import ChessColor, PieceType, PIECE_VALUES, BOARD_SIZE
 from src.engine.board import Position
+from src.engine.action import ActionRules
+from src.engine.multiverse import MultiverseBoardView
+from src.engine.royal_rules import RoyalRules
+from src.engine.timeline_rules import TimelineRules
 from src.engine.move_validator import MoveValidator
 
 
@@ -114,6 +118,72 @@ class Evaluator:
             score = -score
         return score
 
+    def evaluate_engine(self, engine, perspective: ChessColor = ChessColor.WHITE) -> float:
+        """Evaluate the current multiverse at the Action boundary.
+
+        Only playable/frontier boards contribute material and positional value;
+        historical boards are intentionally excluded from the ordinary board
+        score.  Timeline activity, the current Present, Action progress,
+        canonical mobility, and RoyalRules check state provide the small
+        multiverse terms around that frontier score.
+        """
+        timelines = engine.timeline_manager.timelines
+        view = MultiverseBoardView(timelines)
+        frontiers = tuple(view.iter_boards(playable_only=True))
+        score = 0.0
+
+        for board in frontiers:
+            score += self._material_score(board.position)
+            score += self._positional_score(board.position)
+
+        # The creator count is a compact, deterministic measure of active
+        # timeline control.  It is deliberately small beside material.
+        active_frontiers = tuple(view.iter_boards(
+            active_only=True,
+            playable_only=True,
+        ))
+        counts = TimelineRules.creator_counts(timelines)
+        score += (counts[ChessColor.WHITE] - counts[ChessColor.BLACK]) * 0.15
+        for frontier in active_frontiers:
+            owner = timelines[frontier.coord.timeline].owner
+            if owner == ChessColor.WHITE:
+                score += 0.05
+            elif owner == ChessColor.BLACK:
+                score -= 0.05
+
+        # Mobility is obtained through the engine's canonical board/action API
+        # rather than by creating a second legality implementation.
+        action = engine._ensure_current_action()
+        movable = ActionRules.movable_boards(action, timelines)
+        current_mobility = 0
+        for board in movable:
+            position = engine._resolve_position(board)
+            if position is None:
+                continue
+            current_mobility += len(engine.get_legal_moves(position))
+        if engine.current_turn_color == ChessColor.WHITE:
+            score += current_mobility * 0.05
+        else:
+            score -= current_mobility * 0.05
+
+        present = engine.get_present()
+        if present is not None:
+            score += 0.15 if present.side == ChessColor.WHITE else -0.15
+        if action.moves:
+            score += 0.02 * len(action.moves) * (
+                1 if action.color == ChessColor.WHITE else -1
+            )
+
+        royal = RoyalRules(timelines)
+        if royal.is_in_check(ChessColor.BLACK):
+            score += 0.5
+        if royal.is_in_check(ChessColor.WHITE):
+            score -= 0.5
+
+        if perspective == ChessColor.BLACK:
+            score = -score
+        return score
+
     def _material_score(self, position: Position) -> float:
         """子力价值分数（白方视角）"""
         score = 0.0
@@ -163,3 +233,11 @@ class Evaluator:
         if self.validator.is_king_in_check(position, ChessColor.WHITE):
             score -= 0.5
         return score
+
+
+def evaluate_engine(engine, perspective: ChessColor = ChessColor.WHITE) -> float:
+    """Module-level convenience wrapper for multiverse evaluation."""
+    return Evaluator().evaluate_engine(engine, perspective)
+
+
+__all__ = ["Evaluator", "evaluate_engine"]

@@ -8,6 +8,7 @@ let focusedBoardKey = null;
 let boardZoom = 192;
 let toastTimer = null;
 let lastRuleWarning = null;
+let aiRequestInFlight = false;
 
 const pieceSymbols = {
     K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘', P: '♙',
@@ -26,7 +27,7 @@ async function api(path, method = 'GET', body = null) {
         return data;
     } catch (error) {
         console.error('API error', error);
-        return { error: error.message };
+        return { error: error.message, network_error: true };
     }
 }
 
@@ -47,15 +48,20 @@ async function startGame(nextMode, difficulty = 'medium') {
         return;
     }
     gameState = result;
+    aiRequestInFlight = false;
     clearSelection(false);
     switchToScreen('game-screen');
     updateAll();
     requestAnimationFrame(scrollToCurrent);
+    if (nextMode === 'pve' && shouldRunAI()) {
+        setTimeout(runAIAction, 220);
+    }
 }
 
 function backToMenu() {
     gameState = null;
     mode = null;
+    aiRequestInFlight = false;
     clearSelection(false);
     focusedBoardKey = null;
     lastRuleWarning = null;
@@ -101,18 +107,29 @@ function shouldRunAI() {
 }
 
 async function runAIAction() {
-    if (!shouldRunAI()) return;
+    if (!shouldRunAI() || aiRequestInFlight) return;
+    aiRequestInFlight = true;
     const info = document.getElementById('game-info');
-    if (info) info.textContent = 'AI 正在完成 Action…';
-    const result = await api('/api/game/ai_move', 'POST', {});
-    if (result.error) {
-        showToast(`AI：${result.error}`, true);
-        await refreshState();
-        return;
+    try {
+        if (info) info.textContent = 'AI 正在完成 Action…';
+        const result = await api('/api/game/ai_move', 'POST', {});
+        if (result.error) {
+            // The server includes state on bounded AI failures. Do not retry
+            // automatically, especially when the failure is a network error.
+            if (result.mode) {
+                gameState = result;
+                clearSelection(false);
+                updateAll();
+            }
+            showToast(`AI：${result.error}`, true);
+            return;
+        }
+        gameState = result;
+        clearSelection(false);
+        updateAll();
+    } finally {
+        aiRequestInFlight = false;
     }
-    gameState = result;
-    clearSelection(false);
-    updateAll();
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +224,6 @@ async function executeCanonicalMove(move) {
     updateAll();
     if (!gameState.rule_warning) showToast(move.notation || '走子完成');
 
-    if (shouldRunAI()) setTimeout(runAIAction, 220);
 }
 
 function clearSelection(render = true) {
@@ -561,7 +577,9 @@ function renderActionPanel() {
     }
 
     const submit = document.getElementById('submit-action-btn');
-    submit.disabled = mode !== 'pvp' || !action.can_submit || gameState.game_state !== 'PLAYING';
+    const playerTurn = mode !== 'pve' || gameState.turn === gameState.player_color;
+    submit.disabled = !['pvp', 'pve'].includes(mode) ||
+        !action.can_submit || !playerTurn || gameState.game_state !== 'PLAYING';
     submit.classList.toggle('hidden', mode === 'replay');
 
     const help = document.getElementById('action-help');
@@ -572,7 +590,11 @@ function renderActionPanel() {
                 ? '红框棋盘必须继续推进；只有 The Present 到达对手且 RoyalRules 安全时才能提交。'
                 : '选择橙色可行动棋盘上的棋子。';
     } else if (mode === 'pve') {
-        help.textContent = 'PvE 暂沿用现有 AI 兼容路径；本地训练与 Action 级 AI 将在独立分支继续。';
+        help.textContent = action.can_submit && playerTurn
+            ? '可以提交当前 Action；提交后 AI 将完成自己的完整 Action。'
+            : playerTurn
+                ? '红框棋盘必须继续推进；完成后才能提交当前 Action。'
+                : 'AI 正在处理自己的 Action。';
     } else {
         help.textContent = 'Replay 模式展示当前回放状态中的全部时间线棋盘。';
     }
