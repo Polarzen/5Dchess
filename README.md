@@ -212,21 +212,33 @@ Windows 下从项目根目录启动：
 powershell -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
 ```
 
-脚本会启动 `debug=False` 的本地 Flask 服务，并创建临时的 `https://*.trycloudflare.com` Quick Tunnel。把终端显示的 HTTPS 地址发给对手，双方打开同一地址后，房主点击“创建在线房间”，对手输入房间码点击“加入在线房间”。需要手动分开启动时，可分别运行：
+脚本会启动 `debug=False` 的本地 Flask 服务，并创建临时的 `https://*.trycloudflare.com` Quick Tunnel。房主打开终端显示的 HTTPS 地址并点击“创建在线房间”后，顶部会出现“复制邀请链接”。点击后可直接得到类似：
+
+```text
+https://example.trycloudflare.com/?room=ABC123
+```
+
+把这一条链接发给对手即可，不再需要把 Quick Tunnel URL 和 6 位房间码分两次发送。加入者打开邀请链接后，主页会识别合法 `room` 参数并显示“加入在线房间 ABC123”；只有加入者明确点击后才会尝试占用 Black 席位。没有邀请参数时，原来的手动输入 6 位房间码流程继续可用。需要手动分开启动时，可分别运行：
 
 ```powershell
 python scripts/run_p2p_server.py
 cloudflared tunnel --url http://127.0.0.1:5000
 ```
 
-浏览器将每位玩家的 bearer `player_token` 与房间码保存在本地；刷新或短暂断线后，客户端会自动使用同一房间码和令牌重连，在 grace 期限内恢复原来的颜色。客户端每 1.2 秒轮询房间状态，这个轮询同时作为连接 heartbeat。服务端在 8 秒 player lease 超时后把座位视为暂时离线，并保留 30 秒 reconnect grace；界面区分“等待对手加入”（座位尚未占用）与“对手暂时离线 / reconnecting”（座位仍保留、等待 heartbeat 恢复）。观察到连接状态变化时递增 `state_version`。超过 lease+grace 后，黑方座位释放；stale host cleanup 会使失联的房主房间过期，不再阻塞新房间创建。
+邀请 URL **只包含 room code**。房间码用于定位房间，不是认证凭据；`player_token` 永远不会被写入 query string、hash、pathname、邀请链接或邀请 toast。token 继续只保存在现有 P2P `localStorage` 会话中，并由认证后的 `/api/p2p/*` 请求使用。URL 中的 `room` 会统一转成大写并只接受恰好 6 位 ASCII 字母或数字；非法长度、特殊字符或 HTML/script payload 会被安全忽略并退回普通手动加入流程。页面用 `textContent` 显示邀请房间码，不把 URL 参数拼进 HTML。
+
+浏览器将每位玩家的 bearer `player_token` 与房间码保存在本地；刷新或短暂断线后，客户端会自动使用同一房间码和令牌重连，在 grace 期限内恢复原来的颜色。如果当前 URL 是邀请链接，自动恢复只会使用与该邀请房间相同的已保存 token；一个没有 token 的新浏览器仅仅打开 `?room=...` 不会自动占用席位。客户端每 1.2 秒轮询房间状态，这个轮询同时作为连接 heartbeat。服务端在 8 秒 player lease 超时后把座位视为暂时离线，并保留 30 秒 reconnect grace；界面区分“等待对手加入”（座位尚未占用）与“对手暂时离线 / reconnecting”（座位仍保留、等待 heartbeat 恢复）。观察到连接状态变化时递增 `state_version`。超过 lease+grace 后，黑方座位释放；stale host cleanup 会使失联的房主房间过期，不再阻塞新房间创建。
 
 对局规则与生命周期：
 
 - 在线浏览器只能操作 `player_token` 对应的固定颜色；Hotseat 没有这一身份限制。
+- 邀请链接不能绕过 `room_full`、颜色、回合、对手在线状态或 token 校验。
 - 对手离线时不能走子、提交 Action 或进行其他局面 mutation。
-- 白方显式返回菜单会关闭整个在线房间；黑方显式返回菜单会立即释放黑方座位。
+- 白方显式返回菜单会关闭整个在线房间；黑方显式返回菜单会立即释放 Black 座位。
+- 从邀请 URL 返回菜单时，合法 `?room=...` 可以保留用于再次加入；进入 Local Hotseat 时该参数完全被忽略，Hotseat 不读取房间码、不使用 token、不启动 P2P polling。
 - 常见认证、房间和状态错误以 JSON 4xx 响应返回；`player_token` 不写入日志。
+
+完整的 Cloudflare 启动、邀请链接与安全边界说明见 `docs/P2P_CLOUDFLARE.md`。
 
 ---
 
@@ -464,19 +476,23 @@ python -m compileall -q src
 Action loop regression
 └── timeout 60s python -m pytest -q tests/test_action_loop_guards.py tests/test_action_warning_web.py
         ↓
-P2P launcher / client syntax checks
+Canonical Action AI regression
+├── node --check src/web/static/js/game.js
+└── timeout 90s python -m pytest -q tests/test_ai.py tests/test_ai_action_planning.py
+        ↓
+P2P launcher / client / invite checks
 ├── python -m py_compile scripts/run_p2p_server.py
 ├── node --check src/web/static/js/p2p.js
-└── pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content 'scripts/start_p2p.ps1' -Raw)) | Out-Null"
-        ↓
-expanded P2P lifecycle regression
-└── timeout 60s python -m pytest -q tests/test_p2p_web.py
+├── node --check src/web/static/js/p2p_invite.js
+├── node tests/test_p2p_invite.js
+├── PowerShell launcher parser validation
+└── timeout 60s python -m pytest -q tests/test_p2p_web.py tests/test_p2p_invite_web.py tests/test_hotseat_online_modes.py
         ↓
 full pytest
 └── python -m pytest -q
 ```
 
-P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup，以及对手离线时暂停 Move / Submit Action 等局面 mutation。Hotseat / Online 模式切换回归覆盖在线退出后启动本地双人，以及本地双人会话后安全创建新的在线房间。
+P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup、对手离线时暂停 Move / Submit Action、room-code-only 邀请 URL、非法 query 降级以及 Hotseat / Online 模式隔离。
 
 开发流程：
 

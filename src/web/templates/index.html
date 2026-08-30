@@ -29,8 +29,8 @@
             </button>
             <button class="menu-card primary" onclick="joinP2PRoom()">
                 <span class="menu-icon">⇄</span>
-                <strong>加入在线房间</strong>
-                <small>Online P2P · 输入 6 位房间码远程对弈</small>
+                <strong id="p2p-join-label">加入在线房间</strong>
+                <small id="p2p-join-detail">Online P2P · 输入 6 位房间码远程对弈</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'easy')">
                 <span class="menu-icon">♞</span>
@@ -147,5 +147,6 @@
 <div id="toast" role="status"></div>
 <script src="/static/js/game.js?v=8"></script>
 <script src="/static/js/p2p.js?v=3"></script>
+<script src="/static/js/p2p_invite.js?v=1"></script>
 </body>
 </html>
