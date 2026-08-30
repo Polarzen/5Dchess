@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from flask import jsonify, request
+from flask import g, jsonify, request
 
 from src.engine import FiveDEngine
 from src.engine.multiverse import MultiverseBoardView
@@ -22,8 +22,8 @@ from src.utils.logger import logger
 
 
 _ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-PLAYER_LEASE_TIMEOUT = 8.0
-PLAYER_RECONNECT_GRACE = 30.0
+PLAYER_LEASE_SECONDS = 8.0
+RECONNECT_GRACE_SECONDS = 30.0
 _EXPIRED_ROOM_LIMIT = 64
 _ERROR_MESSAGES = {
     "room_not_found": "房间不存在",
@@ -97,7 +97,7 @@ def _player_connected(room: dict[str, Any], color: ChessColor, now: float) -> bo
     if token is None or lease is None:
         return False
     return bool(lease.get("online", False)) and (
-        now - float(lease.get("last_heartbeat", now)) <= PLAYER_LEASE_TIMEOUT
+        now - float(lease.get("last_heartbeat", now)) <= PLAYER_LEASE_SECONDS
     )
 
 
@@ -132,7 +132,7 @@ def _cleanup_lifecycle(game_session: dict[str, Any], now: float | None = None) -
             continue
 
         age = now - float(lease["last_heartbeat"])
-        online = age <= PLAYER_LEASE_TIMEOUT
+        online = age <= PLAYER_LEASE_SECONDS
         if online != bool(lease.get("online", False)):
             lease["online"] = online
             _room["version"] += 1
@@ -140,7 +140,7 @@ def _cleanup_lifecycle(game_session: dict[str, Any], now: float | None = None) -
         if (
             color == ChessColor.BLACK
             and not online
-            and age > PLAYER_LEASE_TIMEOUT + PLAYER_RECONNECT_GRACE
+            and age > PLAYER_LEASE_SECONDS + RECONNECT_GRACE_SECONDS
         ):
             _room["players"][color.value] = None
             _room["leases"][color.value] = None
@@ -152,7 +152,7 @@ def _cleanup_lifecycle(game_session: dict[str, Any], now: float | None = None) -
         and _room["players"].get(ChessColor.WHITE.value) is not None
         and white_lease is not None
         and now - float(white_lease["last_heartbeat"])
-        > PLAYER_LEASE_TIMEOUT + PLAYER_RECONNECT_GRACE
+        > PLAYER_LEASE_SECONDS + RECONNECT_GRACE_SECONDS
     ):
         code = _room["code"]
         _remember_expired(code)
@@ -274,14 +274,29 @@ def register_p2p_routes(
     @flask_app.before_request
     def protect_single_session_while_p2p_active():
         """Clean stale lifecycle state and guard legacy mutation endpoints."""
+        is_legacy_request = request.path.startswith("/api/game/") or request.path.startswith(
+            "/api/replay/"
+        )
+        if is_legacy_request:
+            # Hold the same room lock from the lifecycle check through the
+            # complete legacy request.  The teardown hook releases it even
+            # when this hook returns the 409 guard response.
+            _room_lock.acquire()
+            g.p2p_legacy_lock_held = True
+            _cleanup_lifecycle(game_session)
+            if _room is not None:
+                return _error("p2p_room_active", 409)
+            return None
+
         with _room_lock:
             _cleanup_lifecycle(game_session)
-            active = _room is not None
-        if not active:
-            return None
-        if request.path.startswith("/api/game/") or request.path.startswith("/api/replay/"):
-            return _error("p2p_room_active", 409)
         return None
+
+    @flask_app.teardown_request
+    def release_legacy_room_lock(_exception=None):
+        if getattr(g, "p2p_legacy_lock_held", False):
+            g.p2p_legacy_lock_held = False
+            _room_lock.release()
 
     @flask_app.route("/api/p2p/create", methods=["POST"])
     def p2p_create_room():

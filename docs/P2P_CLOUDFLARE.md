@@ -45,17 +45,17 @@ cloudflared tunnel --url http://127.0.0.1:5000
 ## 房间与连接生命周期
 
 - 一个服务进程只允许一个在线房间和一个房间码。
-- 房间码用于定位房间；每位玩家另有随机 bearer `player_token`。令牌保存在该玩家浏览器的 `localStorage`，因此刷新或短暂断线后，提交同一房间码和令牌可以恢复原来的颜色。
+- 房间码用于定位房间；每位玩家另有随机 bearer `player_token`。令牌保存在该玩家浏览器的 `localStorage`，因此刷新或短暂断线后，客户端会自动提交同一房间码和令牌，在 reconnect grace 内恢复原来的颜色。
 - 房主创建房间后固定为 White；第一位加入者固定为 Black。没有第二位玩家时不能开始走子。
-- 客户端每 1.2 秒轮询 `/api/p2p/state`；该轮询同时作为连接 heartbeat。
-- lease 超时为 8 秒。座位暂时离线后，仍保留 30 秒 reconnect grace。观察到连接状态变化时，房间 `state_version` 会递增。
-- lease 加 grace 都耗尽后，Black 座位释放，可以由新的加入者占用；如果失联的是房主，旧房间也会过期，不再阻塞创建新房间。
+- 客户端每 1.2 秒轮询 `/api/p2p/state`；该轮询同时作为连接 heartbeat。轮询请求不会并发重叠，瞬时失败会沿用后续轮询周期重试；终态的认证 / 房间错误会停止轮询并清理本地会话。
+- player lease 超时为 8 秒。状态接口和界面区分 `not_connected`（等待第二位玩家）与 `offline`（已有席位但暂时离线 / reconnecting）；座位暂时离线后，仍保留 30 秒 reconnect grace。观察到连接状态变化时，房间 `state_version` 会递增。
+- lease 加 grace 都耗尽后，Black 座位释放，可以由新的加入者占用；stale host cleanup 会使失联房主的旧房间过期，不再阻塞创建新房间。
 - White 显式返回菜单会关闭整个房间；Black 显式返回菜单会立即释放 Black 座位。
 - 对手离线时，不能走子、提交 Action 或进行其他局面 mutation；重新连接并恢复在线状态后才能继续。
 
 ## 安全边界与错误处理
 
-- P2P 请求必须同时携带正确的房间码和玩家令牌。房间码不是玩家身份凭据；不要把 bearer 令牌分享给他人。
+- `/api/p2p/create` 创建请求和不带令牌的初次 `/api/p2p/join` 加入请求是认证例外：前者不需要房间码 / token，后者只需要房间码；带 token 的 `/api/p2p/join` 则是恢复已有席位。认证后的 `/api/p2p/state`、游戏请求（`/api/p2p/legal_moves`、`/api/p2p/move`、`/api/p2p/submit`）和 `/api/p2p/leave` 都必须同时携带正确的房间码与玩家令牌。房间码不是玩家身份凭据；不要把 bearer 令牌分享给他人。
 - 服务端验证玩家颜色、当前回合和完整 5D 合法性；在线房间存在时，旧的未鉴权 `/api/game/*` 与 `/api/replay/*` mutation 接口会被拒绝。
 - 常见的房间、认证、回合和状态错误以 JSON 4xx 响应返回，便于页面显示可读错误。
 - `player_token` 不写入服务端日志。Quick Tunnel 地址和房间码仍应只发给预期对手；临时联机结束后关闭 Tunnel。
