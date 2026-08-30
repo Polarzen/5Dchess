@@ -203,7 +203,7 @@ python scripts/run_p2p_server.py
 cloudflared tunnel --url http://127.0.0.1:5000
 ```
 
-浏览器将每位玩家的 bearer `player_token` 与房间码保存在本地；刷新或短暂断线后，使用同一房间码和令牌可以恢复原来的颜色。客户端每 1.2 秒轮询房间状态，这个轮询同时作为连接 heartbeat。服务端在 8 秒 lease 超时后把座位视为暂时离线，并保留 30 秒 reconnect grace；观察到连接状态变化时递增 `state_version`。超过 lease+grace 后，黑方座位释放，失联的房主房间也过期，不再阻塞新房间创建。
+浏览器将每位玩家的 bearer `player_token` 与房间码保存在本地；刷新或短暂断线后，客户端会自动使用同一房间码和令牌重连，在 grace 期限内恢复原来的颜色。客户端每 1.2 秒轮询房间状态，这个轮询同时作为连接 heartbeat。服务端在 8 秒 player lease 超时后把座位视为暂时离线，并保留 30 秒 reconnect grace；界面区分“等待对手加入”（座位尚未占用）与“对手暂时离线 / reconnecting”（座位仍保留、等待 heartbeat 恢复）。观察到连接状态变化时递增 `state_version`。超过 lease+grace 后，黑方座位释放；stale host cleanup 会使失联的房主房间过期，不再阻塞新房间创建。
 
 对局规则与生命周期：
 
@@ -444,12 +444,22 @@ pip install -r requirements.txt
         ↓
 python -m compileall -q src
         ↓
-pytest
-├── 核心规则回归
-├── Web 5D Interaction
-├── Replay / Storage v2
-└── MySQL v2 schema + signed L / Action / canonical Move integration
+Action loop regression
+└── timeout 60s python -m pytest -q tests/test_action_loop_guards.py tests/test_action_warning_web.py
+        ↓
+P2P launcher / client syntax checks
+├── python -m py_compile scripts/run_p2p_server.py
+├── node --check src/web/static/js/p2p.js
+└── pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content 'scripts/start_p2p.ps1' -Raw)) | Out-Null"
+        ↓
+expanded P2P lifecycle regression
+└── timeout 60s python -m pytest -q tests/test_p2p_web.py
+        ↓
+full pytest
+└── python -m pytest -q
 ```
+
+P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup，以及对手离线时暂停 Move / Submit Action 等局面 mutation。
 
 开发流程：
 

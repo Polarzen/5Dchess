@@ -1,11 +1,18 @@
 """End-to-end regression coverage for the online two-player room transport."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import importlib
+import threading
+
 import pytest
 
 import src.web.p2p as p2p_module
 from src.web import app
 from src.web.app import _game_session
+
+
+web_app_module = importlib.import_module("src.web.app")
 
 
 class FakeClock:
@@ -138,15 +145,25 @@ def test_black_heartbeat_prevents_timeout(isolated_p2p):
 
 def test_black_timeout_reconnect_grace_and_release(isolated_p2p):
     host, guest, created, _, host_auth, guest_auth = _pair()
-    isolated_p2p.advance(p2p_module.PLAYER_LEASE_TIMEOUT + 0.1)
+    initial_version = host.post("/api/p2p/state", json=host_auth).get_json()["p2p"]["state_version"]
+    isolated_p2p.advance(p2p_module.PLAYER_LEASE_SECONDS + 0.1)
     offline = host.post("/api/p2p/state", json=host_auth).get_json()
     assert offline["p2p"]["opponent_status"] == "offline"
+    offline_version = offline["p2p"]["state_version"]
+    assert offline_version > initial_version
+
+    reserved = app.test_client().post(
+        "/api/p2p/join", json={"room_code": created["room_code"]}
+    )
+    assert reserved.status_code == 409
+    assert reserved.get_json()["code"] == "room_full"
 
     isolated_p2p.advance(20)
     reconnected = guest.post("/api/p2p/join", json=guest_auth)
     assert reconnected.status_code == 200
     assert reconnected.get_json()["reconnected"] is True
     assert reconnected.get_json()["player_color"] == "black"
+    assert reconnected.get_json()["p2p"]["state_version"] > offline_version
 
     # Keep WHITE alive while BLACK passes the lease+grace boundary.
     assert host.post("/api/p2p/state", json=host_auth).status_code == 200
@@ -168,7 +185,7 @@ def test_black_timeout_reconnect_grace_and_release(isolated_p2p):
 def test_host_drop_grace_recovery_and_state_versions(isolated_p2p):
     host, guest, _, _, host_auth, guest_auth = _pair()
     initial_version = guest.post("/api/p2p/state", json=guest_auth).get_json()["p2p"]["state_version"]
-    isolated_p2p.advance(p2p_module.PLAYER_LEASE_TIMEOUT + 0.1)
+    isolated_p2p.advance(p2p_module.PLAYER_LEASE_SECONDS + 0.1)
     dropped = guest.post("/api/p2p/state", json=guest_auth).get_json()
     assert dropped["p2p"]["opponent_status"] == "offline"
     dropped_version = dropped["p2p"]["state_version"]
@@ -190,7 +207,7 @@ def test_stale_host_cleanup_expires_room_and_allows_create(isolated_p2p):
     created = host.post("/api/p2p/create", json={}).get_json()
     auth = _credentials(created)
     isolated_p2p.advance(
-        p2p_module.PLAYER_LEASE_TIMEOUT + p2p_module.PLAYER_RECONNECT_GRACE + 1
+        p2p_module.PLAYER_LEASE_SECONDS + p2p_module.RECONNECT_GRACE_SECONDS + 1
     )
     replacement = app.test_client().post("/api/p2p/create", json={})
     assert replacement.status_code == 200
@@ -209,7 +226,7 @@ def test_opponent_offline_blocks_mutation_and_malformed_errors_have_no_traceback
     ).get_json()["moves"]
     e2e4 = next(move for move in moves if move["destination"]["y"] == 4)
 
-    isolated_p2p.advance(p2p_module.PLAYER_LEASE_TIMEOUT + 0.1)
+    isolated_p2p.advance(p2p_module.PLAYER_LEASE_SECONDS + 0.1)
     blocked = host.post(
         "/api/p2p/move",
         json={
@@ -244,6 +261,17 @@ def test_room_not_found_and_action_not_submittable_are_clear_4xx():
 
 def test_normal_leave_and_legacy_mutation_guard(isolated_p2p):
     host, guest, _, _, host_auth, guest_auth = _pair()
+    legacy_mutations = (
+        ("/api/game/start", {"mode": "pvp"}),
+        ("/api/game/move_5d", {}),
+        ("/api/game/submit_action", {}),
+        ("/api/replay/load", {}),
+    )
+    for path, payload in legacy_mutations:
+        blocked = app.test_client().post(path, json=payload)
+        assert blocked.status_code == 409
+        assert blocked.get_json()["code"] == "p2p_room_active"
+
     left_guest = guest.post("/api/p2p/leave", json=guest_auth)
     assert left_guest.status_code == 200
     assert left_guest.get_json()["closed"] is False
@@ -257,16 +285,86 @@ def test_normal_leave_and_legacy_mutation_guard(isolated_p2p):
     assert missing.get_json()["code"] == "room_not_found"
 
 
-def test_internal_error_is_generic_and_does_not_expose_token(isolated_p2p):
+def test_internal_error_is_generic_and_does_not_expose_token(isolated_p2p, monkeypatch):
     host = app.test_client()
     created = host.post("/api/p2p/create", json={}).get_json()
     auth = _credentials(created)
     token = auth["player_token"]
+    logged = []
+    monkeypatch.setattr(p2p_module.logger, "error", logged.append)
     _game_session["mode_instance"] = None
     response = host.post("/api/p2p/state", json=auth)
     assert response.status_code == 500
     assert response.get_json()["code"] == "internal_error"
     assert token not in response.get_data(as_text=True)
+    assert logged
+    assert all(token not in message for message in logged)
+
+
+def test_two_concurrent_black_joins_allocate_exactly_one_seat():
+    created = app.test_client().post("/api/p2p/create", json={}).get_json()
+    barrier = threading.Barrier(2)
+
+    def join_once():
+        client = app.test_client()
+        barrier.wait(timeout=2)
+        response = client.post(
+            "/api/p2p/join", json={"room_code": created["room_code"]}
+        )
+        return response.status_code, response.get_json()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: join_once(), range(2)))
+
+    assert sorted(status for status, _payload in results) == [200, 409]
+    success = next(payload for status, payload in results if status == 200)
+    rejected = next(payload for status, payload in results if status == 409)
+    assert success["player_color"] == "black"
+    assert rejected["code"] == "room_full"
+    assert p2p_module._room["players"]["black"] == success["player_token"]
+
+
+def test_legacy_mutation_holds_room_lock_against_concurrent_create(monkeypatch):
+    legacy_in_handler = threading.Event()
+    release_legacy = threading.Event()
+    create_started = threading.Event()
+    create_finished = threading.Event()
+    original_engine = web_app_module.FiveDEngine
+
+    def paused_legacy_engine(*args, **kwargs):
+        legacy_in_handler.set()
+        assert release_legacy.wait(timeout=2)
+        return original_engine(*args, **kwargs)
+
+    monkeypatch.setattr(web_app_module, "FiveDEngine", paused_legacy_engine)
+
+    def start_legacy_game():
+        return app.test_client().post("/api/game/start", json={"mode": "pvp"})
+
+    def create_p2p_room():
+        create_started.set()
+        response = app.test_client().post("/api/p2p/create", json={})
+        create_finished.set()
+        return response
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        legacy_future = executor.submit(start_legacy_game)
+        assert legacy_in_handler.wait(timeout=2)
+        create_future = executor.submit(create_p2p_room)
+        assert create_started.wait(timeout=2)
+        assert not create_finished.wait(timeout=0.2)
+        release_legacy.set()
+        legacy_response = legacy_future.result(timeout=2)
+        create_response = create_future.result(timeout=2)
+
+    assert legacy_response.status_code == 200
+    assert create_response.status_code == 200
+    created = create_response.get_json()
+    assert p2p_module._room["code"] == created["room_code"]
+    assert _game_session["mode_instance"].engine is not None
+    assert app.test_client().post(
+        "/api/p2p/state", json=_credentials(created)
+    ).status_code == 200
 
 
 def test_web_menu_loads_resilient_p2p_client_entrypoints():
@@ -283,5 +381,11 @@ def test_web_menu_loads_resilient_p2p_client_entrypoints():
     assert "/api/p2p/state" in javascript
     assert "setInterval(pollP2PState, 1200)" in javascript
     assert "p2pPollInFlight" in javascript
+    assert "P2P_POLL_MAX_BACKOFF_MS" in javascript
+    assert "Opponent offline" in javascript
+    assert "Waiting for opponent" in javascript
+    assert "P2P 连接已恢复" in javascript
+    assert "P2P 会话已结束" in javascript
+    assert "clearStoredP2PSession" in javascript
     assert "recoverStoredP2PSession" in javascript
     assert "state_version" in javascript
