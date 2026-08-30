@@ -44,15 +44,38 @@ def test_index_is_multiverse_canvas_not_single_board(client):
     assert 'id="submit-action-btn"' in html
     assert 'id="board"' not in html
 
+    # Local hotseat and online P2P are distinct, first-class menu entries.
+    assert "startGame('pvp')" in html
+    assert "同屏双人对弈" in html
+    assert "Hotseat · 本地 PvP" in html
+    assert "createP2PRoom()" in html
+    assert "创建在线房间" in html
+    assert "joinP2PRoom()" in html
+    assert "加入在线房间" in html
+    assert "Cloudflare Tunnel" in html
+
     javascript = client.get("/static/js/game.js").get_data(as_text=True)
     assert "/api/game/legal_moves_5d" in javascript
     assert "/api/game/move_5d" in javascript
     assert "/api/game/submit_action" in javascript
 
+    # The online adapter must delegate every gameplay override back to the
+    # ordinary browser implementation whenever the active mode is not P2P.
+    p2p_javascript = client.get("/static/js/p2p.js").get_data(as_text=True)
+    assert "if (mode !== 'p2p') return baseCanSelectSource" in p2p_javascript
+    assert "if (mode !== 'p2p') return baseSelectSource" in p2p_javascript
+    assert "if (mode !== 'p2p') return baseExecuteCanonicalMove" in p2p_javascript
+    assert "if (mode !== 'p2p') return baseSubmitAction" in p2p_javascript
+    assert "if (mode !== 'p2p') return baseBackToMenu" in p2p_javascript
+
 
 def test_start_state_serializes_canonical_present_board(client):
     state = _start_pvp(client)
 
+    assert state["mode"] == "pvp"
+    assert "p2p" not in state
+    assert "room_code" not in state
+    assert "player_token" not in state
     assert state["game_state"] == "PLAYING"
     assert state["turn"] == "white"
     assert len(state["boards"]) == 1
@@ -147,6 +170,39 @@ def test_pvp_move_stays_inside_action_until_explicit_submit(client):
     assert submitted["action"]["move_count"] == 0
     assert submitted["action"]["can_submit"] is False
     assert submitted["action"]["required_boards"][0]["key"] == "0:1"
+
+    # The same browser now controls Black: hotseat has no fixed player-color
+    # authorization layer. Black completes e7-e5 and explicitly submits too.
+    black_board = next(item for item in submitted["boards"] if item["playable"])
+    black_moves = client.post(
+        "/api/game/legal_moves_5d",
+        json={"board": black_board["coord"], "x": 4, "y": 1},
+    ).get_json()["moves"]
+    e7e5 = next(move for move in black_moves if move["destination"]["y"] == 3)
+    black_moved_response = client.post(
+        "/api/game/move_5d",
+        json={
+            "source": e7e5["source"],
+            "destination": e7e5["destination"],
+            "promotion": e7e5["promotion"],
+        },
+    )
+    assert black_moved_response.status_code == 200
+    black_moved = black_moved_response.get_json()
+    assert black_moved["success"] is True
+    assert black_moved["turn"] == "black"
+    assert black_moved["action"]["color"] == "black"
+    assert black_moved["action"]["move_count"] == 1
+    assert black_moved["action"]["can_submit"] is True
+
+    black_submitted_response = client.post("/api/game/submit_action", json={})
+    assert black_submitted_response.status_code == 200
+    black_submitted = black_submitted_response.get_json()
+    assert black_submitted["success"] is True
+    assert black_submitted["turn"] == "white"
+    assert black_submitted["move_counter"] == 2
+    assert black_submitted["action"]["color"] == "white"
+    assert black_submitted["action"]["move_count"] == 0
 
 
 def test_historical_board_cannot_be_reused_as_action_source(client):
