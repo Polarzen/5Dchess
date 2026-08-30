@@ -1,11 +1,6 @@
 name: Local AI Cloud Training
 
 on:
-  # Temporary discovery trigger: every job is guarded below and this trigger
-  # is removed immediately after GitHub registers the branch-only workflow.
-  pull_request:
-    branches: [main]
-    paths: [".github/workflows/local-ai-train.yml"]
   workflow_dispatch:
     inputs:
       games:
@@ -88,7 +83,6 @@ concurrency:
 jobs:
   validate:
     name: Validate bounded cloud inputs
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
