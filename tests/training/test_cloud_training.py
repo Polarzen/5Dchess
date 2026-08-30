@@ -164,7 +164,8 @@ def test_cloud_workflow_is_manual_bounded_and_read_only():
     required = ["workflow_dispatch:", "timeout-minutes:", "contents: read",
                 "actions: read", "cancel-in-progress: false", "actions/upload-artifact@v4",
                 "actions/download-artifact@v4", "src.training.selfplay",
-                "src.training.train", "src.training.arena", "GITHUB_STEP_SUMMARY"]
+                "src.training.train", "src.training.arena", "--result-json",
+                "GITHUB_STEP_SUMMARY"]
     for token in required:
         assert token in text
     assert "contents: write" not in text

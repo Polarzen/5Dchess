@@ -14,7 +14,7 @@ from src.ai.random_ai import RandomAI
 from src.engine.engine import FiveDEngine
 from src.training.agent import NeuralPolicyValueAgent
 from src.training.checkpoint import load_checkpoint
-from src.training.utils import print_device_report, resolve_device, seed_everything
+from src.training.utils import print_device_report, resolve_device, seed_everything, write_json
 from src.utils.constants import ChessColor, GameState
 
 
@@ -185,6 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="text",
         help="output format; JSON emits one machine-readable result object",
     )
+    parser.add_argument(
+        "--result-json",
+        type=Path,
+        help="write a clean machine-readable result file independent of stdout logs",
+    )
     return parser
 
 
@@ -208,6 +213,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if str(args.output).lower() == "json":
         print(json.dumps(result, indent=2, sort_keys=True))
+    if args.result_json is not None:
+        write_json(args.result_json, result)
     return 1 if (result["illegal_action_count"] or result["stale_failure_count"]) else 0
 
 

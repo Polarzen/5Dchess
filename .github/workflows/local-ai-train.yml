@@ -353,7 +353,7 @@ jobs:
             --max-actions "$INPUT_MAX_ACTIONS" \
             --max-wall-seconds 9000 \
             --output json \
-            > _work/arena-report/arena-result.json
+            --result-json _work/arena-report/arena-result.json
 
       - name: Upload Arena report part
         uses: actions/upload-artifact@v4
