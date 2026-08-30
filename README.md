@@ -2,7 +2,7 @@
 
 一个使用 Python 实现的 **5D Chess / 多时间线国际象棋项目**。核心引擎使用 canonical 4D 坐标描述空间、时间与时间线移动，并通过不可变历史棋盘、Action / The Present、RoyalRules、Action 级终局搜索以及多棋盘 Web 界面实现完整的 5D 对局基础。
 
-> **当前状态：核心规则、Web 5D Interaction 与 Replay / Storage v2 已完成。**
+> **当前状态：核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2 已完成。**
 >
 > 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training` 分支中。
 
@@ -186,6 +186,22 @@ http://127.0.0.1:5000
 
 ---
 
+## 👥 Local Hotseat PvP
+
+本地热座与在线 P2P 是两个独立入口。启动普通 Web 服务后，在主页点击“同屏双人对弈”，白方与黑方即可在**同一台电脑、同一个浏览器**中轮流完成各自的 Action。
+
+Hotseat 只使用本地 `/api/game/*` canonical PvP 路径，不需要：
+
+- `cloudflared`
+- 房间码
+- `player_token`
+- P2P `localStorage` 会话
+- 外网或局域网连接
+
+同屏双方共享浏览器，因此没有固定 `player_color` 身份锁；当前轮到哪一方，就允许该方在所有合法 movable Board 上操作自己的棋子。每个回合仍遵守完整的 5D Action 语义：可以先完成多个 required / optional Move，只有点击 `Submit Action` 后全局回合才切换到另一方。Hotseat 不使用旧的单 Move 自动换方路径。
+
+---
+
 ## 🌐 Online P2P / Cloudflare Tunnel
 
 在线 P2P 通过 Cloudflare Quick Tunnel 发布房主的 Web 服务；5D 引擎和对局状态始终由房主服务端权威维护。一个服务进程只开放一个房间和一个房间码：`White = host`（房主），`Black = joiner`（加入者）。
@@ -196,7 +212,7 @@ Windows 下从项目根目录启动：
 powershell -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
 ```
 
-脚本会启动 `debug=False` 的本地 Flask 服务，并创建临时的 `https://*.trycloudflare.com` Quick Tunnel。把终端显示的 HTTPS 地址发给对手，双方打开同一地址后，房主点击“创建真人房间”，对手输入房间码点击“加入真人房间”。需要手动分开启动时，可分别运行：
+脚本会启动 `debug=False` 的本地 Flask 服务，并创建临时的 `https://*.trycloudflare.com` Quick Tunnel。把终端显示的 HTTPS 地址发给对手，双方打开同一地址后，房主点击“创建在线房间”，对手输入房间码点击“加入在线房间”。需要手动分开启动时，可分别运行：
 
 ```powershell
 python scripts/run_p2p_server.py
@@ -207,8 +223,9 @@ cloudflared tunnel --url http://127.0.0.1:5000
 
 对局规则与生命周期：
 
+- 在线浏览器只能操作 `player_token` 对应的固定颜色；Hotseat 没有这一身份限制。
 - 对手离线时不能走子、提交 Action 或进行其他局面 mutation。
-- 白方显式返回菜单会关闭整个房间；黑方显式返回菜单会立即释放黑方座位。
+- 白方显式返回菜单会关闭整个在线房间；黑方显式返回菜单会立即释放黑方座位。
 - 常见认证、房间和状态错误以 JSON 4xx 响应返回；`player_token` 不写入日志。
 
 ---
@@ -459,7 +476,7 @@ full pytest
 └── python -m pytest -q
 ```
 
-P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup，以及对手离线时暂停 Move / Submit Action 等局面 mutation。
+P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup，以及对手离线时暂停 Move / Submit Action 等局面 mutation。Hotseat / Online 模式切换回归覆盖在线退出后启动本地双人，以及本地双人会话后安全创建新的在线房间。
 
 开发流程：
 
@@ -491,8 +508,9 @@ RoyalRules / 5D Check          ✅
 Checkmate / Stalemate          ✅
 Web 5D Interaction             ✅
 Replay / Storage v2            ✅
+Local Hotseat PvP              ✅
 Online P2P / Cloudflare Tunnel ✅
-Canonical Action AI / PvE       ✅
+Canonical Action AI / PvE      ✅
 
 AI Local Training              独立分支 / 下一大阶段
 EXE                            已移出项目范围
