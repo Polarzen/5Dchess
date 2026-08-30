@@ -17,30 +17,35 @@
             </div>
         </div>
         <div class="menu-grid">
+            <button class="menu-card primary" onclick="startGame('pvp')">
+                <span class="menu-icon">👥</span>
+                <strong>同屏双人对弈</strong>
+                <small>Hotseat · 本地 PvP · 同一浏览器轮流行动</small>
+            </button>
             <button class="menu-card primary" onclick="createP2PRoom()">
                 <span class="menu-icon">♚</span>
-                <strong>创建真人房间</strong>
-                <small>P2P · 房间码 · 服务器权威 Action</small>
+                <strong>创建在线房间</strong>
+                <small>Online P2P · 房间码 · Cloudflare Tunnel</small>
             </button>
             <button class="menu-card primary" onclick="joinP2PRoom()">
                 <span class="menu-icon">⇄</span>
-                <strong>加入真人房间</strong>
-                <small>输入 6 位房间码远程对弈</small>
+                <strong>加入在线房间</strong>
+                <small>Online P2P · 输入 6 位房间码远程对弈</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'easy')">
                 <span class="menu-icon">♞</span>
                 <strong>人机 · 简单</strong>
-                <small>Legacy AI compatibility</small>
+                <small>Canonical Action AI</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'medium')">
                 <span class="menu-icon">♝</span>
                 <strong>人机 · 中等</strong>
-                <small>Legacy AI compatibility</small>
+                <small>Canonical Action AI</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'hard')">
                 <span class="menu-icon">♛</span>
                 <strong>人机 · 困难</strong>
-                <small>Legacy AI compatibility</small>
+                <small>Canonical Action AI</small>
             </button>
             <button class="menu-card" onclick="startGame('replay')">
                 <span class="menu-icon">↺</span>
