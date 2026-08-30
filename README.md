@@ -4,7 +4,9 @@
 
 > **当前状态：核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2 已完成。**
 >
-> 当前分支 `feat/local-ai-training-v2` 是**实验训练分支**：它在最新主线之上增加本地 self-play、PyTorch Policy/Value 训练、checkpoint/resume 与 Arena 工具，但不会把训练依赖或神经网络 PvE 合并进 `main`。Windows 本地训练请直接阅读 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。
+> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training` 分支中。
+>
+> **当前 `feat/local-ai-training-v2` 仅为实验训练分支，未合并 `main`。Windows 本地训练步骤见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。**
 
 ---
 
@@ -113,7 +115,7 @@ Submit Action
 - `execute_action_move()`
 - 显式 `submit_action()`
 
-Board-local successor每个 Move 都推进自己的 side，但 `current_turn_color` 只有在 Action Submit 后切换。
+Board-local successor 每个 Move 都推进自己的 side，但 `current_turn_color` 只有在 Action Submit 后切换。
 
 ### RoyalRules / Check / Checkmate / Stalemate
 
@@ -376,23 +378,13 @@ PvE 现在使用 canonical Action 级 AI。AI 在引擎快照上规划一个可�
 
 搜索由状态数、候选 Action 数、单 Action Move 深度和单调时钟共同设限。预算耗尽不会被误判为将杀、逼和或“无合法 Action”：已有完整候选时从中安全选择；尚无完整候选时返回明确的 bounded-search failure 并停止本次 AI 执行。早期 `choose_move()` 和单 Move Opening Book 仅作为兼容接口保留，不进入 canonical PvE 主路径。
 
-本实验分支在上述 canonical Action AI 之上增加 Local AI Training v2：
+AI Local Training、自对弈数据、模型结构与 checkpoint 管理尚未进入主线，继续作为下一阶段工作；现有历史分支为：
 
 ```text
-State Encoder + complete Action Encoder
-        ↓
-variable-candidate Policy Head + Value Head
-        ↓
-canonical self-play dataset shards
-        ↓
-CPU / CUDA local training
-        ↓
-safetensors checkpoint + resume state
-        ↓
-Arena vs Easy / Medium / Hard
+feat/local-ai-training
 ```
 
-训练模型只能在 `ActionPlanner` 已经生成的完整合法候选中评分；最终仍由 `apply_action_plan()` 重新验证并提交。训练实现只存在于 `feat/local-ai-training-v2`，**没有合并 `main`，也没有替换 Web 的 Easy / Medium / Hard**。完整 Windows 使用手册见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。旧 `feat/local-ai-training` 保持为历史指针，不作为 v2 基线。
+规则、Web 与 Replay / Storage 主线不会直接混入本地训练实现。
 
 ---
 
@@ -431,7 +423,6 @@ src/
 │   └── db.py
 ├── gui/                  # legacy Pygame prototype
 ├── ai/
-├── training/             # experimental branch only
 └── main.py
 
 sql/
@@ -447,16 +438,10 @@ sql/
 - Python 3.11
 - MySQL 8.0（数据库存储 / CI integration）
 
-安装普通游戏依赖：
+安装依赖：
 
 ```bash
 pip install -r requirements.txt
-```
-
-训练依赖与本地步骤见：
-
-```text
-docs/LOCAL_AI_TRAINING.md
 ```
 
 运行测试：
@@ -481,20 +466,46 @@ python src/main.py --web
 
 ## 🧪 GitHub Actions
 
-Pull Request / `main` 更新继续运行原有 Python 3.11 + MySQL 8.0 主线 CI。实验训练分支另有 `.github/workflows/training-ci.yml`，只运行 CPU bounded tests/tiny smoke，不进行长时间训练，也不会生成需要上传的大型数据集或 checkpoint。
-
-训练 CI 验证：
+Pull Request / `main` 更新会运行 Python 3.11 + MySQL 8.0 CI，验证：
 
 ```text
-compile src/training + scripts/training
+MySQL 8.0 service
         ↓
-canonical Action AI regression
+pip install -r requirements.txt
         ↓
-training encoding / dataset / model / checkpoint tests
+python -m compileall -q src
         ↓
-PowerShell launcher parser validation
+Action loop regression
+└── timeout 60s python -m pytest -q tests/test_action_loop_guards.py tests/test_action_warning_web.py
         ↓
-2-game tiny self-play → 2-epoch tiny train → reload → tiny Arena
+Canonical Action AI regression
+├── node --check src/web/static/js/game.js
+└── timeout 90s python -m pytest -q tests/test_ai.py tests/test_ai_action_planning.py
+        ↓
+P2P launcher / client / invite checks
+├── python -m py_compile scripts/run_p2p_server.py
+├── node --check src/web/static/js/p2p.js
+├── node --check src/web/static/js/p2p_invite.js
+├── node tests/test_p2p_invite.js
+├── PowerShell launcher parser validation
+└── timeout 60s python -m pytest -q tests/test_p2p_web.py tests/test_p2p_invite_web.py tests/test_hotseat_online_modes.py
+        ↓
+full pytest
+└── python -m pytest -q
+```
+
+P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup、对手离线时暂停 Move / Submit Action、room-code-only 邀请 URL、非法 query 降级以及 Hotseat / Online 模式隔离。
+
+开发流程：
+
+```text
+feature branch
+    ↓
+Pull Request
+    ↓
+GitHub Actions
+    ↓
+squash merge
 ```
 
 ---
@@ -519,7 +530,7 @@ Local Hotseat PvP              ✅
 Online P2P / Cloudflare Tunnel ✅
 Canonical Action AI / PvE      ✅
 
-AI Local Training v2           实验分支 ✅（未合并 main）
+AI Local Training              独立分支 / 下一大阶段
 EXE                            已移出项目范围
 ```
 
