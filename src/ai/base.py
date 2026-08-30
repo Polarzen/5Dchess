@@ -4,16 +4,26 @@
 from abc import ABC, abstractmethod
 from src.utils.constants import ChessColor, AIDifficulty
 from src.engine.move_generator import Move
-from src.engine.board import Position
 from src.engine.engine import FiveDEngine
+from src.ai.action_planner import (
+    AIActionPlan,
+    ActionSearchBudget,
+    resolve_move_spec,
+)
 
 
 class AIPlayer(ABC):
     """AI 玩家抽象基类"""
 
-    def __init__(self, color: ChessColor, difficulty: AIDifficulty):
+    def __init__(
+        self,
+        color: ChessColor,
+        difficulty: AIDifficulty,
+        budget: ActionSearchBudget | None = None,
+    ):
         self.color = color
         self.difficulty = difficulty
+        self.budget = budget
 
     def _guard_action_progress(self, engine: FiveDEngine) -> None:
         """Fail loudly instead of letting an AI Action spin indefinitely.
@@ -42,9 +52,22 @@ class AIPlayer(ABC):
             )
 
     @abstractmethod
-    def choose_move(self, engine: FiveDEngine) -> Move | None:
-        """选择最佳走子"""
+    def plan_action(self, engine: FiveDEngine) -> AIActionPlan:
+        """Plan one complete canonical Action without mutating ``engine``."""
         ...
+
+    def choose_move(self, engine: FiveDEngine) -> Move | None:
+        """Compatibility shim returning the first exactly resolved Move.
+
+        New callers should consume :meth:`plan_action` and apply the complete
+        Action.  Existing board-local callers can still execute this first
+        Move through the engine's compatibility entry point.
+        """
+        self._guard_action_progress(engine)
+        plan = self.plan_action(engine)
+        if not plan.moves:
+            return None
+        return resolve_move_spec(engine, plan.moves[0])
 
     @property
     def name(self) -> str:

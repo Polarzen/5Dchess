@@ -6,6 +6,7 @@ multiverse instead of pretending that one selected 8x8 board is the game.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 import sys
 from pathlib import Path
 from typing import Any
@@ -353,18 +354,20 @@ def api_legal_moves_5d():
 
     data = request.get_json() or {}
     try:
-        board_coord = _coord_from_payload(data.get("board"))
-        position = MultiverseBoardView(
-            instance.engine.timeline_manager.timelines
-        ).resolve(board_coord)
-        if position is None:
-            return jsonify({"error": "棋盘不存在"}), 404
+        lock_context = getattr(instance, "_lock", None) or nullcontext()
+        with lock_context:
+            board_coord = _coord_from_payload(data.get("board"))
+            position = MultiverseBoardView(
+                instance.engine.timeline_manager.timelines
+            ).resolve(board_coord)
+            if position is None:
+                return jsonify({"error": "棋盘不存在"}), 404
 
-        moves = instance.engine.get_legal_moves(position)
-        if data.get("x") is not None and data.get("y") is not None:
-            x, y = int(data["x"]), int(data["y"])
-            moves = [m for m in moves if (m.source.x, m.source.y) == (x, y)]
-        return jsonify({"moves": [_move_payload(move) for move in moves]})
+            moves = instance.engine.get_legal_moves(position)
+            if data.get("x") is not None and data.get("y") is not None:
+                x, y = int(data["x"]), int(data["y"])
+                moves = [m for m in moves if (m.source.x, m.source.y) == (x, y)]
+            return jsonify({"moves": [_move_payload(move) for move in moves]})
     except (TypeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -385,21 +388,23 @@ def api_execute_move_5d():
 
     data = request.get_json() or {}
     try:
-        move = _find_exact_legal_move(instance.engine, data)
-        if move is None:
-            return jsonify({"error": "非法或已过期的5D走子"}), 400
+        # PvE's lock covers both exact-legal resolution and application so an
+        # AI request cannot make a browser move stale between those operations.
+        lock_context = (
+            instance._lock if _game_session["mode"] == "pve" else nullcontext()
+        )
+        with lock_context:
+            move = _find_exact_legal_move(instance.engine, data)
+            if move is None:
+                return jsonify({"error": "非法或已过期的5D走子"}), 400
 
-        if _game_session["mode"] == "pvp":
-            success = instance.engine.execute_action_move(move)
-        else:
-            player = ChessColor(_game_session.get("player_color") or "white")
-            if move.piece.color != player or instance.engine.current_turn_color != player:
-                return jsonify({"error": "当前不是玩家回合"}), 400
-            # PvE remains on the existing single-Move AI compatibility path.
-            success = instance.engine.execute_move(move)
+            if _game_session["mode"] == "pvp":
+                success = instance.engine.execute_action_move(move)
+            else:
+                success = instance.execute_player_action_move(move)
 
-        if not success:
-            return jsonify({"error": "引擎拒绝走子"}), 400
+            if not success:
+                return jsonify({"error": "引擎拒绝走子"}), 400
         return jsonify({"success": True, "move": _move_payload(move), **get_game_state()})
     except (TypeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
@@ -414,10 +419,19 @@ def api_submit_action():
     if instance is None or _game_session["mode"] == "replay":
         return jsonify({"error": "当前模式不能提交Action"}), 400
 
-    if not instance.engine.can_submit_action():
-        return jsonify({"error": "The Present 尚未推进完成或王仍受威胁"}), 400
-    if not instance.engine.submit_action():
-        return jsonify({"error": "Action提交失败"}), 400
+    if _game_session["mode"] == "pve":
+        with instance._lock:
+            if instance._ai_thinking:
+                return jsonify({"error": "AI 正在思考"}), 409
+            if instance.engine.current_turn_color != instance.player_color:
+                return jsonify({"error": "当前不是玩家回合"}), 409
+            if not instance.submit_player_action():
+                return jsonify({"error": "The Present 尚未推进完成或王仍受威胁"}), 400
+    else:
+        if not instance.engine.can_submit_action():
+            return jsonify({"error": "The Present 尚未推进完成或王仍受威胁"}), 400
+        if not instance.engine.submit_action():
+            return jsonify({"error": "Action提交失败"}), 400
     return jsonify({"success": True, **get_game_state()})
 
 
@@ -430,7 +444,9 @@ def api_legal_moves():
     if _game_session["mode"] == "replay":
         return jsonify({"moves": []})
     try:
-        return jsonify({"moves": [_move_payload(m) for m in instance.engine.get_legal_moves()]})
+        lock_context = getattr(instance, "_lock", None) or nullcontext()
+        with lock_context:
+            return jsonify({"moves": [_move_payload(m) for m in instance.engine.get_legal_moves()]})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -449,17 +465,22 @@ def api_execute_move():
         return jsonify({"error": "缺少走子坐标"}), 400
 
     try:
-        moves = instance.engine.get_legal_moves()
-        match = next(
-            (
-                m for m in moves
-                if (m.from_x, m.from_y, m.to_x, m.to_y) == (fx, fy, tx, ty)
-            ),
-            None,
-        )
-        if match is None:
-            return jsonify({"error": "非法走子"}), 400
-        success = instance.engine.execute_move(match)
+        lock_context = getattr(instance, "_lock", None) or nullcontext()
+        with lock_context:
+            moves = instance.engine.get_legal_moves()
+            match = next(
+                (
+                    m for m in moves
+                    if (m.from_x, m.from_y, m.to_x, m.to_y) == (fx, fy, tx, ty)
+                ),
+                None,
+            )
+            if match is None:
+                return jsonify({"error": "非法走子"}), 400
+            if _game_session["mode"] == "pve":
+                success = instance.execute_player_action_move(match)
+            else:
+                success = instance.engine.execute_move(match)
         return jsonify({"success": success, **get_game_state()})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -484,37 +505,42 @@ def api_select_square():
 
 @app.route("/api/game/ai_move", methods=["POST"])
 def api_ai_move():
-    """Let the legacy AI finish its current Action as far as it can."""
+    """Plan and apply exactly one complete AI Action."""
     instance = _get_mode_instance()
     if instance is None or _game_session["mode"] != "pve":
         return jsonify({"error": "非PvE模式"}), 400
 
-    ai_color = instance.ai_color
-    executed: list[dict[str, Any]] = []
-    # Required boards normally bound Action length.  The guard prevents a
-    # broken legacy AI from trapping the Web request forever.
-    guard = 128
     try:
-        while (
-            guard > 0
-            and instance.engine.game_state == GameState.PLAYING
-            and instance.engine.current_turn_color == ai_color
-        ):
-            guard -= 1
-            move = instance.ai.choose_move(instance.engine)
-            if move is None or not instance.engine.execute_move(move):
-                break
-            executed.append(_move_payload(move))
+        result = instance.execute_ai_action()
+    except Exception:
+        # execute_ai_action normally converts failures to safe result objects;
+        # retain a safe HTTP fallback for unexpected integration errors.
+        logger.exception("Web AI Action 执行失败")
+        return jsonify({"error": "AI Action 执行失败，请重试", **get_game_state()}), 500
 
-        if guard == 0 and instance.engine.current_turn_color == ai_color:
-            logger.warning("AI Action reached Web safety guard before submission")
-        return jsonify({
-            "success": bool(executed),
-            "moves": executed,
-            **get_game_state(),
-        })
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    moves = result.get("moves") or ()
+    payload = {
+        "success": bool(result.get("success")),
+        "moves": [_move_payload(move) for move in moves],
+    }
+    if result.get("warning"):
+        payload["warning"] = result["warning"]
+    if result.get("error"):
+        payload["error"] = result["error"]
+        payload["error_code"] = result.get("error_code")
+        status = {
+            "busy": 409,
+            "wrong_turn": 409,
+            "game_over": 409,
+            "stale_plan": 409,
+            "plan_failed": 422,
+            "action_failed": 409,
+        }.get(result.get("error_code"), 400)
+        payload.update(get_game_state())
+        return jsonify(payload), status
+
+    payload.update(get_game_state())
+    return jsonify(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +615,16 @@ def get_game_state() -> dict[str, Any]:
     if instance is None:
         return {"game_state": "WAITING"}
 
+    lock = getattr(instance, "_lock", None)
+    if lock is None:
+        return _get_game_state_unlocked(instance)
+    with lock:
+        return _get_game_state_unlocked(instance)
+
+
+def _get_game_state_unlocked(instance) -> dict[str, Any]:
+    """Serialize state while the caller owns the mode's optional lock."""
+
     engine = instance.engine
     mode = _game_session["mode"]
     interactive = mode in ("pvp", "pve")
@@ -652,7 +688,7 @@ def get_game_state() -> dict[str, Any]:
             "boards": [_coord_payload(coord) for coord in present.boards],
         }
 
-    return {
+    state = {
         "mode": mode,
         "game_state": engine.game_state.name,
         "turn": engine.current_turn_color.value,
@@ -674,6 +710,13 @@ def get_game_state() -> dict[str, Any]:
         **pvp_data,
         **replay_data,
     }
+    if mode == "pve":
+        state.update({
+            "ai_thinking": instance._ai_thinking,
+            "ai_warning": instance._ai_warning,
+            "ai_error": instance._ai_error,
+        })
+    return state
 
 
 # ---------------------------------------------------------------------------
