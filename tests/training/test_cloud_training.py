@@ -73,6 +73,24 @@ def test_arena_gate_only_rejects_illegal_or_stale():
         arena_gate({"illegal_action_count": 0, "stale_failure_count": 1})
 
 
+def test_arena_gate_rejects_unexpected_but_allows_planning_budget():
+    assert arena_gate({
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "budget_termination_count": 1,
+        "planning_failure_count": 1,
+        "unexpected_failure_count": 0,
+    })
+    with pytest.raises(RuntimeError):
+        arena_gate({
+            "illegal_action_count": 0,
+            "stale_failure_count": 0,
+            "budget_termination_count": 0,
+            "planning_failure_count": 0,
+            "unexpected_failure_count": 1,
+        })
+
+
 def _checkpoint(path: Path, *, preset: str = "tiny", epoch: int = 1, step: int = 2):
     model = PolicyValueModel(model_preset(preset))
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)

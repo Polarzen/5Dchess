@@ -247,20 +247,21 @@ def arena_passes(result: Mapping[str, Any]) -> bool:
     try:
         illegal = int(result["illegal_action_count"])
         stale = int(result["stale_failure_count"])
+        unexpected = int(result.get("unexpected_failure_count", 0))
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(
             "arena result must contain illegal_action_count and stale_failure_count"
         ) from exc
-    if illegal < 0 or stale < 0:
+    if illegal < 0 or stale < 0 or unexpected < 0:
         raise ValueError("arena failure counts must be non-negative")
-    return illegal == 0 and stale == 0
+    return illegal == 0 and stale == 0 and unexpected == 0
 
 
 def arena_gate(result: Mapping[str, Any]) -> bool:
     """Raise on unsafe arena results; budget termination is informational."""
     if not arena_passes(result):
         raise RuntimeError(
-            "arena gate failed: illegal or stale action failures were observed"
+            "arena gate failed: illegal, stale, or unexpected failures were observed"
         )
     return True
 
@@ -456,6 +457,9 @@ def _empty_arena_result(checkpoint: str | Path, opponent: str, games: int) -> di
         "illegal_action_count": 0,
         "stale_failure_count": 0,
         "budget_termination_count": 0,
+        "planning_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "first_failure": None,
         "average_inference_ms": 0.0,
         "checkpoint_epoch": None,
     }
