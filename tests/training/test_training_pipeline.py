@@ -13,6 +13,7 @@ pytest.importorskip("safetensors")
 from src.ai.action_planner import (
     AIActionPlan,
     ActionPlanner,
+    ActionPlanningError,
     ActionSearchBudget,
     apply_action_plan,
     engine_state_signature,
@@ -24,6 +25,7 @@ from src.engine.move_generator import Move
 from src.engine.piece import Piece
 from src.engine.timeline import Timeline
 from src.training.arena import evaluate_arena
+from src.training.agent import NeuralPolicyValueAgent
 from src.training.checkpoint import (
     CheckpointFormatError,
     load_checkpoint,
@@ -415,6 +417,51 @@ def test_arena_tiny_game_has_no_illegal_actions(tmp_path):
     )
     assert result["illegal_action_count"] == 0
     assert result["stale_failure_count"] == 0
+
+
+def test_arena_incomplete_planning_failure_is_budget_termination(tmp_path, monkeypatch):
+    model = PolicyValueModel(model_preset("tiny"))
+    checkpoint = tmp_path / "checkpoint"
+    save_checkpoint(
+        checkpoint,
+        model,
+        epoch=0,
+        global_step=0,
+        seed=1,
+        best_validation_loss=None,
+        training_config={},
+    )
+
+    def fail_to_plan(self, engine):
+        raise ActionPlanningError("time_budget", incomplete=True)
+
+    monkeypatch.setattr(NeuralPolicyValueAgent, "plan_action", fail_to_plan)
+    result = evaluate_arena(
+        checkpoint=checkpoint,
+        opponent="easy",
+        games=1,
+        device_name="cpu",
+        seed=9,
+        max_actions=1,
+        budget=ActionSearchBudget(
+            max_states=64, max_actions=4, max_move_depth=4, max_seconds=0.25
+        ),
+    )
+    assert result["illegal_action_count"] == 0
+    assert result["stale_failure_count"] == 0
+    assert result["budget_termination_count"] == 1
+    assert result["planning_failure_count"] == 1
+    assert result["unexpected_failure_count"] == 0
+    assert result["first_failure"]["game_id"] == 1
+    assert result["first_failure"]["game_index"] == 0
+    assert result["first_failure"]["candidate_count"] == 0
+    assert result["first_failure"]["chosen_index"] is None
+    assert result["first_failure"]["plan_move_count"] is None
+    assert result["first_failure"]["failure_stage"] == "planning"
+    assert result["first_failure"]["exception_class"] == "ActionPlanningError"
+    assert result["first_failure"]["planning_reason"] == "time_budget"
+    assert result["first_failure"]["planning_incomplete"] is True
+    assert "fail_to_plan" in result["first_failure"]["traceback"]
 
 
 def test_small_model_is_consumer_scale():

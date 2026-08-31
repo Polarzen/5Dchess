@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 import argparse
+from enum import Enum
+import hashlib
 import json
 from pathlib import Path
 import time
-from typing import Sequence
+import traceback
+from typing import Any, Mapping, Sequence
 
-from src.ai.action_planner import ActionSearchBudget, apply_action_plan
+from src.ai.action_planner import (
+    ActionApplicationError,
+    ActionPlanningError,
+    ActionSearchBudget,
+    InvalidActionPlanError,
+    StaleActionPlanError,
+    apply_action_plan,
+    engine_state_signature,
+)
 from src.ai.alpha_beta import AlphaBetaAI
 from src.ai.hard_ai import HardAI
 from src.ai.random_ai import RandomAI
@@ -16,6 +27,162 @@ from src.training.agent import NeuralPolicyValueAgent
 from src.training.checkpoint import load_checkpoint
 from src.training.utils import print_device_report, resolve_device, seed_everything, write_json
 from src.utils.constants import ChessColor, GameState
+
+
+def _jsonable(value: Any) -> Any:
+    """Convert forensic values into plain JSON-compatible values."""
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _jsonable(item())
+        except Exception:
+            pass
+    return str(value)
+
+
+def _signature_sha256(value: Any) -> str | None:
+    try:
+        payload = json.dumps(
+            _jsonable(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except Exception:
+        return None
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _state_signature_sha256(engine: FiveDEngine) -> str | None:
+    return _signature_sha256(engine_state_signature(engine))
+
+
+def _square_forensic(square: Any) -> dict[str, Any] | None:
+    board = getattr(square, "board", None)
+    if board is None:
+        return None
+    return {
+        "timeline": _jsonable(getattr(board, "timeline", None)),
+        "turn": _jsonable(getattr(board, "turn", None)),
+        "side": _jsonable(getattr(board, "side", None)),
+        "x": _jsonable(getattr(square, "x", None)),
+        "y": _jsonable(getattr(square, "y", None)),
+    }
+
+
+def _canonical_move_specs(plan: Any) -> tuple[int | None, list[dict[str, Any]]]:
+    if plan is None:
+        return None, []
+    try:
+        moves = tuple(plan.moves)
+    except Exception:
+        return None, []
+    specs: list[dict[str, Any]] = []
+    for index, move in enumerate(moves):
+        source = _square_forensic(getattr(move, "source", None))
+        destination = _square_forensic(getattr(move, "destination", None))
+        specs.append({
+            "index": index,
+            "source": source,
+            "destination": destination,
+            "promotion": _jsonable(getattr(move, "promotion", None)),
+        })
+    return len(moves), specs
+
+
+def _failure_record(
+    *,
+    engine: FiveDEngine,
+    game_index: int,
+    action_index: int,
+    plan: Any,
+    failure_stage: str,
+    exc: Exception,
+    traceback_text: str,
+) -> dict[str, Any]:
+    move_count, move_specs = _canonical_move_specs(plan)
+    metadata: Mapping[str, Any] = {}
+    if plan is not None:
+        candidate_metadata = getattr(plan, "metadata", {})
+        if isinstance(candidate_metadata, Mapping):
+            metadata = candidate_metadata
+    try:
+        candidate_count = int(metadata.get("candidate_count", 0))
+    except (TypeError, ValueError):
+        candidate_count = 0
+    if candidate_count < 0:
+        candidate_count = 0
+    chosen_index = metadata.get("selected_index")
+    logit = getattr(plan, "score", None) if plan is not None else None
+    if chosen_index is not None:
+        chosen_index = _jsonable(chosen_index)
+    logit = _jsonable(logit)
+
+    planning_error = exc if isinstance(exc, ActionPlanningError) else None
+    player = getattr(engine, "current_turn_color", None)
+    timeline_manager = getattr(engine, "timeline_manager", None)
+    timelines = getattr(timeline_manager, "timelines", {})
+    try:
+        timeline_count = len(timelines)
+    except Exception:
+        timeline_count = None
+    plan_signature_sha256 = (
+        _signature_sha256(getattr(plan, "start_signature", None))
+        if plan is not None
+        else None
+    )
+    return {
+        "game_id": game_index + 1,
+        "game_index": game_index,
+        "action_index": action_index,
+        "ply": _jsonable(getattr(engine, "move_counter", None)),
+        "player": _jsonable(player),
+        "state_signature_sha256": _state_signature_sha256(engine),
+        "timeline_count": timeline_count,
+        "candidate_count": candidate_count,
+        "chosen_index": chosen_index,
+        "logit": logit,
+        "plan_move_count": move_count,
+        "canonical_move_specs": move_specs,
+        "failure_stage": failure_stage,
+        "exception_class": type(exc).__name__,
+        "exception_qualified_class": f"{type(exc).__module__}.{type(exc).__qualname__}",
+        "message": str(exc),
+        "traceback": traceback_text,
+        "planning_reason": (
+            _jsonable(planning_error.reason) if planning_error is not None else None
+        ),
+        "planning_incomplete": (
+            _jsonable(planning_error.incomplete) if planning_error is not None else None
+        ),
+        "explored_states": (
+            _jsonable(planning_error.explored_states)
+            if planning_error is not None
+            else _jsonable(metadata.get("explored_states", 0))
+        ),
+        "explored_actions": (
+            _jsonable(planning_error.explored_actions)
+            if planning_error is not None
+            else _jsonable(metadata.get("explored_actions", 0))
+        ),
+        "plan_metadata": _jsonable(dict(metadata)) if plan is not None else None,
+        "plan_start_signature_sha256": plan_signature_sha256,
+    }
+
+
+def _record_first_failure(
+    first_failure: dict[str, Any] | None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return first_failure if first_failure is not None else _failure_record(**kwargs)
 
 
 def _baseline(name: str, color: ChessColor, seed: int, budget: ActionSearchBudget):
@@ -66,6 +233,8 @@ def evaluate_arena(
 
     wins = draws = losses = 0
     illegal = stale_failures = budget_terminations = 0
+    planning_failures = unexpected_failures = 0
+    first_failure: dict[str, Any] | None = None
     action_counts: list[int] = []
     inference_times: list[float] = []
     started = time.monotonic()
@@ -95,9 +264,11 @@ def evaluate_arena(
         )
         completed_actions = 0
         failed = False
-        for _ in range(max_actions):
+        for action_index in range(max_actions):
             if engine.game_state != GameState.PLAYING:
                 break
+            plan = None
+            failure_stage = "planning"
             try:
                 if engine.current_turn_color == neural_color:
                     plan = neural.plan_action(engine)
@@ -105,14 +276,30 @@ def evaluate_arena(
                         inference_times.append(neural.last_decision.inference_ms)
                 else:
                     plan = baseline.plan_action(engine)
+                failure_stage = "application"
                 apply_action_plan(engine, plan)
                 completed_actions += 1
             except Exception as exc:
-                text = str(exc).lower()
-                if "stale" in text or "state changed" in text:
+                if isinstance(exc, StaleActionPlanError):
                     stale_failures += 1
-                else:
+                elif isinstance(exc, (InvalidActionPlanError, ActionApplicationError)):
                     illegal += 1
+                elif isinstance(exc, ActionPlanningError):
+                    planning_failures += 1
+                    if exc.incomplete:
+                        budget_terminations += 1
+                else:
+                    unexpected_failures += 1
+                first_failure = _record_first_failure(
+                    first_failure,
+                    engine=engine,
+                    game_index=game_index,
+                    action_index=action_index,
+                    plan=plan,
+                    failure_stage=failure_stage,
+                    exc=exc,
+                    traceback_text=traceback.format_exc(),
+                )
                 failed = True
                 break
         else:
@@ -155,6 +342,9 @@ def evaluate_arena(
         "illegal_action_count": illegal,
         "stale_failure_count": stale_failures,
         "budget_termination_count": budget_terminations,
+        "planning_failure_count": planning_failures,
+        "unexpected_failure_count": unexpected_failures,
+        "first_failure": first_failure,
         "average_inference_ms": (
             sum(inference_times) / len(inference_times) if inference_times else 0.0
         ),
@@ -215,7 +405,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     if args.result_json is not None:
         write_json(args.result_json, result)
-    return 1 if (result["illegal_action_count"] or result["stale_failure_count"]) else 0
+    return 1 if (
+        result["illegal_action_count"]
+        or result["stale_failure_count"]
+        or result.get("unexpected_failure_count", 0)
+    ) else 0
 
 
 if __name__ == "__main__":
