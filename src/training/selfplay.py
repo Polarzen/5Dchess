@@ -19,7 +19,11 @@ from src.ai.action_planner import (
 )
 from src.ai.evaluator import Evaluator
 from src.engine.engine import FiveDEngine
-from src.training.config import PlannerConfig
+from src.training.config import (
+    DEFAULT_PLANNER_CANDIDATE_LIMIT,
+    DEFAULT_PLANNER_SECONDS,
+    PlannerConfig,
+)
 from src.training.dataset import DatasetWriter, TrainingSample
 from src.training.encoding import EncodedCandidates, EncodedState, encode_candidates, encode_state
 from src.training.utils import seed_everything, write_json
@@ -328,9 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-actions", type=int, default=200)
     parser.add_argument("--shard-size", type=int, default=256)
     parser.add_argument("--planner-states", type=int, default=256)
-    parser.add_argument("--planner-actions", type=int, default=24)
+    parser.add_argument(
+        "--planner-actions", type=int, default=DEFAULT_PLANNER_CANDIDATE_LIMIT
+    )
     parser.add_argument("--planner-moves", type=int, default=32)
-    parser.add_argument("--planner-seconds", type=float, default=0.5)
+    parser.add_argument("--planner-seconds", type=float, default=DEFAULT_PLANNER_SECONDS)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--max-wall-seconds",

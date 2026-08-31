@@ -56,6 +56,11 @@ on:
         required: true
         type: number
         default: 20
+      arena_planner_seconds:
+        description: Per-action Arena planning wall-time budget in seconds (0.1..60)
+        required: true
+        type: number
+        default: 0.5
       retain_dataset:
         description: Keep dataset Artifact 7 days instead of 1 day
         required: true
@@ -106,6 +111,7 @@ jobs:
           INPUT_RUN_ARENA: ${{ inputs.run_arena }}
           INPUT_ARENA_OPPONENT: ${{ inputs.arena_opponent }}
           INPUT_ARENA_GAMES: ${{ inputs.arena_games }}
+          INPUT_ARENA_PLANNER_SECONDS: ${{ inputs.arena_planner_seconds }}
           INPUT_RETAIN_DATASET: ${{ inputs.retain_dataset }}
           INPUT_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
           INPUT_RESUME_ARTIFACT: ${{ inputs.resume_artifact }}
@@ -122,6 +128,7 @@ jobs:
             --run-arena "$INPUT_RUN_ARENA" \
             --arena-opponent "$INPUT_ARENA_OPPONENT" \
             --arena-games "$INPUT_ARENA_GAMES" \
+            --arena-planner-seconds "$INPUT_ARENA_PLANNER_SECONDS" \
             --retain-dataset "$INPUT_RETAIN_DATASET" \
             --resume-run-id "$INPUT_RESUME_RUN_ID" \
             --resume-artifact "$INPUT_RESUME_ARTIFACT" \
@@ -340,6 +347,7 @@ jobs:
         env:
           INPUT_ARENA_OPPONENT: ${{ inputs.arena_opponent }}
           INPUT_ARENA_GAMES: ${{ inputs.arena_games }}
+          INPUT_ARENA_PLANNER_SECONDS: ${{ inputs.arena_planner_seconds }}
           INPUT_SEED: ${{ inputs.seed }}
           INPUT_MAX_ACTIONS: ${{ inputs.max_actions }}
         run: |
@@ -348,6 +356,7 @@ jobs:
             --checkpoint _work/checkpoint/best \
             --opponent "$INPUT_ARENA_OPPONENT" \
             --games "$INPUT_ARENA_GAMES" \
+            --planner-seconds "$INPUT_ARENA_PLANNER_SECONDS" \
             --device cpu \
             --seed "$INPUT_SEED" \
             --max-actions "$INPUT_MAX_ACTIONS" \

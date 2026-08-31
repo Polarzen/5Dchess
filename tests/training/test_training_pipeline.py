@@ -24,7 +24,7 @@ from src.engine.engine import FiveDEngine
 from src.engine.move_generator import Move
 from src.engine.piece import Piece
 from src.engine.timeline import Timeline
-from src.training.arena import evaluate_arena
+from src.training.arena import build_parser as build_arena_parser, evaluate_arena
 from src.training.agent import NeuralPolicyValueAgent
 from src.training.checkpoint import (
     CheckpointFormatError,
@@ -32,7 +32,14 @@ from src.training.checkpoint import (
     load_resume_state,
     save_checkpoint,
 )
-from src.training.config import DEFAULT_ENCODING, PlannerConfig, model_preset
+from src.training.config import (
+    DEFAULT_ARENA_PLANNER_SECONDS,
+    DEFAULT_ENCODING,
+    DEFAULT_PLANNER_CANDIDATE_LIMIT,
+    DEFAULT_PLANNER_SECONDS,
+    PlannerConfig,
+    model_preset,
+)
 from src.training.dataset import (
     DatasetFormatError,
     DatasetWriter,
@@ -48,7 +55,7 @@ from src.training.encoding import (
     encode_state,
 )
 from src.training.model import PolicyValueModel, policy_value_loss
-from src.training.selfplay import generate_selfplay
+from src.training.selfplay import build_parser as build_selfplay_parser, generate_selfplay
 from src.training.utils import resolve_device, seed_everything
 from src.utils.constants import ChessColor, PieceType
 
@@ -335,6 +342,59 @@ def test_resume_preserves_epoch_and_step(tmp_path):
 def test_device_auto_falls_back_to_cpu(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert resolve_device("auto").type == "cpu"
+
+
+def test_planner_candidate_defaults_are_shared_across_training_parsers():
+    assert PlannerConfig().max_actions == DEFAULT_PLANNER_CANDIDATE_LIMIT
+    selfplay_args = build_selfplay_parser().parse_args(["--output", "dataset"])
+    arena_args = build_arena_parser().parse_args(["--checkpoint", "checkpoint"])
+    assert selfplay_args.planner_actions == DEFAULT_PLANNER_CANDIDATE_LIMIT
+    assert arena_args.planner_actions == DEFAULT_PLANNER_CANDIDATE_LIMIT
+    assert selfplay_args.planner_seconds == DEFAULT_PLANNER_SECONDS
+    assert arena_args.planner_seconds == DEFAULT_ARENA_PLANNER_SECONDS
+
+
+@pytest.mark.parametrize("value", [0, -1, "nan", "inf", 60.1, "not-a-number"])
+def test_arena_parser_rejects_invalid_planner_seconds(value):
+    with pytest.raises(SystemExit):
+        build_arena_parser().parse_args([
+            "--checkpoint", "checkpoint", "--planner-seconds", str(value)
+        ])
+
+
+def test_arena_cli_passes_explicit_planner_budget(monkeypatch):
+    captured = {}
+
+    def fake_evaluate_arena(**kwargs):
+        captured.update(kwargs)
+        return {
+            "illegal_action_count": 0,
+            "stale_failure_count": 0,
+            "unexpected_failure_count": 0,
+        }
+
+    monkeypatch.setattr("src.training.arena.evaluate_arena", fake_evaluate_arena)
+    from src.training.arena import main
+
+    assert main([
+        "--checkpoint", "checkpoint", "--games", "1", "--device", "cpu",
+        "--planner-seconds", "2", "--output", "json",
+    ]) == 0
+    assert captured["budget"].max_actions == DEFAULT_PLANNER_CANDIDATE_LIMIT
+    assert captured["budget"].max_seconds == 2.0
+
+
+@pytest.mark.parametrize("seconds", [None, 0, -1, float("nan"), float("inf"), 60.1])
+def test_evaluate_arena_rejects_invalid_supplied_planner_budget(seconds):
+    with pytest.raises(ValueError):
+        evaluate_arena(
+            checkpoint="missing-checkpoint",
+            opponent="easy",
+            games=1,
+            device_name="cpu",
+            seed=1,
+            budget=ActionSearchBudget(max_seconds=seconds),
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

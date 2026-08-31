@@ -25,6 +25,12 @@ from src.ai.random_ai import RandomAI
 from src.engine.engine import FiveDEngine
 from src.training.agent import NeuralPolicyValueAgent
 from src.training.checkpoint import load_checkpoint
+from src.training.config import (
+    DEFAULT_ARENA_PLANNER_SECONDS,
+    DEFAULT_PLANNER_CANDIDATE_LIMIT,
+    parse_arena_planner_seconds,
+    validate_arena_planner_seconds,
+)
 from src.training.utils import print_device_report, resolve_device, seed_everything, write_json
 from src.utils.constants import ChessColor, GameState
 
@@ -219,6 +225,24 @@ def evaluate_arena(
     output = str(output).lower()
     if output not in {"text", "json"}:
         raise ValueError("output must be text or JSON")
+    if budget is None:
+        budget = ActionSearchBudget(
+            max_states=256,
+            max_actions=DEFAULT_PLANNER_CANDIDATE_LIMIT,
+            max_move_depth=32,
+            max_seconds=DEFAULT_ARENA_PLANNER_SECONDS,
+        )
+    else:
+        # Arena always requires an explicit, finite per-action wall budget.
+        # Rebuild the immutable budget with the normalized value so result
+        # metadata and the actual planner use the same float.
+        planner_seconds = validate_arena_planner_seconds(budget.max_seconds)
+        budget = ActionSearchBudget(
+            max_states=budget.max_states,
+            max_actions=budget.max_actions,
+            max_move_depth=budget.max_move_depth,
+            max_seconds=planner_seconds,
+        )
     quiet = output == "json"
     # NumPy requires an unsigned seed; cloud workflow inputs intentionally
     # allow signed decimal values.
@@ -227,10 +251,6 @@ def evaluate_arena(
     if not quiet:
         print_device_report(device_name)
     model, metadata = load_checkpoint(checkpoint, device=device)
-    budget = budget or ActionSearchBudget(
-        max_states=256, max_actions=16, max_move_depth=32, max_seconds=0.5
-    )
-
     wins = draws = losses = 0
     illegal = stale_failures = budget_terminations = 0
     planning_failures = unexpected_failures = 0
@@ -350,6 +370,8 @@ def evaluate_arena(
         ),
         "checkpoint_epoch": metadata.get("epoch"),
         "games_requested": games,
+        "candidate_limit": budget.max_actions,
+        "planner_budget_seconds": budget.max_seconds,
     }
     if not quiet:
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -365,9 +387,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--max-actions", type=int, default=120)
     parser.add_argument("--planner-states", type=int, default=256)
-    parser.add_argument("--planner-actions", type=int, default=16)
+    parser.add_argument(
+        "--planner-actions", type=int, default=DEFAULT_PLANNER_CANDIDATE_LIMIT
+    )
     parser.add_argument("--planner-moves", type=int, default=32)
-    parser.add_argument("--planner-seconds", type=float, default=0.5)
+    parser.add_argument(
+        "--planner-seconds",
+        type=parse_arena_planner_seconds,
+        default=DEFAULT_ARENA_PLANNER_SECONDS,
+    )
     parser.add_argument("--max-wall-seconds", type=float, default=None)
     parser.add_argument(
         "--output",

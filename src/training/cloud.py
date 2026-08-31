@@ -17,7 +17,12 @@ import re
 from typing import Any, Mapping, Sequence
 
 from src.training.config import (
+    DEFAULT_ARENA_PLANNER_SECONDS,
+    DEFAULT_PLANNER_CANDIDATE_LIMIT,
+    DEFAULT_PLANNER_SECONDS,
     PlannerConfig,
+    parse_arena_planner_seconds,
+    validate_arena_planner_seconds,
 )
 
 
@@ -291,6 +296,7 @@ def validate_cloud_inputs(
     selfplay_wall_seconds: Any | None = None,
     train_wall_seconds: Any | None = None,
     arena_wall_seconds: Any | None = None,
+    arena_planner_seconds: Any | None = None,
     max_wall_seconds: Any | None = None,
 ) -> dict[str, Any]:
     if target_epochs is None:
@@ -362,6 +368,10 @@ def validate_cloud_inputs(
     )
     result["train_wall_seconds"] = validate_wall_seconds(train_wall_seconds, "train")
     result["arena_wall_seconds"] = validate_wall_seconds(arena_wall_seconds, "arena")
+    if arena_planner_seconds is not None:
+        result["arena_planner_seconds"] = validate_arena_planner_seconds(
+            arena_planner_seconds
+        )
     result["artifacts"] = artifact_names(result["run_id"])
     return result
 
@@ -442,7 +452,14 @@ def validate_arena_gate(result: Mapping[str, Any]) -> bool:
     return arena_gate(result)
 
 
-def _empty_arena_result(checkpoint: str | Path, opponent: str, games: int) -> dict[str, Any]:
+def _empty_arena_result(
+    checkpoint: str | Path,
+    opponent: str,
+    games: int,
+    *,
+    candidate_limit: int = DEFAULT_PLANNER_CANDIDATE_LIMIT,
+    planner_budget_seconds: float = DEFAULT_ARENA_PLANNER_SECONDS,
+) -> dict[str, Any]:
     return {
         "checkpoint": str(Path(checkpoint).expanduser().resolve()),
         "opponent": opponent,
@@ -462,6 +479,8 @@ def _empty_arena_result(checkpoint: str | Path, opponent: str, games: int) -> di
         "first_failure": None,
         "average_inference_ms": 0.0,
         "checkpoint_epoch": None,
+        "candidate_limit": candidate_limit,
+        "planner_budget_seconds": planner_budget_seconds,
     }
 
 
@@ -593,6 +612,9 @@ def _build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--selfplay-wall-seconds", type=float)
     validate.add_argument("--train-wall-seconds", type=float)
     validate.add_argument("--arena-wall-seconds", type=float)
+    validate.add_argument(
+        "--arena-planner-seconds", type=parse_arena_planner_seconds
+    )
     validate.add_argument("--run-arena")
     validate.add_argument("--arena-opponent")
     validate.add_argument("--retain-dataset")
@@ -620,9 +642,15 @@ def _build_parser() -> argparse.ArgumentParser:
     selfplay.add_argument("--max-actions", type=int, default=200)
     selfplay.add_argument("--shard-size", type=int, default=256)
     selfplay.add_argument("--planner-states", type=int, default=256)
-    selfplay.add_argument("--planner-actions", type=int, default=24)
+    selfplay.add_argument(
+        "--planner-actions", type=int, default=DEFAULT_PLANNER_CANDIDATE_LIMIT
+    )
     selfplay.add_argument("--planner-moves", type=int, default=32)
-    selfplay.add_argument("--planner-seconds", type=float, default=0.5)
+    selfplay.add_argument(
+        "--planner-seconds",
+        type=float,
+        default=DEFAULT_PLANNER_SECONDS,
+    )
     selfplay.add_argument("--max-wall-seconds", type=float)
     selfplay.add_argument("--resume", action="store_true")
     selfplay.add_argument("--deterministic-planner", action="store_true")
@@ -656,9 +684,15 @@ def _build_parser() -> argparse.ArgumentParser:
     arena.add_argument("--seed", type=int, default=100)
     arena.add_argument("--max-actions", type=int, default=120)
     arena.add_argument("--planner-states", type=int, default=256)
-    arena.add_argument("--planner-actions", type=int, default=16)
+    arena.add_argument(
+        "--planner-actions", type=int, default=DEFAULT_PLANNER_CANDIDATE_LIMIT
+    )
     arena.add_argument("--planner-moves", type=int, default=32)
-    arena.add_argument("--planner-seconds", type=float, default=0.5)
+    arena.add_argument(
+        "--planner-seconds",
+        type=parse_arena_planner_seconds,
+        default=DEFAULT_ARENA_PLANNER_SECONDS,
+    )
     arena.add_argument("--max-wall-seconds", type=float)
     arena.add_argument("--report", type=Path)
 
@@ -746,9 +780,16 @@ def _run_train(args: argparse.Namespace) -> int:
 
 
 def _run_arena(args: argparse.Namespace) -> int:
-    games = validate_arena_games(args.arena_games)
-    max_actions = validate_max_actions(args.max_actions)
-    seed = validate_seed(args.seed)
+    values = validate_cloud_inputs(
+        arena_games=args.arena_games,
+        max_actions=args.max_actions,
+        seed=args.seed,
+        arena_planner_seconds=args.planner_seconds,
+    )
+    games = values["arena_games"]
+    max_actions = values["max_actions"]
+    seed = values["seed"]
+    planner_seconds = values["arena_planner_seconds"]
     wall = validate_wall_seconds(
         cloud_budget("arena") if args.max_wall_seconds is None else args.max_wall_seconds,
         "arena",
@@ -756,7 +797,13 @@ def _run_arena(args: argparse.Namespace) -> int:
     paths = artifact_paths(args.artifacts_dir, args.run_id)
     checkpoint = args.checkpoint or paths["checkpoint"] / "best"
     if games == 0:
-        result = _empty_arena_result(checkpoint, args.opponent, games)
+        result = _empty_arena_result(
+            checkpoint,
+            args.opponent,
+            games,
+            candidate_limit=args.planner_actions,
+            planner_budget_seconds=planner_seconds,
+        )
     else:
         from src.ai.action_planner import ActionSearchBudget
         from src.training.arena import evaluate_arena
@@ -772,7 +819,7 @@ def _run_arena(args: argparse.Namespace) -> int:
                 max_states=args.planner_states,
                 max_actions=args.planner_actions,
                 max_move_depth=args.planner_moves,
-                max_seconds=args.planner_seconds,
+                max_seconds=planner_seconds,
             ),
             max_wall_seconds=wall,
             output="json",
@@ -804,6 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 selfplay_wall_seconds=args.selfplay_wall_seconds,
                 train_wall_seconds=args.train_wall_seconds,
                 arena_wall_seconds=args.arena_wall_seconds,
+                arena_planner_seconds=args.arena_planner_seconds,
                 run_arena=args.run_arena,
                 arena_opponent=args.arena_opponent,
                 retain_dataset=args.retain_dataset,

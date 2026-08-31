@@ -10,6 +10,8 @@ pytest.importorskip("safetensors")
 
 from src.training.checkpoint import save_checkpoint
 from src.training.cloud import (
+    _build_parser,
+    _run_arena,
     arena_gate,
     artifact_names,
     build_cloud_config,
@@ -21,6 +23,7 @@ from src.training.cloud import (
     validate_run_id,
 )
 from src.training.config import PlannerConfig, model_preset
+from src.training.config import DEFAULT_PLANNER_CANDIDATE_LIMIT
 from src.training.model import PolicyValueModel
 from src.training.selfplay import generate_selfplay
 from src.training.train import train_local
@@ -36,6 +39,41 @@ from src.training.train import train_local
 def test_cloud_numeric_bounds(field, bad):
     with pytest.raises(ValueError):
         validate_cloud_inputs(**{field: bad})
+
+
+@pytest.mark.parametrize("value", [0, -1, "nan", "inf", 60.1, "not-a-number"])
+def test_cloud_arena_planner_seconds_validation(value):
+    with pytest.raises(ValueError):
+        validate_cloud_inputs(arena_planner_seconds=value)
+
+
+def test_cloud_parsers_use_shared_candidate_default_and_validate_arena_seconds():
+    parser = _build_parser()
+    selfplay_args = parser.parse_args(["selfplay", "--games", "1"])
+    arena_args = parser.parse_args(["arena", "--games", "0"])
+    assert selfplay_args.planner_actions == DEFAULT_PLANNER_CANDIDATE_LIMIT
+    assert arena_args.planner_actions == DEFAULT_PLANNER_CANDIDATE_LIMIT
+    assert validate_cloud_inputs(arena_planner_seconds="2")["arena_planner_seconds"] == 2.0
+
+
+def test_cloud_arena_handler_uses_validated_planner_seconds(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_evaluate_arena(**kwargs):
+        captured.update(kwargs)
+        return {
+            "illegal_action_count": 0,
+            "stale_failure_count": 0,
+            "unexpected_failure_count": 0,
+        }
+
+    monkeypatch.setattr("src.training.arena.evaluate_arena", fake_evaluate_arena)
+    args = _build_parser().parse_args([
+        "arena", "--games", "1", "--checkpoint", str(tmp_path / "checkpoint"),
+        "--report", str(tmp_path / "arena.json"), "--planner-seconds", "2",
+    ])
+    assert _run_arena(args) == 0
+    assert captured["budget"].max_seconds == 2.0
 
 
 def test_cloud_enums_artifacts_retention_and_run_ids():
@@ -182,7 +220,8 @@ def test_cloud_workflow_is_manual_bounded_and_read_only():
     required = ["workflow_dispatch:", "timeout-minutes:", "contents: read",
                 "actions: read", "cancel-in-progress: false", "actions/upload-artifact@v4",
                 "actions/download-artifact@v4", "src.training.selfplay",
-                "src.training.train", "src.training.arena", "--result-json",
+                "src.training.train", "src.training.arena", "arena_planner_seconds",
+                "--arena-planner-seconds", "--planner-seconds", "--result-json",
                 "GITHUB_STEP_SUMMARY"]
     for token in required:
         assert token in text
@@ -190,6 +229,8 @@ def test_cloud_workflow_is_manual_bounded_and_read_only():
     assert "pull-requests: write" not in text
     assert "schedule:" not in text
     assert "git push" not in text
+    assert "description: Per-action Arena planning wall-time budget in seconds (0.1..60)" in text
+    assert "default: 0.5" in text
     trigger_prefix = text.split("permissions:", 1)[0]
     assert "\n  push:" not in trigger_prefix
     assert "\n  pull_request:" not in trigger_prefix
