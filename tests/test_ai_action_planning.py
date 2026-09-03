@@ -150,14 +150,40 @@ def test_standard_position_white_and_black_ai_complete_actions():
     assert all(action.submitted for action in engine.action_history)
 
 
-def test_multiple_required_boards_produce_multi_move_single_submit_action():
+def test_two_required_boards_prioritize_direct_cross_timeline_completion():
     engine = _two_required_boards_engine()
-    plan = RandomAI(ChessColor.WHITE, seed=2, budget=FAST_BUDGET).plan_action(engine)
-    applied = apply_action_plan(engine, plan)
+    before = engine_state_signature(engine)
+    required = set(ActionRules.required_boards(
+        engine._ensure_current_action(),
+        engine.timeline_manager.timelines,
+    ))
+    assert len(required) == 2
 
-    assert len(applied) >= 2
+    result = ActionPlanner(ActionSearchBudget(
+        max_states=1,
+        max_actions=1,
+        max_move_depth=1,
+        max_seconds=None,
+    )).search(engine)
+
+    assert engine_state_signature(engine) == before
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert len(candidate) == 1
+    spec = candidate[0]
+    assert spec.source.board in required
+    assert spec.destination.board in required
+    assert spec.source.board != spec.destination.board
+
+    plan = AIActionPlan(
+        color=ChessColor.WHITE,
+        moves=candidate,
+        start_signature=before,
+    )
+    applied = apply_action_plan(engine, plan)
+    assert len(applied) == 1
     assert len(engine.action_history) == 1
-    assert len(engine.action_history[0].moves) == len(applied)
+    assert engine.action_history[0].submitted
     assert engine.current_turn_color == ChessColor.BLACK
 
 
@@ -314,7 +340,7 @@ def test_action_move_depth_guard_returns_without_looping():
         RandomAI(
             ChessColor.WHITE,
             seed=1,
-            budget=ActionSearchBudget(128, 8, 1, 1.0),
+            budget=ActionSearchBudget(128, 8, 0, 1.0),
         ).plan_action(engine)
     assert time.monotonic() - started < 0.5
     assert exc_info.value.incomplete
