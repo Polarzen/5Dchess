@@ -1,4 +1,4 @@
-name: TEMP Arena terminal-state diagnostic
+name: TEMP Arena shallow-witness diagnostic
 
 on:
   push:
@@ -11,14 +11,14 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-terminal-state-${{ github.ref }}
+  group: temp-arena-shallow-witness-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   diagnose:
-    name: Exhaustive check of reproduced late-game state
+    name: Rank and benchmark immediate complete Actions
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reproduce and exhaustively classify failure state
+      - name: Reproduce and benchmark shallow completion scan
         run: |
           mkdir -p _work/arena-diagnostic
           python - <<'PY'
@@ -58,11 +58,10 @@ jobs:
           from pathlib import Path
           import time
 
-          from src.ai.action_planner import ActionPlanningError, ActionSearchBudget, MoveSpec, apply_action_plan
+          from src.ai.action_planner import ActionPlanningError, ActionSearchBudget, _required_move_sort_key, _required_board_progress, apply_action_plan
           from src.ai.random_ai import RandomAI
-          from src.engine.action_search import ActionSearch
+          from src.engine import ActionRules
           from src.engine.engine import FiveDEngine
-          from src.engine.royal_rules import RoyalRules
           from src.training.agent import NeuralPolicyValueAgent
           from src.training.arena import _state_signature_sha256
           from src.training.checkpoint import load_checkpoint
@@ -109,50 +108,65 @@ jobs:
               if failure_engine is not None:
                   break
 
-          report = {
-              'checkpoint_epoch': metadata.get('epoch'),
-              'failure': failure,
-              'searches': [],
-          }
+          report = {'checkpoint_epoch': metadata.get('epoch'), 'failure': failure}
           if failure_engine is None:
-              report['error'] = 'expected game-three failure was not reproduced'
+              report['error'] = 'expected failure not reproduced'
           else:
-              for max_states in (4096, 16384):
-                  started = time.perf_counter()
-                  result = ActionSearch(
-                      max_states=max_states,
-                      max_depth=64,
-                      max_seconds=None,
-                  ).find_legal_completion(failure_engine)
-                  row = {
-                      'max_states': max_states,
-                      'has_legal_action': result.has_legal_action,
-                      'explored_states': result.explored_states,
-                      'termination': result.termination_reason,
-                      'wall_ms': (time.perf_counter() - started) * 1000.0,
-                      'witness': [
-                          {
-                              'source': [m.source.board.timeline, m.source.board.turn, m.source.board.side.value, m.source.x, m.source.y],
-                              'destination': [m.destination.board.timeline, m.destination.board.turn, m.destination.board.side.value, m.destination.x, m.destination.y],
-                              'promotion': m.promotion.value if m.promotion else None,
+              state = deepcopy(failure_engine)
+              state.timeline_manager.refresh_activity()
+              action = state._ensure_current_action()
+              required = set(ActionRules.required_boards(action, state.timeline_manager.timelines))
+              movable = ActionRules.movable_boards(action, state.timeline_manager.timelines)
+              ordered_boards = tuple(sorted(movable, key=lambda b: (b not in required, b.timeline, b.turn, b.side.value)))
+              report['required_boards'] = [[b.timeline, b.turn, b.side.value] for b in sorted(required, key=lambda b:(b.timeline,b.turn,b.side.value))]
+              report['movable_board_count'] = len(movable)
+
+              flat = []
+              shallow_started = time.perf_counter()
+              first_complete = None
+              tested = 0
+              for board in ordered_boards:
+                  position = state._resolve_position(board)
+                  if position is None:
+                      continue
+                  moves = sorted(state.get_legal_moves(position), key=lambda m: _required_move_sort_key(m, required))
+                  for local_rank, move in enumerate(moves):
+                      tested += 1
+                      item = {
+                          'global_rank': tested,
+                          'local_rank': local_rank + 1,
+                          'source': [move.source.board.timeline, move.source.board.turn, move.source.board.side.value, move.source.x, move.source.y],
+                          'destination': [move.destination.board.timeline, move.destination.board.turn, move.destination.board.side.value, move.destination.x, move.destination.y],
+                          'piece': move.piece.piece_type.value,
+                          'captured': move.captured.piece_type.value if move.captured else None,
+                          'branching': bool(move.is_branching),
+                          'cross_timeline': bool(move.is_cross_timeline),
+                          'required_progress': _required_board_progress(move, required),
+                      }
+                      if len(flat) < 40:
+                          flat.append(item)
+                      child = deepcopy(state)
+                      if not child.execute_action_move(move):
+                          continue
+                      child_required = set(ActionRules.required_boards(child._ensure_current_action(), child.timeline_manager.timelines))
+                      if not child_required and child.can_submit_action():
+                          first_complete = item | {
+                              'child_required_count': 0,
+                              'wall_ms': (time.perf_counter() - shallow_started) * 1000.0,
+                              'tested_moves': tested,
                           }
-                          for m in result.witness
-                      ],
-                  }
-                  report['searches'].append(row)
-                  if result.has_legal_action or result.termination_reason is None:
+                          break
+                  if first_complete is not None:
                       break
 
-              final = report['searches'][-1]
-              if not final['has_legal_action'] and final['termination'] is None:
-                  in_check = RoyalRules(failure_engine.timeline_manager.timelines).is_in_check(failure_engine.current_turn_color)
-                  report['proved_terminal'] = True
-                  report['terminal_kind'] = 'checkmate' if in_check else 'stalemate'
-                  report['in_check'] = in_check
-              else:
-                  report['proved_terminal'] = False
+              report['first_40_current_order'] = flat
+              report['shallow_scan'] = {
+                  'tested_moves': tested,
+                  'wall_ms': (time.perf_counter() - shallow_started) * 1000.0,
+                  'first_complete': first_complete,
+              }
 
-          (root / 'terminal-classification.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          (root / 'shallow-witness.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
           print(json.dumps(report, indent=2, sort_keys=True))
           PY
 
@@ -160,7 +174,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-terminal-state-${{ github.run_id }}
+          name: temp-arena-shallow-witness-${{ github.run_id }}
           path: _work/arena-diagnostic
           retention-days: 3
           if-no-files-found: error
