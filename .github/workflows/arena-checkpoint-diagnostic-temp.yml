@@ -1,4 +1,4 @@
-name: TEMP Arena shallow-witness diagnostic
+name: TEMP Arena checkpoint validation
 
 on:
   push:
@@ -11,14 +11,14 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-shallow-witness-${{ github.ref }}
+  group: temp-arena-checkpoint-validation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  diagnose:
-    name: Rank and benchmark immediate complete Actions
+  arena-validation:
+    name: Existing checkpoint staged Arena gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 330
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
@@ -48,133 +48,155 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reproduce and benchmark shallow completion scan
+      - name: Run five-game planner budget matrix
+        shell: bash
         run: |
-          mkdir -p _work/arena-diagnostic
+          set -u
+          mkdir -p _work/arena-validation
+          for budget in 0.5 1.0 2.0 5.0; do
+            echo "=== five games, planner budget ${budget}s ==="
+            set +e
+            python -m src.training.arena \
+              --checkpoint _work/checkpoint/best \
+              --opponent easy \
+              --games 5 \
+              --planner-seconds "$budget" \
+              --planner-actions 24 \
+              --planner-states 256 \
+              --planner-moves 32 \
+              --device cpu \
+              --seed 42 \
+              --max-actions 120 \
+              --max-wall-seconds 3600 \
+              --output json \
+              --result-json "_work/arena-validation/five-${budget}.json"
+            status=$?
+            set -e
+            echo "$status" > "_work/arena-validation/five-${budget}.exit"
+          done
+
+      - name: Select minimum planner-clean five-game budget
+        run: |
           python - <<'PY'
-          from __future__ import annotations
-          from copy import deepcopy
           import json
           from pathlib import Path
-          import time
 
-          from src.ai.action_planner import ActionPlanningError, ActionSearchBudget, _required_move_sort_key, _required_board_progress, apply_action_plan
-          from src.ai.random_ai import RandomAI
-          from src.engine import ActionRules
-          from src.engine.engine import FiveDEngine
-          from src.training.agent import NeuralPolicyValueAgent
-          from src.training.arena import _state_signature_sha256
-          from src.training.checkpoint import load_checkpoint
-          from src.training.utils import resolve_device, seed_everything
-          from src.utils.constants import ChessColor, GameState
-
-          root = Path('_work/arena-diagnostic')
-          seed_everything(42)
-          device = resolve_device('cpu')
-          model, metadata = load_checkpoint('_work/checkpoint/best', device=device)
-          arena_budget = ActionSearchBudget(max_states=256, max_actions=24, max_move_depth=32, max_seconds=5.0)
-          failure_engine = None
-          failure = None
-
-          for game_index in range(3):
-              neural_color = ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
-              engine = FiveDEngine()
-              neural = NeuralPolicyValueAgent(model, neural_color, device=device, budget=arena_budget)
-              baseline = RandomAI(neural_color.opposite(), seed=42 + game_index + 1, budget=arena_budget)
-              for action_index in range(120):
-                  if engine.game_state != GameState.PLAYING:
-                      break
-                  actor = neural if engine.current_turn_color == neural_color else baseline
-                  actor_name = 'neural' if actor is neural else 'baseline'
-                  try:
-                      plan = actor.plan_action(engine)
-                  except ActionPlanningError as exc:
-                      if game_index == 2:
-                          failure_engine = deepcopy(engine)
-                          failure = {
-                              'game_index': game_index,
-                              'action_index': action_index,
-                              'actor': actor_name,
-                              'player': engine.current_turn_color.value,
-                              'ply': engine.move_counter,
-                              'timeline_count': len(engine.timeline_manager.timelines),
-                              'state_signature_sha256': _state_signature_sha256(engine),
-                              'reason': exc.reason,
-                              'incomplete': exc.incomplete,
-                              'explored_states': exc.explored_states,
-                          }
-                      break
-                  apply_action_plan(engine, plan)
-              if failure_engine is not None:
-                  break
-
-          report = {'checkpoint_epoch': metadata.get('epoch'), 'failure': failure}
-          if failure_engine is None:
-              report['error'] = 'expected failure not reproduced'
-          else:
-              state = deepcopy(failure_engine)
-              state.timeline_manager.refresh_activity()
-              action = state._ensure_current_action()
-              required = set(ActionRules.required_boards(action, state.timeline_manager.timelines))
-              movable = ActionRules.movable_boards(action, state.timeline_manager.timelines)
-              ordered_boards = tuple(sorted(movable, key=lambda b: (b not in required, b.timeline, b.turn, b.side.value)))
-              report['required_boards'] = [[b.timeline, b.turn, b.side.value] for b in sorted(required, key=lambda b:(b.timeline,b.turn,b.side.value))]
-              report['movable_board_count'] = len(movable)
-
-              flat = []
-              shallow_started = time.perf_counter()
-              first_complete = None
-              tested = 0
-              for board in ordered_boards:
-                  position = state._resolve_position(board)
-                  if position is None:
-                      continue
-                  moves = sorted(state.get_legal_moves(position), key=lambda m: _required_move_sort_key(m, required))
-                  for local_rank, move in enumerate(moves):
-                      tested += 1
-                      item = {
-                          'global_rank': tested,
-                          'local_rank': local_rank + 1,
-                          'source': [move.source.board.timeline, move.source.board.turn, move.source.board.side.value, move.source.x, move.source.y],
-                          'destination': [move.destination.board.timeline, move.destination.board.turn, move.destination.board.side.value, move.destination.x, move.destination.y],
-                          'piece': move.piece.piece_type.value,
-                          'captured': move.captured.piece_type.value if move.captured else None,
-                          'branching': bool(move.is_branching),
-                          'cross_timeline': bool(move.is_cross_timeline),
-                          'required_progress': _required_board_progress(move, required),
-                      }
-                      if len(flat) < 40:
-                          flat.append(item)
-                      child = deepcopy(state)
-                      if not child.execute_action_move(move):
-                          continue
-                      child_required = set(ActionRules.required_boards(child._ensure_current_action(), child.timeline_manager.timelines))
-                      if not child_required and child.can_submit_action():
-                          first_complete = item | {
-                              'child_required_count': 0,
-                              'wall_ms': (time.perf_counter() - shallow_started) * 1000.0,
-                              'tested_moves': tested,
-                          }
-                          break
-                  if first_complete is not None:
-                      break
-
-              report['first_40_current_order'] = flat
-              report['shallow_scan'] = {
-                  'tested_moves': tested,
-                  'wall_ms': (time.perf_counter() - shallow_started) * 1000.0,
-                  'first_complete': first_complete,
-              }
-
-          (root / 'shallow-witness.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          root = Path('_work/arena-validation')
+          budgets = ['0.5', '1.0', '2.0', '5.0']
+          report = {'checkpoint_run_id': 33347901504, 'stage': 'five-game', 'budgets': [], 'selected_budget': None}
+          selected = None
+          for budget in budgets:
+              path = root / f'five-{budget}.json'
+              entry = {'budget': float(budget), 'result_present': path.exists()}
+              if path.exists():
+                  data = json.loads(path.read_text(encoding='utf-8'))
+                  planner_clean = (
+                      data.get('games') == 5
+                      and data.get('planning_failure_count') == 0
+                      and data.get('illegal_action_count') == 0
+                      and data.get('stale_failure_count') == 0
+                      and data.get('unexpected_failure_count') == 0
+                      and data.get('first_failure') is None
+                  )
+                  entry.update({
+                      'planner_clean': planner_clean,
+                      'budget_termination_count': data.get('budget_termination_count'),
+                      'result': data,
+                  })
+                  if planner_clean and selected is None:
+                      selected = budget
+              else:
+                  entry['planner_clean'] = False
+              report['budgets'].append(entry)
+          report['selected_budget'] = float(selected) if selected is not None else None
+          (root / 'five-game-matrix.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          (root / 'selected-budget.txt').write_text(selected or '', encoding='utf-8')
           print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Run twenty-game final Arena gate
+        shell: bash
+        run: |
+          budget="$(cat _work/arena-validation/selected-budget.txt)"
+          if [[ -z "$budget" ]]; then
+            echo '{"stage":"twenty-game","skipped":true,"reason":"no planner-clean five-game budget"}' > _work/arena-validation/twenty-game-gate.json
+            exit 0
+          fi
+          echo "=== twenty games, selected planner budget ${budget}s ==="
+          set +e
+          python -m src.training.arena \
+            --checkpoint _work/checkpoint/best \
+            --opponent easy \
+            --games 20 \
+            --planner-seconds "$budget" \
+            --planner-actions 24 \
+            --planner-states 256 \
+            --planner-moves 32 \
+            --device cpu \
+            --seed 42 \
+            --max-actions 120 \
+            --max-wall-seconds 9000 \
+            --output json \
+            --result-json _work/arena-validation/twenty-game.json
+          status=$?
+          set -e
+          echo "$status" > _work/arena-validation/twenty-game.exit
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('_work/arena-validation')
+          path = root / 'twenty-game.json'
+          gate = {'stage': 'twenty-game', 'skipped': False, 'planner_clean': False}
+          if path.exists():
+              data = json.loads(path.read_text(encoding='utf-8'))
+              gate['result'] = data
+              gate['planner_clean'] = (
+                  data.get('games') == 20
+                  and data.get('planning_failure_count') == 0
+                  and data.get('illegal_action_count') == 0
+                  and data.get('stale_failure_count') == 0
+                  and data.get('unexpected_failure_count') == 0
+                  and data.get('first_failure') is None
+              )
+              gate['budget_termination_count'] = data.get('budget_termination_count')
+          (root / 'twenty-game-gate.json').write_text(json.dumps(gate, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(gate, indent=2, sort_keys=True))
+          PY
+
+      - name: Write diagnostic verdict
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('_work/arena-validation')
+          matrix = json.loads((root / 'five-game-matrix.json').read_text(encoding='utf-8'))
+          twenty_path = root / 'twenty-game-gate.json'
+          twenty = json.loads(twenty_path.read_text(encoding='utf-8')) if twenty_path.exists() else {}
+          summary = {
+              'checkpoint_run_id': 33347901504,
+              'checkpoint_epoch': 20,
+              'candidate_limit': 24,
+              'opponent': 'easy',
+              'seed': 42,
+              'selected_budget': matrix.get('selected_budget'),
+              'five_game_matrix': matrix.get('budgets'),
+              'twenty_game_gate': twenty,
+              'planner_ready': bool(twenty.get('planner_clean')),
+              'note': 'budget_termination_count also includes max_actions bounded draws; planning_failure_count/first_failure distinguish planner failure',
+          }
+          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if not summary['planner_ready']:
+              raise SystemExit(1)
           PY
 
       - name: Upload diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-shallow-witness-${{ github.run_id }}
-          path: _work/arena-diagnostic
+          name: temp-arena-checkpoint-validation-${{ github.run_id }}
+          path: _work/arena-validation
           retention-days: 3
           if-no-files-found: error
