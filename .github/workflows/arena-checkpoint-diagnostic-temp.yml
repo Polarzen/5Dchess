@@ -5,6 +5,7 @@ on:
     branches: [feat/local-ai-training-v2]
     paths:
       - .github/workflows/arena-checkpoint-diagnostic-temp.yml
+      - scripts/arena_witness_seed_probe_temp.py
       - src/training/arena.py
       - src/training/agent.py
 
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   arena-validation:
-    name: Existing checkpoint staged Arena gate
+    name: Existing checkpoint witness-first probe
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     steps:
@@ -50,15 +51,15 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run five-game planner budget matrix
+      - name: Run five-game witness-first budget matrix
         shell: bash
         run: |
           set -u
           mkdir -p _work/arena-validation
           for budget in 0.5 1.0 2.0 5.0; do
-            echo "=== five games, planner budget ${budget}s ==="
+            echo "=== five games, witness-first planner budget ${budget}s ==="
             set +e
-            python -m src.training.arena \
+            python scripts/arena_witness_seed_probe_temp.py \
               --checkpoint _work/checkpoint/best \
               --opponent easy \
               --games 5 \
@@ -107,7 +108,13 @@ jobs:
 
           root = Path('_work/arena-validation')
           budgets = ['0.5', '1.0', '2.0', '5.0']
-          report = {'checkpoint_run_id': 33347901504, 'stage': 'five-game', 'budgets': [], 'selected_budget': None}
+          report = {
+              'checkpoint_run_id': 33347901504,
+              'stage': 'five-game',
+              'planner_variant': 'witness-first-probe',
+              'budgets': [],
+              'selected_budget': None,
+          }
           selected = None
           for budget in budgets:
               path = root / f'five-{budget}.json'
@@ -140,17 +147,17 @@ jobs:
           print(json.dumps(report, indent=2, sort_keys=True))
           PY
 
-      - name: Run twenty-game final Arena gate
+      - name: Run twenty-game final Arena probe
         shell: bash
         run: |
           budget="$(cat _work/arena-validation/selected-budget.txt)"
           if [[ -z "$budget" ]]; then
-            echo '{"stage":"twenty-game","skipped":true,"reason":"no planner-clean five-game budget"}' > _work/arena-validation/twenty-game-gate.json
+            echo '{"stage":"twenty-game","skipped":true,"reason":"no planner-clean five-game budget","planner_variant":"witness-first-probe"}' > _work/arena-validation/twenty-game-gate.json
             exit 0
           fi
-          echo "=== twenty games, selected planner budget ${budget}s ==="
+          echo "=== twenty games, witness-first selected planner budget ${budget}s ==="
           set +e
-          python -m src.training.arena \
+          python scripts/arena_witness_seed_probe_temp.py \
             --checkpoint _work/checkpoint/best \
             --opponent easy \
             --games 20 \
@@ -173,7 +180,12 @@ jobs:
 
           root = Path('_work/arena-validation')
           path = root / 'twenty-game.json'
-          gate = {'stage': 'twenty-game', 'skipped': False, 'planner_clean': False}
+          gate = {
+              'stage': 'twenty-game',
+              'planner_variant': 'witness-first-probe',
+              'skipped': False,
+              'planner_clean': False,
+          }
           if path.exists():
               data = json.loads(path.read_text(encoding='utf-8'))
               gate['result'] = data
@@ -208,11 +220,12 @@ jobs:
               'candidate_limit': 24,
               'opponent': 'easy',
               'seed': 42,
+              'planner_variant': 'witness-first-probe',
               'selected_budget': matrix.get('selected_budget'),
               'five_game_matrix': matrix.get('budgets'),
               'twenty_game_gate': twenty,
               'planner_ready': bool(twenty.get('planner_clean')),
-              'note': 'budget_termination_count also includes max_actions bounded draws; planning_failure_count/first_failure distinguish planner failure',
+              'note': 'temporary monkeypatch probe; no canonical rule or production planner code changed',
           }
           (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
           print(json.dumps(summary, indent=2, sort_keys=True))
