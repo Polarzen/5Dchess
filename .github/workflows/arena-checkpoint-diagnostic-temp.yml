@@ -1,4 +1,4 @@
-name: TEMP Arena checkpoint validation
+name: TEMP Arena witness comparison
 
 on:
   push:
@@ -11,14 +11,14 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-checkpoint-validation-${{ github.ref }}
+  group: temp-arena-witness-comparison-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  arena-validation:
-    name: Existing checkpoint staged Arena gate
+  witness-comparison:
+    name: Reproduce Arena failure and compare witness search
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
+    timeout-minutes: 180
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
@@ -48,155 +48,180 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run five-game planner budget matrix
-        shell: bash
+      - name: Reproduce first 5-second planning failure and compare searches
         run: |
-          set -u
-          mkdir -p _work/arena-validation
-          for budget in 0.5 1.0 2.0 5.0; do
-            echo "=== five games, planner budget ${budget}s ==="
-            set +e
-            python -m src.training.arena \
-              --checkpoint _work/checkpoint/best \
-              --opponent easy \
-              --games 5 \
-              --planner-seconds "$budget" \
-              --planner-actions 24 \
-              --planner-states 256 \
-              --planner-moves 32 \
-              --device cpu \
-              --seed 42 \
-              --max-actions 120 \
-              --max-wall-seconds 3600 \
-              --output json \
-              --result-json "_work/arena-validation/five-${budget}.json"
-            status=$?
-            set -e
-            echo "$status" > "_work/arena-validation/five-${budget}.exit"
-          done
-
-      - name: Select minimum planner-clean five-game budget
-        run: |
+          mkdir -p _work/witness-comparison
           python - <<'PY'
+          from __future__ import annotations
+
+          from copy import deepcopy
+          import hashlib
           import json
           from pathlib import Path
+          import time
 
-          root = Path('_work/arena-validation')
-          budgets = ['0.5', '1.0', '2.0', '5.0']
-          report = {'checkpoint_run_id': 33347901504, 'stage': 'five-game', 'budgets': [], 'selected_budget': None}
-          selected = None
-          for budget in budgets:
-              path = root / f'five-{budget}.json'
-              entry = {'budget': float(budget), 'result_present': path.exists()}
-              if path.exists():
-                  data = json.loads(path.read_text(encoding='utf-8'))
-                  planner_clean = (
-                      data.get('games') == 5
-                      and data.get('planning_failure_count') == 0
-                      and data.get('illegal_action_count') == 0
-                      and data.get('stale_failure_count') == 0
-                      and data.get('unexpected_failure_count') == 0
-                      and data.get('first_failure') is None
-                  )
-                  entry.update({
-                      'planner_clean': planner_clean,
-                      'budget_termination_count': data.get('budget_termination_count'),
-                      'result': data,
-                  })
-                  if planner_clean and selected is None:
-                      selected = budget
-              else:
-                  entry['planner_clean'] = False
-              report['budgets'].append(entry)
-          report['selected_budget'] = float(selected) if selected is not None else None
-          (root / 'five-game-matrix.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
-          (root / 'selected-budget.txt').write_text(selected or '', encoding='utf-8')
-          print(json.dumps(report, indent=2, sort_keys=True))
-          PY
+          from src.ai.action_planner import (
+              AIActionPlan,
+              ActionPlanner,
+              ActionPlanningError,
+              ActionSearchBudget,
+              MoveSpec,
+              engine_state_signature,
+              resolve_move_spec,
+          )
+          from src.ai.random_ai import RandomAI
+          from src.engine import ActionRules
+          from src.engine.action_search import ActionSearch
+          from src.engine.engine import FiveDEngine
+          from src.training.agent import NeuralPolicyValueAgent
+          from src.training.checkpoint import load_checkpoint
+          from src.training.utils import resolve_device, seed_everything
+          from src.utils.constants import ChessColor, GameState
 
-      - name: Run twenty-game final Arena gate
-        shell: bash
-        run: |
-          budget="$(cat _work/arena-validation/selected-budget.txt)"
-          if [[ -z "$budget" ]]; then
-            echo '{"stage":"twenty-game","skipped":true,"reason":"no planner-clean five-game budget"}' > _work/arena-validation/twenty-game-gate.json
-            exit 0
-          fi
-          echo "=== twenty games, selected planner budget ${budget}s ==="
-          set +e
-          python -m src.training.arena \
-            --checkpoint _work/checkpoint/best \
-            --opponent easy \
-            --games 20 \
-            --planner-seconds "$budget" \
-            --planner-actions 24 \
-            --planner-states 256 \
-            --planner-moves 32 \
-            --device cpu \
-            --seed 42 \
-            --max-actions 120 \
-            --max-wall-seconds 9000 \
-            --output json \
-            --result-json _work/arena-validation/twenty-game.json
-          status=$?
-          set -e
-          echo "$status" > _work/arena-validation/twenty-game.exit
-          python - <<'PY'
-          import json
-          from pathlib import Path
+          root = Path('_work/witness-comparison')
+          seed_everything(42)
+          device = resolve_device('cpu')
+          model, metadata = load_checkpoint('_work/checkpoint/best', device=device)
+          arena_budget = ActionSearchBudget(
+              max_states=256,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
 
-          root = Path('_work/arena-validation')
-          path = root / 'twenty-game.json'
-          gate = {'stage': 'twenty-game', 'skipped': False, 'planner_clean': False}
-          if path.exists():
-              data = json.loads(path.read_text(encoding='utf-8'))
-              gate['result'] = data
-              gate['planner_clean'] = (
-                  data.get('games') == 20
-                  and data.get('planning_failure_count') == 0
-                  and data.get('illegal_action_count') == 0
-                  and data.get('stale_failure_count') == 0
-                  and data.get('unexpected_failure_count') == 0
-                  and data.get('first_failure') is None
+          failure_engine = None
+          failure = None
+          for game_index in range(5):
+              neural_color = ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
+              engine = FiveDEngine()
+              neural = NeuralPolicyValueAgent(model, neural_color, device=device, budget=arena_budget)
+              baseline = RandomAI(
+                  neural_color.opposite(),
+                  seed=42 + game_index + 1,
+                  budget=arena_budget,
               )
-              gate['budget_termination_count'] = data.get('budget_termination_count')
-          (root / 'twenty-game-gate.json').write_text(json.dumps(gate, indent=2, sort_keys=True), encoding='utf-8')
-          print(json.dumps(gate, indent=2, sort_keys=True))
-          PY
+              for action_index in range(120):
+                  if engine.game_state != GameState.PLAYING:
+                      break
+                  actor = neural if engine.current_turn_color == neural_color else baseline
+                  actor_name = 'neural' if actor is neural else 'baseline'
+                  try:
+                      plan = actor.plan_action(engine)
+                  except ActionPlanningError as exc:
+                      failure_engine = deepcopy(engine)
+                      signature = repr(engine_state_signature(engine)).encode('utf-8')
+                      action = engine._ensure_current_action()
+                      required = ActionRules.required_boards(action, engine.timeline_manager.timelines)
+                      movable = ActionRules.movable_boards(action, engine.timeline_manager.timelines)
+                      failure = {
+                          'game_index': game_index,
+                          'action_index': action_index,
+                          'actor': actor_name,
+                          'player': engine.current_turn_color.value,
+                          'ply': engine.move_counter,
+                          'timeline_count': len(engine.timeline_manager.timelines),
+                          'required_board_count': len(required),
+                          'movable_board_count': len(movable),
+                          'current_action_prefix_moves': len(action.moves),
+                          'reason': exc.reason,
+                          'incomplete': exc.incomplete,
+                          'explored_states': exc.explored_states,
+                          'state_signature_sha256': hashlib.sha256(signature).hexdigest(),
+                      }
+                      break
+                  from src.ai.action_planner import apply_action_plan
+                  apply_action_plan(engine, plan)
+              if failure_engine is not None:
+                  break
 
-      - name: Write diagnostic verdict
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          root = Path('_work/arena-validation')
-          matrix = json.loads((root / 'five-game-matrix.json').read_text(encoding='utf-8'))
-          twenty_path = root / 'twenty-game-gate.json'
-          twenty = json.loads(twenty_path.read_text(encoding='utf-8')) if twenty_path.exists() else {}
-          summary = {
-              'checkpoint_run_id': 33347901504,
-              'checkpoint_epoch': 20,
-              'candidate_limit': 24,
-              'opponent': 'easy',
-              'seed': 42,
-              'selected_budget': matrix.get('selected_budget'),
-              'five_game_matrix': matrix.get('budgets'),
-              'twenty_game_gate': twenty,
-              'planner_ready': bool(twenty.get('planner_clean')),
-              'note': 'budget_termination_count also includes max_actions bounded draws; planning_failure_count/first_failure distinguish planner failure',
+          report = {
+              'checkpoint_epoch': metadata.get('epoch'),
+              'arena_budget_seconds': 5.0,
+              'arena_max_states': 256,
+              'failure': failure,
+              'comparisons': [],
           }
-          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
-          print(json.dumps(summary, indent=2, sort_keys=True))
-          if not summary['planner_ready']:
-              raise SystemExit(1)
+
+          if failure_engine is None:
+              report['error'] = 'no planning failure reproduced in five games'
+          else:
+              prefix_len = len(failure_engine._ensure_current_action().moves)
+
+              def verify_witness(witness):
+                  suffix = tuple(witness[prefix_len:])
+                  probe = deepcopy(failure_engine)
+                  for move in suffix:
+                      spec = MoveSpec.from_move(move)
+                      resolved = resolve_move_spec(probe, spec)
+                      if not probe.execute_action_move(resolved):
+                          return {'valid': False, 'suffix_moves': len(suffix), 'reason': 'execute_rejected'}
+                  return {
+                      'valid': bool(probe.can_submit_action()),
+                      'suffix_moves': len(suffix),
+                      'reason': None if probe.can_submit_action() else 'not_submit_capable',
+                  }
+
+              for states in (256, 4096):
+                  started = time.perf_counter()
+                  result = ActionSearch(
+                      max_states=states,
+                      max_depth=64,
+                      max_seconds=5.0,
+                  ).find_legal_completion(failure_engine)
+                  item = {
+                      'search': 'engine_action_search',
+                      'max_states': states,
+                      'max_seconds': 5.0,
+                      'has_legal_action': result.has_legal_action,
+                      'explored_states': result.explored_states,
+                      'termination_reason': result.termination_reason,
+                      'witness_moves': len(result.witness),
+                      'wall_ms': (time.perf_counter() - started) * 1000.0,
+                  }
+                  if result.has_legal_action:
+                      item['verification'] = verify_witness(result.witness)
+                  report['comparisons'].append(item)
+
+              started = time.perf_counter()
+              planner = ActionPlanner(ActionSearchBudget(
+                  max_states=4096,
+                  max_actions=1,
+                  max_move_depth=64,
+                  max_seconds=5.0,
+              ))
+              planner_result = planner.search(failure_engine)
+              planner_item = {
+                  'search': 'current_action_planner',
+                  'max_states': 4096,
+                  'max_seconds': 5.0,
+                  'candidate_count': len(planner_result.candidates),
+                  'explored_states': planner_result.explored_states,
+                  'termination_reason': planner_result.termination_reason,
+                  'wall_ms': (time.perf_counter() - started) * 1000.0,
+              }
+              if planner_result.candidates:
+                  probe = deepcopy(failure_engine)
+                  for spec in planner_result.candidates[0]:
+                      resolved = resolve_move_spec(probe, spec)
+                      assert probe.execute_action_move(resolved)
+                  planner_item['verification'] = {
+                      'valid': bool(probe.can_submit_action()),
+                      'suffix_moves': len(planner_result.candidates[0]),
+                  }
+              report['comparisons'].append(planner_item)
+
+          path = root / 'witness-comparison.json'
+          path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          if failure_engine is None:
+              raise SystemExit(2)
           PY
 
       - name: Upload diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-checkpoint-validation-${{ github.run_id }}
-          path: _work/arena-validation
+          name: temp-arena-witness-comparison-${{ github.run_id }}
+          path: _work/witness-comparison
           retention-days: 3
           if-no-files-found: error
