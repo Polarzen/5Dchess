@@ -350,12 +350,14 @@ def _move_sort_key(move: Move) -> tuple:
 def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
     """Return how many currently-required boards this legal Move advances.
 
-    Every generated Move advances its source board.  A non-branching
-    cross-timeline Move also advances the distinct destination board.  This is
-    only a search-order heuristic: no Move is filtered and canonical execution
-    remains the source of truth for the child state.
+    A single Move can satisfy at most two required boards.  For one- or
+    two-board Actions we preserve the established deterministic ordering;
+    progress ordering only matters once at least three boards remain, where a
+    complete Action necessarily needs more search after its first Move.
     """
     progress = int(move.source.board in required)
+    if len(required) <= 2:
+        return progress
     if (
         move.is_cross_timeline
         and not move.is_branching
@@ -367,7 +369,7 @@ def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
 
 
 def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
-    """Prefer non-branching Moves, then those advancing more required boards."""
+    """Prefer non-branching Moves, then safe required-board progress."""
     base = _move_sort_key(move)
     return (base[0], -_required_board_progress(move, required), *base[1:])
 
