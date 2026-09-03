@@ -127,8 +127,7 @@ jobs:
               report['error'] = 'no planning failure reproduced'
           else:
               started = time.monotonic()
-              explored = 0
-              termination = None
+              search_state = {'explored': 0, 'termination': None}
               depth_attempts = []
               required_at_root = set(ActionRules.required_boards(
                   failure_engine._ensure_current_action(), failure_engine.timeline_manager.timelines
@@ -136,24 +135,24 @@ jobs:
               lower_bound = max(0, math.ceil(len(required_at_root) / 2))
 
               def budget_hit():
-                  nonlocal termination
-                  if time.monotonic() - started >= 5.0:
-                      termination = 'time_budget'
+                  if search_state['termination'] is not None:
                       return True
-                  if explored >= 256:
-                      termination = 'state_budget'
+                  if time.monotonic() - started >= 5.0:
+                      search_state['termination'] = 'time_budget'
+                      return True
+                  if search_state['explored'] >= 256:
+                      search_state['termination'] = 'state_budget'
                       return True
                   return False
 
               def search_depth(state, path, depth, limit):
-                  nonlocal explored
                   action = state._ensure_current_action()
                   required = set(ActionRules.required_boards(action, state.timeline_manager.timelines))
                   if not required and state.can_submit_action():
                       return path
                   if depth >= limit or budget_hit():
                       return None
-                  explored += 1
+                  search_state['explored'] += 1
                   movable = ActionRules.movable_boards(action, state.timeline_manager.timelines)
                   ordered_boards = tuple(sorted(
                       movable,
@@ -192,16 +191,16 @@ jobs:
 
               witness = None
               for limit in range(lower_bound, 9):
-                  before_states = explored
+                  before_states = search_state['explored']
                   before_time = time.monotonic()
                   witness = search_depth(failure_engine, (), 0, limit)
                   depth_attempts.append({
                       'depth_limit': limit,
-                      'states': explored - before_states,
+                      'states': search_state['explored'] - before_states,
                       'wall_ms': (time.monotonic() - before_time) * 1000.0,
                       'found': witness is not None,
                   })
-                  if witness is not None or termination is not None:
+                  if witness is not None or search_state['termination'] is not None:
                       break
 
               verify = None
@@ -216,8 +215,8 @@ jobs:
                   'search': 'minimal_depth_iddfs',
                   'found': witness is not None,
                   'witness_moves': len(witness) if witness is not None else 0,
-                  'explored_states': explored,
-                  'termination_reason': termination,
+                  'explored_states': search_state['explored'],
+                  'termination_reason': search_state['termination'],
                   'wall_ms': (time.monotonic() - started) * 1000.0,
                   'depth_attempts': depth_attempts,
                   'verification': verify,
