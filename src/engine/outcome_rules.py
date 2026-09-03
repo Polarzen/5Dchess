@@ -40,6 +40,46 @@ class OutcomeRules:
     """Global terminal-state rules above ActionSearch and RoyalRules."""
 
     @classmethod
+    def classify_proven_no_legal_action(
+        cls,
+        engine: "FiveDEngine",
+        color: ChessColor | None = None,
+        *,
+        explored_states: int = 0,
+    ) -> MultiverseOutcome:
+        """Classify a state after a caller has *proved* no legal Action exists.
+
+        This method deliberately performs no Action search.  It is only valid
+        when the caller already owns a complete, non-budget-truncated no-action
+        proof (for example a completed ``ActionPlanner`` enumeration).  Keeping
+        classification separate from proof acquisition lets training/evaluation
+        code reuse an exact proof instead of immediately repeating the same
+        potentially expensive Action tree search.
+        """
+        if color is None:
+            color = engine.current_turn_color
+        in_check = RoyalRules(
+            engine.timeline_manager.timelines
+        ).is_in_check(color)
+
+        if in_check:
+            return MultiverseOutcome(
+                kind=OutcomeKind.CHECKMATE,
+                loser=color,
+                winner=color.opposite(),
+                in_check=True,
+                explored_states=int(explored_states),
+            )
+
+        return MultiverseOutcome(
+            kind=OutcomeKind.STALEMATE,
+            loser=None,
+            winner=None,
+            in_check=False,
+            explored_states=int(explored_states),
+        )
+
+    @classmethod
     def evaluate(
         cls,
         engine: "FiveDEngine",
@@ -74,24 +114,9 @@ class OutcomeRules:
             logger.warning(warning)
             return None
 
-        in_check = RoyalRules(
-            engine.timeline_manager.timelines
-        ).is_in_check(color)
-
-        if in_check:
-            return MultiverseOutcome(
-                kind=OutcomeKind.CHECKMATE,
-                loser=color,
-                winner=color.opposite(),
-                in_check=True,
-                explored_states=search_result.explored_states,
-            )
-
-        return MultiverseOutcome(
-            kind=OutcomeKind.STALEMATE,
-            loser=None,
-            winner=None,
-            in_check=False,
+        return cls.classify_proven_no_legal_action(
+            engine,
+            color,
             explored_states=search_result.explored_states,
         )
 
