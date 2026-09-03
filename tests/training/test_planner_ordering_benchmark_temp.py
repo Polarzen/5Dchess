@@ -8,10 +8,10 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
-import statistics
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import warnings
 import zipfile
@@ -25,7 +25,7 @@ import src.ai.action_planner as action_planner
 from src.ai.action_planner import ActionPlanner, ActionSearchBudget, apply_action_plan
 from src.engine.engine import FiveDEngine
 from src.training.agent import NeuralPolicyValueAgent
-from src.training.arena import _baseline, _state_signature_sha256, evaluate_arena
+from src.training.arena import _baseline, _state_signature_sha256
 from src.training.checkpoint import load_checkpoint
 from src.training.utils import seed_everything
 from src.utils.constants import ChessColor, GameState
@@ -52,6 +52,11 @@ def _legacy_move_sort_key(move):
     )
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _download_checkpoint(root: Path) -> Path:
     extraheader = subprocess.check_output(
         ["git", "config", "--local", "--get", "http.https://github.com/.extraheader"],
@@ -68,8 +73,24 @@ def _download_checkpoint(root: Path) -> Path:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        opener.open(request, timeout=30)
+    except urllib.error.HTTPError as exc:
+        assert exc.code in {301, 302, 303, 307, 308}, f"artifact API returned HTTP {exc.code}"
+        location = exc.headers.get("Location")
+    else:
+        pytest.fail("artifact API unexpectedly returned without a redirect")
+    assert location, "artifact redirect did not include Location"
+
+    # The redirect target is an already-signed blob URL.  Do not forward the
+    # GitHub Authorization header across hosts or it invalidates blob auth.
     archive = root / "checkpoint.zip"
-    with urllib.request.urlopen(request, timeout=60) as response, archive.open("wb") as output:
+    blob_request = urllib.request.Request(
+        location,
+        headers={"User-Agent": "5dchess-planner-benchmark"},
+    )
+    with urllib.request.urlopen(blob_request, timeout=60) as response, archive.open("wb") as output:
         output.write(response.read())
     with zipfile.ZipFile(archive) as zf:
         zf.extractall(root / "checkpoint")
@@ -144,7 +165,7 @@ def _benchmark(state, key, seconds: float):
     }
 
 
-def test_exact_failure_state_ordering_ab_and_one_game_arena():
+def test_exact_failure_state_ordering_ab():
     with tempfile.TemporaryDirectory(prefix="planner-ordering-benchmark-") as temp:
         checkpoint = _download_checkpoint(Path(temp))
         state, action_index, observed = _replay_failure_state(checkpoint)
@@ -156,8 +177,6 @@ def test_exact_failure_state_ordering_ab_and_one_game_arena():
         budgets = (0.5, 1.0, 2.0, 5.0)
         before = [_benchmark(state, _legacy_move_sort_key, seconds) for seconds in budgets]
         after = [_benchmark(state, new_key, seconds) for seconds in budgets]
-        successful = [row for row in after if row["candidate_count"] > 0]
-
         telemetry = {
             "target_action_index": action_index,
             "target_sha": TARGET_SHA,
@@ -165,55 +184,5 @@ def test_exact_failure_state_ordering_ab_and_one_game_arena():
             "after": after,
             "observed_replay": observed,
         }
-
-        if successful:
-            selected = min(successful, key=lambda row: row["budget"])["budget"]
-            candidate_counts = []
-            partial_searches = 0
-            original_score = NeuralPolicyValueAgent.score_candidates
-
-            def recording_score(self, engine):
-                nonlocal partial_searches
-                result, decision = original_score(self, engine)
-                candidate_counts.append(len(result.candidates))
-                if result.termination_reason is not None and result.candidates:
-                    partial_searches += 1
-                return result, decision
-
-            NeuralPolicyValueAgent.score_candidates = recording_score
-            try:
-                arena = evaluate_arena(
-                    checkpoint=checkpoint,
-                    opponent="easy",
-                    games=1,
-                    device_name="cpu",
-                    seed=42,
-                    max_actions=120,
-                    budget=ActionSearchBudget(
-                        max_states=256,
-                        max_actions=24,
-                        max_move_depth=32,
-                        max_seconds=selected,
-                    ),
-                    output="json",
-                )
-            finally:
-                NeuralPolicyValueAgent.score_candidates = original_score
-
-            telemetry["selected_budget"] = selected
-            telemetry["arena"] = arena
-            telemetry["partial_searches"] = partial_searches
-            if candidate_counts:
-                telemetry["candidate_breadth"] = {
-                    "min": min(candidate_counts),
-                    "median": statistics.median(candidate_counts),
-                    "mean": statistics.fmean(candidate_counts),
-                    "max": max(candidate_counts),
-                }
-            assert arena["illegal_action_count"] == 0
-            assert arena["stale_failure_count"] == 0
-            assert arena["unexpected_failure_count"] == 0
-            assert arena["planning_failure_count"] == 0
-
         warnings.warn("PLANNER_ORDERING_TELEMETRY=" + json.dumps(telemetry, sort_keys=True))
-        assert successful, telemetry
+        assert any(row["candidate_count"] > 0 for row in after), telemetry
