@@ -10,7 +10,7 @@ from src.engine.engine import FiveDEngine
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.engine.royal_rules import RoyalRules
 from src.training.agent import NeuralPolicyValueAgent
-from src.training.arena import evaluate_arena
+from src.training.arena import _candidate_stats, evaluate_arena, main as arena_main
 from src.training.checkpoint import save_checkpoint
 from src.training.config import PlannerConfig, model_preset
 from src.training.model import PolicyValueModel
@@ -84,6 +84,31 @@ def test_arena_complete_no_action_is_terminal_not_planning_failure(
     assert result["unexpected_failure_count"] == 0
     assert result["proven_terminal_adjudication_count"] == 1
     assert result["first_failure"] is None
+    assert result["candidate_breadth"]["neural_actions"]["observations"] == 0
+
+
+def test_candidate_stats_report_min_median_mean_max():
+    assert _candidate_stats([1, 4, 24, 24]) == {
+        "observations": 4,
+        "minimum": 1,
+        "median": 14.0,
+        "mean": 13.25,
+        "maximum": 24,
+    }
+
+
+def test_arena_cli_fails_when_planning_failure_is_reported(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "src.training.arena.evaluate_arena",
+        lambda **kwargs: {
+            "illegal_action_count": 0,
+            "stale_failure_count": 0,
+            "planning_failure_count": 1,
+            "unexpected_failure_count": 0,
+        },
+    )
+
+    assert arena_main(["--checkpoint", str(tmp_path / "unused")]) == 1
 
 
 def test_selfplay_complete_no_action_gets_terminal_label(tmp_path, monkeypatch):
