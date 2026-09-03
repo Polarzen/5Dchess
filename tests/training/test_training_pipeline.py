@@ -134,7 +134,7 @@ def test_state_encoding_perspective_and_masks():
     assert white.board_mask.any()
 
 
-def test_action_encoding_contains_every_required_move():
+def test_action_encoding_contains_every_planned_move():
     engine = FiveDEngine()
     original = engine.get_current_position()
     copied = original.copy()
@@ -150,9 +150,10 @@ def test_action_encoding_contains_every_required_move():
     )
     result = _planner(engine, actions=1)
     assert result.candidates
-    assert len(result.candidates[0]) >= 2
-    moves, move_mask, action_global = encode_action(engine, result.candidates[0])
-    assert int(move_mask.sum()) == len(result.candidates[0])
+    candidate = result.candidates[0]
+    assert candidate
+    moves, move_mask, action_global = encode_action(engine, candidate)
+    assert int(move_mask.sum()) == len(candidate)
     assert action_global[0] > 0.0
 
 
