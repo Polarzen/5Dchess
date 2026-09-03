@@ -1,4 +1,4 @@
-name: TEMP Arena root planner profile
+name: TEMP Arena single-progress ordering diagnostic
 
 on:
   push:
@@ -11,12 +11,12 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-root-profile-${{ github.ref }}
+  group: temp-arena-single-progress-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  root-profile:
-    name: Profile reproduced Arena planner root
+  ordering-diagnostic:
+    name: Compare planner ordering on reproduced Arena failure
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -48,9 +48,9 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reproduce and profile root
+      - name: Reproduce failure and compare ordering
         run: |
-          mkdir -p _work/root-profile
+          mkdir -p _work/single-progress
           python - <<'PY'
           from __future__ import annotations
 
@@ -58,27 +58,27 @@ jobs:
           import hashlib
           import json
           from pathlib import Path
-          import statistics
           import time
 
+          import src.ai.action_planner as planner_mod
           from src.ai.action_planner import (
+              ActionPlanner,
               ActionPlanningError,
               ActionSearchBudget,
+              _move_sort_key,
               _required_board_progress,
-              _required_move_sort_key,
               apply_action_plan,
               engine_state_signature,
           )
           from src.ai.random_ai import RandomAI
           from src.engine import ActionRules
           from src.engine.engine import FiveDEngine
-          from src.engine.royal_rules import RoyalRules
           from src.training.agent import NeuralPolicyValueAgent
           from src.training.checkpoint import load_checkpoint
           from src.training.utils import resolve_device, seed_everything
           from src.utils.constants import ChessColor, GameState
 
-          root = Path('_work/root-profile')
+          root = Path('_work/single-progress')
           seed_everything(42)
           device = resolve_device('cpu')
           model, metadata = load_checkpoint('_work/checkpoint/best', device=device)
@@ -101,8 +101,7 @@ jobs:
                   except ActionPlanningError as exc:
                       failure_engine = deepcopy(engine)
                       action = engine._ensure_current_action()
-                      required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
-                      movable = ActionRules.movable_boards(action, engine.timeline_manager.timelines)
+                      required = ActionRules.required_boards(action, engine.timeline_manager.timelines)
                       failure = {
                           'game_index': game_index,
                           'action_index': action_index,
@@ -111,7 +110,6 @@ jobs:
                           'ply': engine.move_counter,
                           'timeline_count': len(engine.timeline_manager.timelines),
                           'required_board_count': len(required),
-                          'movable_board_count': len(movable),
                           'reason': exc.reason,
                           'explored_states': exc.explored_states,
                           'state_signature_sha256': hashlib.sha256(repr(engine_state_signature(engine)).encode('utf-8')).hexdigest(),
@@ -121,126 +119,72 @@ jobs:
               if failure_engine is not None:
                   break
 
-          report = {'checkpoint_epoch': metadata.get('epoch'), 'failure': failure}
+          report = {'checkpoint_epoch': metadata.get('epoch'), 'failure': failure, 'benchmarks': []}
           if failure_engine is None:
               report['error'] = 'no planning failure reproduced'
           else:
-              state = failure_engine
-              action = state._ensure_current_action()
-              required = set(ActionRules.required_boards(action, state.timeline_manager.timelines))
-              movable = ActionRules.movable_boards(action, state.timeline_manager.timelines)
-              safety_started = time.perf_counter()
-              in_check = RoyalRules(state.timeline_manager.timelines).is_in_check(state.current_turn_color)
-              check_ms = (time.perf_counter() - safety_started) * 1000.0
-              threats_started = time.perf_counter()
-              threats = RoyalRules(state.timeline_manager.timelines).threats_against(state.current_turn_color)
-              threats_ms = (time.perf_counter() - threats_started) * 1000.0
+              original_key = planner_mod._required_move_sort_key
 
-              board_profiles = []
-              all_moves = []
-              ordered_boards = tuple(sorted(movable, key=lambda b: (b not in required, b.timeline, b.turn, b.side.value)))
-              for board in ordered_boards:
-                  position = state._resolve_position(board)
-                  if position is None:
-                      continue
+              def single_progress_first(move, required):
+                  if len(required) != 2:
+                      return original_key(move, required)
+                  base = _move_sort_key(move)
+                  progress = _required_board_progress(move, required)
+                  # Preserve canonical non-branching-first ordering, but when exactly
+                  # two boards are required prefer advancing one board before trying
+                  # double-progress cross-timeline completions. This changes ordering
+                  # only; no Move or complete Action is pruned.
+                  progress_bucket = 0 if progress == 1 else 1 if progress >= 2 else 2
+                  return (base[0], progress_bucket, *base[1:])
+
+              def run_case(name, key, seconds):
+                  planner_mod._required_move_sort_key = key
                   started = time.perf_counter()
-                  moves = state.get_legal_moves(position)
-                  legal_ms = (time.perf_counter() - started) * 1000.0
-                  started = time.perf_counter()
-                  ordered = sorted(moves, key=lambda m: _required_move_sort_key(m, required))
-                  sort_ms = (time.perf_counter() - started) * 1000.0
-                  counts = {
-                      'total': len(ordered),
-                      'branching': sum(bool(m.is_branching) for m in ordered),
-                      'cross_timeline': sum(bool(m.is_cross_timeline) for m in ordered),
-                      'captures': sum(m.captured is not None for m in ordered),
-                      'king_moves': sum(m.piece.piece_type.value == 'king' for m in ordered),
-                      'progress_2': sum(_required_board_progress(m, required) >= 2 for m in ordered),
-                      'progress_1': sum(_required_board_progress(m, required) == 1 for m in ordered),
-                  }
-                  board_profiles.append({
-                      'board': [board.timeline, board.turn, board.side.value],
-                      'required': board in required,
-                      'legal_ms': legal_ms,
-                      'sort_ms': sort_ms,
-                      'counts': counts,
+                  try:
+                      result = ActionPlanner(ActionSearchBudget(
+                          max_states=256,
+                          max_actions=1,
+                          max_move_depth=32,
+                          max_seconds=seconds,
+                      )).search(failure_engine)
+                  finally:
+                      planner_mod._required_move_sort_key = original_key
+                  wall_ms = (time.perf_counter() - started) * 1000.0
+                  candidate = result.candidates[0] if result.candidates else None
+                  verification = None
+                  if candidate is not None:
+                      probe = deepcopy(failure_engine)
+                      from src.ai.action_planner import resolve_move_spec
+                      for spec in candidate:
+                          move = resolve_move_spec(probe, spec)
+                          assert probe.execute_action_move(move)
+                      verification = {
+                          'moves': len(candidate),
+                          'submit_capable': bool(probe.can_submit_action()),
+                          'move_specs': [
+                              {
+                                  'source': [spec.source.board.timeline, spec.source.board.turn, spec.source.board.side.value, spec.source.x, spec.source.y],
+                                  'destination': [spec.destination.board.timeline, spec.destination.board.turn, spec.destination.board.side.value, spec.destination.x, spec.destination.y],
+                                  'promotion': spec.promotion.value if spec.promotion else None,
+                              }
+                              for spec in candidate
+                          ],
+                      }
+                  report['benchmarks'].append({
+                      'name': name,
+                      'budget_seconds': seconds,
+                      'candidate_count': len(result.candidates),
+                      'explored_states': result.explored_states,
+                      'termination_reason': result.termination_reason,
+                      'wall_ms': wall_ms,
+                      'verification': verification,
                   })
-                  all_moves.extend(ordered)
 
-              copy_ms = []
-              execute_ms = []
-              child_required_counts = []
-              terminal_ms = []
-              terminal_checks = 0
-              submit_capable = 0
-              first_submit_rank = None
-              move_samples = []
-              for rank, move in enumerate(all_moves, start=1):
-                  started = time.perf_counter()
-                  child = deepcopy(state)
-                  copy_ms.append((time.perf_counter() - started) * 1000.0)
-                  started = time.perf_counter()
-                  ok = child.execute_action_move(move)
-                  execute_ms.append((time.perf_counter() - started) * 1000.0)
-                  if not ok:
-                      continue
-                  child_required = set(ActionRules.required_boards(child._ensure_current_action(), child.timeline_manager.timelines))
-                  child_required_counts.append(len(child_required))
-                  can_submit = None
-                  can_submit_ms = None
-                  if not child_required:
-                      terminal_checks += 1
-                      started = time.perf_counter()
-                      can_submit = child.can_submit_action()
-                      can_submit_ms = (time.perf_counter() - started) * 1000.0
-                      terminal_ms.append(can_submit_ms)
-                      if can_submit:
-                          submit_capable += 1
-                          if first_submit_rank is None:
-                              first_submit_rank = rank
-                  if rank <= 30:
-                      move_samples.append({
-                          'rank': rank,
-                          'piece': move.piece.piece_type.value,
-                          'capture': move.captured.piece_type.value if move.captured else None,
-                          'branching': bool(move.is_branching),
-                          'cross_timeline': bool(move.is_cross_timeline),
-                          'progress': _required_board_progress(move, required),
-                          'source': [move.source.board.timeline, move.source.board.turn, move.source.board.side.value, move.source.x, move.source.y],
-                          'destination': [move.destination.board.timeline, move.destination.board.turn, move.destination.board.side.value, move.destination.x, move.destination.y],
-                          'child_required_count': len(child_required),
-                          'can_submit': can_submit,
-                          'can_submit_ms': can_submit_ms,
-                      })
+              run_case('current', original_key, 5.0)
+              for seconds in (0.5, 1.0, 2.0, 5.0):
+                  run_case('single_progress_first', single_progress_first, seconds)
 
-              def stat(values):
-                  if not values:
-                      return {'count': 0, 'total_ms': 0.0, 'median_ms': 0.0, 'max_ms': 0.0}
-                  return {
-                      'count': len(values),
-                      'total_ms': sum(values),
-                      'median_ms': statistics.median(values),
-                      'max_ms': max(values),
-                  }
-
-              report['root_profile'] = {
-                  'in_check': in_check,
-                  'in_check_ms': check_ms,
-                  'threat_count': len(threats),
-                  'threats_ms': threats_ms,
-                  'boards': board_profiles,
-                  'total_root_moves': len(all_moves),
-                  'deepcopy': stat(copy_ms),
-                  'execute': stat(execute_ms),
-                  'terminal_checks': terminal_checks,
-                  'terminal_check': stat(terminal_ms),
-                  'one_move_submit_capable': submit_capable,
-                  'first_one_move_submit_rank': first_submit_rank,
-                  'child_required_counts': {str(v): child_required_counts.count(v) for v in sorted(set(child_required_counts))},
-                  'first_30_moves': move_samples,
-              }
-
-          (root / 'root-profile.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          (root / 'single-progress-ordering.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
           print(json.dumps(report, indent=2, sort_keys=True))
           if failure_engine is None:
               raise SystemExit(2)
@@ -250,7 +194,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-root-profile-${{ github.run_id }}
-          path: _work/root-profile
+          name: temp-arena-single-progress-${{ github.run_id }}
+          path: _work/single-progress
           retention-days: 3
           if-no-files-found: error
