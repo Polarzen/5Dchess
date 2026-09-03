@@ -1,4 +1,4 @@
-name: TEMP Arena checkpoint diagnostic
+name: TEMP Arena planner failure diagnostic
 
 on:
   push:
@@ -11,14 +11,14 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-checkpoint-diagnostic-${{ github.ref }}
+  group: temp-arena-planner-failure-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  arena-diagnostic:
-    name: Existing checkpoint five-game budget gate
+  diagnose:
+    name: Reproduce baseline failure and compare searches
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
+    timeout-minutes: 90
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
@@ -48,150 +48,150 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run five-game planner budget matrix
-        shell: bash
+      - name: Reproduce game-three baseline planner failure
         run: |
-          set -u
           mkdir -p _work/arena-diagnostic
-          for budget in 1.0 2.0 5.0; do
-            echo "=== five games, planner budget ${budget}s ==="
-            set +e
-            python -m src.training.arena \
-              --checkpoint _work/checkpoint/best \
-              --opponent easy \
-              --games 5 \
-              --planner-seconds "$budget" \
-              --planner-actions 24 \
-              --planner-states 256 \
-              --planner-moves 32 \
-              --device cpu \
-              --seed 42 \
-              --max-actions 120 \
-              --max-wall-seconds 3600 \
-              --output json \
-              --result-json "_work/arena-diagnostic/five-${budget}.json"
-            status=$?
-            set -e
-            echo "$status" > "_work/arena-diagnostic/five-${budget}.exit"
-          done
-
-      - name: Select minimum valid five-game budget
-        run: |
           python - <<'PY'
+          from __future__ import annotations
+          from copy import deepcopy
           import json
           from pathlib import Path
+          import time
+
+          from src.ai.action_planner import ActionPlanner, ActionPlanningError, ActionSearchBudget, MoveSpec, apply_action_plan
+          from src.ai.random_ai import RandomAI
+          from src.engine.action_search import ActionSearch
+          from src.engine.engine import FiveDEngine
+          from src.training.agent import NeuralPolicyValueAgent
+          from src.training.arena import _jsonable, _state_signature_sha256
+          from src.training.checkpoint import load_checkpoint
+          from src.training.utils import resolve_device, seed_everything
+          from src.utils.constants import ChessColor, GameState
 
           root = Path('_work/arena-diagnostic')
-          budgets = ['1.0', '2.0', '5.0']
+          seed_everything(42)
+          device = resolve_device('cpu')
+          model, metadata = load_checkpoint('_work/checkpoint/best', device=device)
+          arena_budget = ActionSearchBudget(max_states=256, max_actions=24, max_move_depth=32, max_seconds=5.0)
           report = {
-              'stage': 'five-game-matrix',
-              'prior_0_5_result': 'failed 5-game gate with 3 planning failures',
-              'budgets': [],
-              'selected_budget': None,
-          }
-          selected = None
-          for budget in budgets:
-              path = root / f'five-{budget}.json'
-              entry = {'budget': float(budget), 'result_present': path.exists()}
-              if path.exists():
-                  data = json.loads(path.read_text(encoding='utf-8'))
-                  valid = (
-                      data.get('games') == 5
-                      and data.get('planning_failure_count') == 0
-                      and data.get('illegal_action_count') == 0
-                      and data.get('stale_failure_count') == 0
-                      and data.get('unexpected_failure_count') == 0
-                      and data.get('first_failure') is None
-                  )
-                  entry.update({'valid': valid, 'result': data})
-                  if valid and selected is None:
-                      selected = budget
-              else:
-                  entry['valid'] = False
-              report['budgets'].append(entry)
-          report['selected_budget'] = float(selected) if selected is not None else None
-          (root / 'five-game-matrix.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
-          (root / 'selected-budget.txt').write_text(selected or '', encoding='utf-8')
-          print(json.dumps(report, indent=2, sort_keys=True))
-          PY
-
-      - name: Run twenty-game final Arena gate
-        shell: bash
-        run: |
-          budget="$(cat _work/arena-diagnostic/selected-budget.txt)"
-          if [[ -z "$budget" ]]; then
-            echo '{"stage":"twenty-game","skipped":true,"reason":"no five-game budget passed"}' > _work/arena-diagnostic/twenty-game-gate.json
-            exit 0
-          fi
-          set +e
-          python -m src.training.arena \
-            --checkpoint _work/checkpoint/best \
-            --opponent easy \
-            --games 20 \
-            --planner-seconds "$budget" \
-            --planner-actions 24 \
-            --planner-states 256 \
-            --planner-moves 32 \
-            --device cpu \
-            --seed 42 \
-            --max-actions 120 \
-            --max-wall-seconds 9000 \
-            --output json \
-            --result-json _work/arena-diagnostic/twenty-game.json
-          status=$?
-          set -e
-          echo "$status" > _work/arena-diagnostic/twenty-game.exit
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          root = Path('_work/arena-diagnostic')
-          path = root / 'twenty-game.json'
-          gate = {'stage': 'twenty-game', 'skipped': False, 'valid': False}
-          if path.exists():
-              data = json.loads(path.read_text(encoding='utf-8'))
-              gate['result'] = data
-              gate['valid'] = (
-                  data.get('games') == 20
-                  and data.get('planning_failure_count') == 0
-                  and data.get('illegal_action_count') == 0
-                  and data.get('stale_failure_count') == 0
-                  and data.get('unexpected_failure_count') == 0
-                  and data.get('first_failure') is None
-              )
-          (root / 'twenty-game-gate.json').write_text(json.dumps(gate, indent=2, sort_keys=True), encoding='utf-8')
-          print(json.dumps(gate, indent=2, sort_keys=True))
-          PY
-
-      - name: Write final diagnostic verdict
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          root = Path('_work/arena-diagnostic')
-          selected = (root / 'selected-budget.txt').read_text(encoding='utf-8').strip()
-          twenty_path = root / 'twenty-game-gate.json'
-          twenty = json.loads(twenty_path.read_text(encoding='utf-8')) if twenty_path.exists() else {}
-          summary = {
-              'checkpoint_run_id': 33347901504,
-              'checkpoint_path': '_work/checkpoint/best',
-              'candidate_limit': 24,
-              'opponent': 'easy',
+              'checkpoint_epoch': metadata.get('epoch'),
               'seed': 42,
-              'selected_budget': float(selected) if selected else None,
-              'ready': bool(twenty.get('valid')),
-              'twenty_game_gate': twenty,
+              'arena_budget': {'states': 256, 'actions': 24, 'moves': 32, 'seconds': 5.0},
+              'games': [],
+              'failure': None,
+              'comparisons': [],
           }
-          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
-          print(json.dumps(summary, indent=2, sort_keys=True))
-          if not summary['ready']:
-              raise SystemExit(1)
+
+          def move_spec_json(spec):
+              return {
+                  'source': [spec.source.board.timeline, spec.source.board.turn, spec.source.board.side.value, spec.source.x, spec.source.y],
+                  'destination': [spec.destination.board.timeline, spec.destination.board.turn, spec.destination.board.side.value, spec.destination.x, spec.destination.y],
+                  'promotion': spec.promotion.value if spec.promotion else None,
+              }
+
+          failure_engine = None
+          for game_index in range(3):
+              neural_color = ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
+              engine = FiveDEngine()
+              neural = NeuralPolicyValueAgent(model, neural_color, device=device, budget=arena_budget)
+              baseline = RandomAI(neural_color.opposite(), seed=42 + game_index + 1, budget=arena_budget)
+              game = {'game_index': game_index, 'neural_color': neural_color.value, 'trace': []}
+              report['games'].append(game)
+              for action_index in range(120):
+                  if engine.game_state != GameState.PLAYING:
+                      game['terminal'] = engine.game_state.name
+                      break
+                  actor_name = 'neural' if engine.current_turn_color == neural_color else 'baseline'
+                  actor = neural if actor_name == 'neural' else baseline
+                  before_hash = _state_signature_sha256(engine)
+                  try:
+                      plan = actor.plan_action(engine)
+                  except ActionPlanningError as exc:
+                      failure = {
+                          'game_index': game_index,
+                          'action_index': action_index,
+                          'actor': actor_name,
+                          'player': engine.current_turn_color.value,
+                          'ply': engine.move_counter,
+                          'timeline_count': len(engine.timeline_manager.timelines),
+                          'state_signature_sha256': before_hash,
+                          'reason': exc.reason,
+                          'incomplete': exc.incomplete,
+                          'explored_states': exc.explored_states,
+                          'trace_length': len(game['trace']),
+                      }
+                      game['failure'] = failure
+                      report['failure'] = failure
+                      failure_engine = deepcopy(engine)
+                      break
+                  entry = {
+                      'action_index': action_index,
+                      'actor': actor_name,
+                      'player': engine.current_turn_color.value,
+                      'before_state_sha256': before_hash,
+                      'candidate_count': int(plan.metadata.get('candidate_count', 0)),
+                      'explored_states': int(plan.metadata.get('explored_states', 0)),
+                      'search_complete': bool(plan.metadata.get('search_complete', False)),
+                      'selected_index': _jsonable(plan.metadata.get('selected_index')),
+                      'moves': [move_spec_json(spec) for spec in plan.moves],
+                  }
+                  apply_action_plan(engine, plan)
+                  entry['after_state_sha256'] = _state_signature_sha256(engine)
+                  entry['after_ply'] = engine.move_counter
+                  entry['after_timelines'] = len(engine.timeline_manager.timelines)
+                  game['trace'].append(entry)
+              if failure_engine is not None:
+                  break
+
+          if failure_engine is None:
+              report['error'] = 'expected failure was not reproduced'
+          else:
+              for seconds in (0.5, 1.0, 2.0, 5.0, 10.0):
+                  row = {'seconds': seconds}
+
+                  started = time.perf_counter()
+                  planner = ActionPlanner(ActionSearchBudget(
+                      max_states=4096,
+                      max_actions=1,
+                      max_move_depth=64,
+                      max_seconds=seconds,
+                  )).search(failure_engine)
+                  row['action_planner'] = {
+                      'candidate_count': len(planner.candidates),
+                      'explored_states': planner.explored_states,
+                      'termination': planner.termination_reason,
+                      'wall_ms': (time.perf_counter() - started) * 1000.0,
+                      'first_candidate_moves': [move_spec_json(spec) for spec in planner.candidates[0]] if planner.candidates else [],
+                  }
+
+                  started = time.perf_counter()
+                  canonical = ActionSearch(
+                      max_states=4096,
+                      max_depth=64,
+                      max_seconds=seconds,
+                  ).find_legal_completion(failure_engine)
+                  row['engine_action_search'] = {
+                      'has_legal_action': canonical.has_legal_action,
+                      'explored_states': canonical.explored_states,
+                      'termination': canonical.termination_reason,
+                      'wall_ms': (time.perf_counter() - started) * 1000.0,
+                      'witness_moves': [move_spec_json(MoveSpec.from_move(move)) for move in canonical.witness],
+                  }
+                  report['comparisons'].append(row)
+
+          (root / 'failure-comparison.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps({
+              'failure': report.get('failure'),
+              'comparisons': report.get('comparisons'),
+              'error': report.get('error'),
+          }, indent=2, sort_keys=True))
           PY
 
       - name: Upload diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-checkpoint-diagnostic-${{ github.run_id }}
+          name: temp-arena-planner-failure-${{ github.run_id }}
           path: _work/arena-diagnostic
           retention-days: 3
           if-no-files-found: error
