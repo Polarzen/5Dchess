@@ -350,13 +350,14 @@ def _move_sort_key(move: Move) -> tuple:
 def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
     """Return how many currently-required boards this legal Move advances.
 
-    A single Move can satisfy at most two required boards.  For one- or
-    two-board Actions we preserve the established deterministic ordering;
-    progress ordering only matters once at least three boards remain, where a
-    complete Action necessarily needs more search after its first Move.
+    A single non-branching cross-timeline Move can satisfy both its required
+    source board and a distinct required destination board.  With exactly one
+    required board left, preserve the established deterministic ordering;
+    with two or more, count that double progress so a one-Move completion is
+    not buried behind Moves that can advance only one required board.
     """
     progress = int(move.source.board in required)
-    if len(required) <= 2:
+    if len(required) <= 1:
         return progress
     if (
         move.is_cross_timeline
@@ -369,10 +370,16 @@ def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
 
 
 def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
-    """Prioritize safe completion moves only for genuinely complex Actions."""
+    """Prioritize legal Moves that can complete required-board progress early."""
     base = _move_sort_key(move)
-    if len(required) < 3:
+    if len(required) <= 1:
         return base
+    if len(required) == 2:
+        return (
+            base[0],
+            -_required_board_progress(move, required),
+            *base[1:],
+        )
     return (
         base[0],
         move.piece.piece_type is not PieceType.KING,
