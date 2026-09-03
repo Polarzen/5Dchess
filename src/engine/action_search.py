@@ -162,12 +162,21 @@ class ActionSearch:
         depth: int,
     ) -> tuple[Move, ...] | None:
         action = state._ensure_current_action()
+        required = set(ActionRules.required_boards(
+            action,
+            state.timeline_manager.timelines,
+        ))
 
-        # This is the actual legal-Action terminal condition: The Present has
-        # shifted to the opponent and RoyalRules accepts the final state.  Check
-        # it before budgets so a completion exactly at the configured depth is
-        # still accepted.
-        if ActionRules.can_submit(action, state.timeline_manager.timelines):
+        # A non-empty required set proves that The Present still belongs to the
+        # acting color, so ActionRules.can_submit() must be false. Avoid the
+        # expensive royal-safety scan until Present progress is complete. This
+        # is only a predicate short-circuit: no Move, state, or legal completion
+        # is pruned. Completion remains checked before budgets so a witness
+        # exactly at the configured depth is accepted.
+        if (
+            not required
+            and ActionRules.can_submit(action, state.timeline_manager.timelines)
+        ):
             return tuple(action.moves)
 
         if self._budget_exhausted(depth):
@@ -189,10 +198,6 @@ class ActionSearch:
 
         # Required Present boards first is only an ordering heuristic. Optional
         # boards remain in the list, so rewind/blocking resources are not lost.
-        required = set(ActionRules.required_boards(
-            action,
-            state.timeline_manager.timelines,
-        ))
         ordered_boards = tuple(
             sorted(
                 movable,
