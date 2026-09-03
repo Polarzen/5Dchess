@@ -182,13 +182,23 @@ def _measure(engine: FiveDEngine, seconds: float) -> dict:
     }
 
 
-def _single_clone_first_witness(engine: FiveDEngine, seconds: float) -> dict:
-    """Measure the existing DFS first branch without per-level child deepcopy.
+def _progress_key(move, required):
+    return action_planner._required_move_sort_key(move, required)
 
-    This is telemetry only. It mutates one private deepcopy, uses only canonical
-    legal Move generation/execution, and accepts a witness only after the same
-    canonical can_submit_action() boundary as ActionPlanner.
-    """
+
+def _base_key(move, required):
+    del required
+    return action_planner._move_sort_key(move)
+
+
+def _spatial_key(move, required):
+    del required
+    base = action_planner._move_sort_key(move)
+    return (base[0], not move.is_spatial, *base[1:])
+
+
+def _single_clone_first_witness(engine: FiveDEngine, seconds: float, move_key) -> dict:
+    """Measure one deterministic canonical first branch without child deepcopies."""
     started = time.perf_counter()
     state = deepcopy(engine)
     state.timeline_manager.refresh_activity()
@@ -240,7 +250,7 @@ def _single_clone_first_witness(engine: FiveDEngine, seconds: float) -> dict:
                 continue
             legal_moves = sorted(
                 state.get_legal_moves(position),
-                key=lambda move: action_planner._required_move_sort_key(move, required),
+                key=lambda move: move_key(move, required),
             )
             if legal_moves:
                 chosen = legal_moves[0]
@@ -290,12 +300,19 @@ def test_optimized_32_required_board_matrix_temp():
     warnings.warn("PLANNER_32_REQUIRED_MATRIX_TEMP=" + json.dumps(matrix, sort_keys=True))
 
 
-def test_single_clone_first_witness_temp():
+def test_single_clone_ordering_variants_temp():
     prefix = fixture.build_deterministic_complex_engine()
     final_state = deepcopy(prefix)
     fixture._apply_recorded_action(final_state, fixture.FINAL_ACTION, 34)
-    report = {
-        "required16": [_single_clone_first_witness(prefix, seconds) for seconds in (0.5, 1.0, 2.0, 5.0)],
-        "required32": [_single_clone_first_witness(final_state, seconds) for seconds in (0.5, 1.0, 2.0, 5.0)],
+    variants = {
+        "progress": _progress_key,
+        "base_nonbranching": _base_key,
+        "spatial_first": _spatial_key,
     }
-    warnings.warn("PLANNER_SINGLE_CLONE_WITNESS_TEMP=" + json.dumps(report, sort_keys=True))
+    report = {}
+    for name, key in variants.items():
+        report[name] = {
+            "required16": _single_clone_first_witness(prefix, 5.0, key),
+            "required32": _single_clone_first_witness(final_state, 5.0, key),
+        }
+    warnings.warn("PLANNER_SINGLE_CLONE_VARIANTS_TEMP=" + json.dumps(report, sort_keys=True))
