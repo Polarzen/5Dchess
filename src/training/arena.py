@@ -6,6 +6,7 @@ from enum import Enum
 import hashlib
 import json
 from pathlib import Path
+from statistics import median
 import time
 import traceback
 from typing import Any, Mapping, Sequence
@@ -192,6 +193,26 @@ def _record_first_failure(
     return first_failure if first_failure is not None else _failure_record(**kwargs)
 
 
+def _candidate_stats(values: Sequence[int]) -> dict[str, int | float]:
+    """Summarize observed legal candidate breadth without fabricating samples."""
+    if not values:
+        return {
+            "observations": 0,
+            "minimum": 0,
+            "median": 0.0,
+            "mean": 0.0,
+            "maximum": 0,
+        }
+    normalized = [int(value) for value in values]
+    return {
+        "observations": len(normalized),
+        "minimum": min(normalized),
+        "median": float(median(normalized)),
+        "mean": float(sum(normalized) / len(normalized)),
+        "maximum": max(normalized),
+    }
+
+
 def _baseline(name: str, color: ChessColor, seed: int, budget: ActionSearchBudget):
     if name == "easy":
         return RandomAI(color, seed=seed, budget=budget)
@@ -278,6 +299,10 @@ def evaluate_arena(
     first_failure: dict[str, Any] | None = None
     action_counts: list[int] = []
     inference_times: list[float] = []
+    all_candidate_counts: list[int] = []
+    neural_candidate_counts: list[int] = []
+    all_partial_candidate_searches = 0
+    neural_partial_candidate_searches = 0
     started = time.monotonic()
     games_played = 0
 
@@ -310,13 +335,30 @@ def evaluate_arena(
                 break
             plan = None
             failure_stage = "planning"
+            neural_turn = engine.current_turn_color == neural_color
             try:
-                if engine.current_turn_color == neural_color:
+                if neural_turn:
                     plan = neural.plan_action(engine)
                     if neural.last_decision is not None:
                         inference_times.append(neural.last_decision.inference_ms)
                 else:
                     plan = baseline.plan_action(engine)
+
+                plan_metadata = getattr(plan, "metadata", {})
+                if isinstance(plan_metadata, Mapping):
+                    try:
+                        candidate_count = int(plan_metadata.get("candidate_count", 0))
+                    except (TypeError, ValueError):
+                        candidate_count = 0
+                    if candidate_count > 0:
+                        all_candidate_counts.append(candidate_count)
+                        if neural_turn:
+                            neural_candidate_counts.append(candidate_count)
+                    if plan_metadata.get("search_complete") is False:
+                        all_partial_candidate_searches += 1
+                        if neural_turn:
+                            neural_partial_candidate_searches += 1
+
                 failure_stage = "application"
                 apply_action_plan(engine, plan)
                 completed_actions += 1
@@ -378,6 +420,8 @@ def evaluate_arena(
             )
 
     total = games_played
+    all_stats = _candidate_stats(all_candidate_counts)
+    neural_stats = _candidate_stats(neural_candidate_counts)
     result = {
         "checkpoint": str(Path(checkpoint).resolve()),
         "opponent": opponent,
@@ -398,6 +442,22 @@ def evaluate_arena(
         "average_inference_ms": (
             sum(inference_times) / len(inference_times) if inference_times else 0.0
         ),
+        "candidate_breadth": {
+            "all_actions": all_stats,
+            "neural_actions": neural_stats,
+            "all_partial_search_count": all_partial_candidate_searches,
+            "all_partial_search_rate": (
+                all_partial_candidate_searches / all_stats["observations"]
+                if all_stats["observations"]
+                else 0.0
+            ),
+            "neural_partial_search_count": neural_partial_candidate_searches,
+            "neural_partial_search_rate": (
+                neural_partial_candidate_searches / neural_stats["observations"]
+                if neural_stats["observations"]
+                else 0.0
+            ),
+        },
         "checkpoint_epoch": metadata.get("epoch"),
         "games_requested": games,
         "candidate_limit": budget.max_actions,
@@ -466,6 +526,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 1 if (
         result["illegal_action_count"]
         or result["stale_failure_count"]
+        or result.get("planning_failure_count", 0)
         or result.get("unexpected_failure_count", 0)
     ) else 0
 
