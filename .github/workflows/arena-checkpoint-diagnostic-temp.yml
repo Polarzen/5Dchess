@@ -1,4 +1,4 @@
-name: TEMP Arena planner failure diagnostic
+name: TEMP Arena terminal-state diagnostic
 
 on:
   push:
@@ -11,12 +11,12 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-planner-failure-${{ github.ref }}
+  group: temp-arena-terminal-state-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   diagnose:
-    name: Reproduce baseline failure and compare searches
+    name: Exhaustive check of reproduced late-game state
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -48,7 +48,7 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reproduce game-three baseline planner failure
+      - name: Reproduce and exhaustively classify failure state
         run: |
           mkdir -p _work/arena-diagnostic
           python - <<'PY'
@@ -58,12 +58,13 @@ jobs:
           from pathlib import Path
           import time
 
-          from src.ai.action_planner import ActionPlanner, ActionPlanningError, ActionSearchBudget, MoveSpec, apply_action_plan
+          from src.ai.action_planner import ActionPlanningError, ActionSearchBudget, MoveSpec, apply_action_plan
           from src.ai.random_ai import RandomAI
           from src.engine.action_search import ActionSearch
           from src.engine.engine import FiveDEngine
+          from src.engine.royal_rules import RoyalRules
           from src.training.agent import NeuralPolicyValueAgent
-          from src.training.arena import _jsonable, _state_signature_sha256
+          from src.training.arena import _state_signature_sha256
           from src.training.checkpoint import load_checkpoint
           from src.training.utils import resolve_device, seed_everything
           from src.utils.constants import ChessColor, GameState
@@ -73,125 +74,93 @@ jobs:
           device = resolve_device('cpu')
           model, metadata = load_checkpoint('_work/checkpoint/best', device=device)
           arena_budget = ActionSearchBudget(max_states=256, max_actions=24, max_move_depth=32, max_seconds=5.0)
-          report = {
-              'checkpoint_epoch': metadata.get('epoch'),
-              'seed': 42,
-              'arena_budget': {'states': 256, 'actions': 24, 'moves': 32, 'seconds': 5.0},
-              'games': [],
-              'failure': None,
-              'comparisons': [],
-          }
-
-          def move_spec_json(spec):
-              return {
-                  'source': [spec.source.board.timeline, spec.source.board.turn, spec.source.board.side.value, spec.source.x, spec.source.y],
-                  'destination': [spec.destination.board.timeline, spec.destination.board.turn, spec.destination.board.side.value, spec.destination.x, spec.destination.y],
-                  'promotion': spec.promotion.value if spec.promotion else None,
-              }
-
           failure_engine = None
+          failure = None
+
           for game_index in range(3):
               neural_color = ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
               engine = FiveDEngine()
               neural = NeuralPolicyValueAgent(model, neural_color, device=device, budget=arena_budget)
               baseline = RandomAI(neural_color.opposite(), seed=42 + game_index + 1, budget=arena_budget)
-              game = {'game_index': game_index, 'neural_color': neural_color.value, 'trace': []}
-              report['games'].append(game)
               for action_index in range(120):
                   if engine.game_state != GameState.PLAYING:
-                      game['terminal'] = engine.game_state.name
                       break
-                  actor_name = 'neural' if engine.current_turn_color == neural_color else 'baseline'
-                  actor = neural if actor_name == 'neural' else baseline
-                  before_hash = _state_signature_sha256(engine)
+                  actor = neural if engine.current_turn_color == neural_color else baseline
+                  actor_name = 'neural' if actor is neural else 'baseline'
                   try:
                       plan = actor.plan_action(engine)
                   except ActionPlanningError as exc:
-                      failure = {
-                          'game_index': game_index,
-                          'action_index': action_index,
-                          'actor': actor_name,
-                          'player': engine.current_turn_color.value,
-                          'ply': engine.move_counter,
-                          'timeline_count': len(engine.timeline_manager.timelines),
-                          'state_signature_sha256': before_hash,
-                          'reason': exc.reason,
-                          'incomplete': exc.incomplete,
-                          'explored_states': exc.explored_states,
-                          'trace_length': len(game['trace']),
-                      }
-                      game['failure'] = failure
-                      report['failure'] = failure
-                      failure_engine = deepcopy(engine)
+                      if game_index == 2:
+                          failure_engine = deepcopy(engine)
+                          failure = {
+                              'game_index': game_index,
+                              'action_index': action_index,
+                              'actor': actor_name,
+                              'player': engine.current_turn_color.value,
+                              'ply': engine.move_counter,
+                              'timeline_count': len(engine.timeline_manager.timelines),
+                              'state_signature_sha256': _state_signature_sha256(engine),
+                              'reason': exc.reason,
+                              'incomplete': exc.incomplete,
+                              'explored_states': exc.explored_states,
+                          }
                       break
-                  entry = {
-                      'action_index': action_index,
-                      'actor': actor_name,
-                      'player': engine.current_turn_color.value,
-                      'before_state_sha256': before_hash,
-                      'candidate_count': int(plan.metadata.get('candidate_count', 0)),
-                      'explored_states': int(plan.metadata.get('explored_states', 0)),
-                      'search_complete': bool(plan.metadata.get('search_complete', False)),
-                      'selected_index': _jsonable(plan.metadata.get('selected_index')),
-                      'moves': [move_spec_json(spec) for spec in plan.moves],
-                  }
                   apply_action_plan(engine, plan)
-                  entry['after_state_sha256'] = _state_signature_sha256(engine)
-                  entry['after_ply'] = engine.move_counter
-                  entry['after_timelines'] = len(engine.timeline_manager.timelines)
-                  game['trace'].append(entry)
               if failure_engine is not None:
                   break
 
+          report = {
+              'checkpoint_epoch': metadata.get('epoch'),
+              'failure': failure,
+              'searches': [],
+          }
           if failure_engine is None:
-              report['error'] = 'expected failure was not reproduced'
+              report['error'] = 'expected game-three failure was not reproduced'
           else:
-              for seconds in (0.5, 1.0, 2.0, 5.0, 10.0):
-                  row = {'seconds': seconds}
-
+              for max_states in (4096, 16384):
                   started = time.perf_counter()
-                  planner = ActionPlanner(ActionSearchBudget(
-                      max_states=4096,
-                      max_actions=1,
-                      max_move_depth=64,
-                      max_seconds=seconds,
-                  )).search(failure_engine)
-                  row['action_planner'] = {
-                      'candidate_count': len(planner.candidates),
-                      'explored_states': planner.explored_states,
-                      'termination': planner.termination_reason,
-                      'wall_ms': (time.perf_counter() - started) * 1000.0,
-                      'first_candidate_moves': [move_spec_json(spec) for spec in planner.candidates[0]] if planner.candidates else [],
-                  }
-
-                  started = time.perf_counter()
-                  canonical = ActionSearch(
-                      max_states=4096,
+                  result = ActionSearch(
+                      max_states=max_states,
                       max_depth=64,
-                      max_seconds=seconds,
+                      max_seconds=None,
                   ).find_legal_completion(failure_engine)
-                  row['engine_action_search'] = {
-                      'has_legal_action': canonical.has_legal_action,
-                      'explored_states': canonical.explored_states,
-                      'termination': canonical.termination_reason,
+                  row = {
+                      'max_states': max_states,
+                      'has_legal_action': result.has_legal_action,
+                      'explored_states': result.explored_states,
+                      'termination': result.termination_reason,
                       'wall_ms': (time.perf_counter() - started) * 1000.0,
-                      'witness_moves': [move_spec_json(MoveSpec.from_move(move)) for move in canonical.witness],
+                      'witness': [
+                          {
+                              'source': [m.source.board.timeline, m.source.board.turn, m.source.board.side.value, m.source.x, m.source.y],
+                              'destination': [m.destination.board.timeline, m.destination.board.turn, m.destination.board.side.value, m.destination.x, m.destination.y],
+                              'promotion': m.promotion.value if m.promotion else None,
+                          }
+                          for m in result.witness
+                      ],
                   }
-                  report['comparisons'].append(row)
+                  report['searches'].append(row)
+                  if result.has_legal_action or result.termination_reason is None:
+                      break
 
-          (root / 'failure-comparison.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
-          print(json.dumps({
-              'failure': report.get('failure'),
-              'comparisons': report.get('comparisons'),
-              'error': report.get('error'),
-          }, indent=2, sort_keys=True))
+              final = report['searches'][-1]
+              if not final['has_legal_action'] and final['termination'] is None:
+                  in_check = RoyalRules(failure_engine.timeline_manager.timelines).is_in_check(failure_engine.current_turn_color)
+                  report['proved_terminal'] = True
+                  report['terminal_kind'] = 'checkmate' if in_check else 'stalemate'
+                  report['in_check'] = in_check
+              else:
+                  report['proved_terminal'] = False
+
+          (root / 'terminal-classification.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(report, indent=2, sort_keys=True))
           PY
 
       - name: Upload diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-planner-failure-${{ github.run_id }}
+          name: temp-arena-terminal-state-${{ github.run_id }}
           path: _work/arena-diagnostic
           retention-days: 3
           if-no-files-found: error
