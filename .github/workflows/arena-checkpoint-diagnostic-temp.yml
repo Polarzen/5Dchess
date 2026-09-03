@@ -5,6 +5,8 @@ on:
     branches: [feat/local-ai-training-v2]
     paths:
       - .github/workflows/arena-checkpoint-diagnostic-temp.yml
+      - src/engine/action_search.py
+      - src/engine/royal_rules.py
 
 permissions:
   contents: read
