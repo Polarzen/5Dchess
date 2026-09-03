@@ -5,7 +5,7 @@ on:
     branches: [feat/local-ai-training-v2]
     paths:
       - .github/workflows/arena-checkpoint-diagnostic-temp.yml
-      - scripts/planner_target_order_probe_temp.py
+      - scripts/planner_target_king_probe_temp.py
 
 permissions:
   contents: read
@@ -17,23 +17,18 @@ concurrency:
 
 jobs:
   planner-order-probe:
-    name: Deterministic failure-state ordering probe
+    name: Exact-state King/capture ordering probe
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
-      - name: Checkout feature branch
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install engine dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-
       - name: Download deterministic failure trace
         uses: actions/download-artifact@v4
         with:
@@ -42,14 +37,12 @@ jobs:
           repository: ${{ github.repository }}
           run-id: "33813126560"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run ordering probes
+      - name: Run completion-order probe
         run: |
           mkdir -p _work/order-probe
-          python scripts/planner_target_order_probe_temp.py \
+          python scripts/planner_target_king_probe_temp.py \
             --trace _work/source/trace.json \
             --output _work/order-probe/report.json
-
       - name: Upload ordering evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
