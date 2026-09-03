@@ -1,7 +1,12 @@
 """Regression coverage for deterministic ActionPlanner move ordering."""
 
 import src.ai.action_planner as action_planner
-from src.ai.action_planner import ActionPlanner, ActionSearchBudget, _move_sort_key
+from src.ai.action_planner import (
+    ActionPlanner,
+    ActionSearchBudget,
+    _move_sort_key,
+    _required_move_sort_key,
+)
 from src.engine import ActionRules, FiveDEngine, Piece, Position
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
@@ -81,13 +86,43 @@ def test_non_branching_moves_sort_before_branching_moves_without_filtering():
     )
 
     # The branching move has the lexicographically earlier source coordinate,
-    # so the historical coordinate-first key would place it first.  Planner
+    # so the historical coordinate-first key would place it first. Planner
     # ordering must instead prefer a non-branching witness while retaining both.
     ordered = sorted((branching, ordinary), key=_move_sort_key)
 
     assert ordered == [ordinary, branching]
     assert branching in ordered
     assert ordinary in ordered
+
+
+def test_non_branching_cross_timeline_move_advancing_two_required_boards_sorts_first():
+    piece = Piece(PieceType.ROOK, ChessColor.WHITE)
+    ordinary = Move(
+        piece=piece,
+        source=_square(-5, 0, 0),
+        destination=_square(-5, 0, 1),
+    )
+    cross_timeline = Move(
+        piece=piece,
+        source=_square(5, 7, 7),
+        destination=_square(6, 7, 6),
+    )
+    required = {
+        ordinary.source.board,
+        cross_timeline.source.board,
+        cross_timeline.destination.board,
+    }
+
+    # Both are non-branching and the coordinate key would favor ``ordinary``.
+    # The state-aware key instead prefers the canonical Move that advances two
+    # currently-required boards. No Move is filtered.
+    ordered = sorted(
+        (ordinary, cross_timeline),
+        key=lambda move: _required_move_sort_key(move, required),
+    )
+
+    assert ordered == [cross_timeline, ordinary]
+    assert set(ordered) == {ordinary, cross_timeline}
 
 
 def test_ordering_change_preserves_complete_candidate_set(monkeypatch):
