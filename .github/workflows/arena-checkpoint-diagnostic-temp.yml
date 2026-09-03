@@ -1,4 +1,4 @@
-name: TEMP Arena witness comparison
+name: TEMP Arena minimal-depth witness diagnostic
 
 on:
   push:
@@ -11,12 +11,12 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-witness-comparison-${{ github.ref }}
+  group: temp-arena-min-depth-witness-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  witness-comparison:
-    name: Reproduce Arena failure and compare witness search
+  witness-diagnostic:
+    name: Compare depth-first and minimal-depth witness search
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -48,46 +48,41 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reproduce first 5-second planning failure and compare searches
+      - name: Reproduce failure and run minimal-depth search
         run: |
-          mkdir -p _work/witness-comparison
+          mkdir -p _work/min-depth-witness
           python - <<'PY'
           from __future__ import annotations
 
           from copy import deepcopy
           import hashlib
           import json
+          import math
           from pathlib import Path
           import time
 
           from src.ai.action_planner import (
-              AIActionPlan,
               ActionPlanner,
               ActionPlanningError,
               ActionSearchBudget,
               MoveSpec,
+              _required_move_sort_key,
               engine_state_signature,
               resolve_move_spec,
           )
           from src.ai.random_ai import RandomAI
           from src.engine import ActionRules
-          from src.engine.action_search import ActionSearch
           from src.engine.engine import FiveDEngine
           from src.training.agent import NeuralPolicyValueAgent
           from src.training.checkpoint import load_checkpoint
           from src.training.utils import resolve_device, seed_everything
           from src.utils.constants import ChessColor, GameState
 
-          root = Path('_work/witness-comparison')
+          root = Path('_work/min-depth-witness')
           seed_everything(42)
           device = resolve_device('cpu')
           model, metadata = load_checkpoint('_work/checkpoint/best', device=device)
-          arena_budget = ActionSearchBudget(
-              max_states=256,
-              max_actions=24,
-              max_move_depth=32,
-              max_seconds=5.0,
-          )
+          arena_budget = ActionSearchBudget(max_states=256, max_actions=24, max_move_depth=32, max_seconds=5.0)
 
           failure_engine = None
           failure = None
@@ -95,11 +90,7 @@ jobs:
               neural_color = ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
               engine = FiveDEngine()
               neural = NeuralPolicyValueAgent(model, neural_color, device=device, budget=arena_budget)
-              baseline = RandomAI(
-                  neural_color.opposite(),
-                  seed=42 + game_index + 1,
-                  budget=arena_budget,
-              )
+              baseline = RandomAI(neural_color.opposite(), seed=42 + game_index + 1, budget=arena_budget)
               for action_index in range(120):
                   if engine.game_state != GameState.PLAYING:
                       break
@@ -109,7 +100,6 @@ jobs:
                       plan = actor.plan_action(engine)
                   except ActionPlanningError as exc:
                       failure_engine = deepcopy(engine)
-                      signature = repr(engine_state_signature(engine)).encode('utf-8')
                       action = engine._ensure_current_action()
                       required = ActionRules.required_boards(action, engine.timeline_manager.timelines)
                       movable = ActionRules.movable_boards(action, engine.timeline_manager.timelines)
@@ -122,11 +112,9 @@ jobs:
                           'timeline_count': len(engine.timeline_manager.timelines),
                           'required_board_count': len(required),
                           'movable_board_count': len(movable),
-                          'current_action_prefix_moves': len(action.moves),
                           'reason': exc.reason,
-                          'incomplete': exc.incomplete,
                           'explored_states': exc.explored_states,
-                          'state_signature_sha256': hashlib.sha256(signature).hexdigest(),
+                          'state_signature_sha256': hashlib.sha256(repr(engine_state_signature(engine)).encode('utf-8')).hexdigest(),
                       }
                       break
                   from src.ai.action_planner import apply_action_plan
@@ -134,84 +122,120 @@ jobs:
               if failure_engine is not None:
                   break
 
-          report = {
-              'checkpoint_epoch': metadata.get('epoch'),
-              'arena_budget_seconds': 5.0,
-              'arena_max_states': 256,
-              'failure': failure,
-              'comparisons': [],
-          }
-
+          report = {'checkpoint_epoch': metadata.get('epoch'), 'failure': failure, 'comparisons': []}
           if failure_engine is None:
-              report['error'] = 'no planning failure reproduced in five games'
+              report['error'] = 'no planning failure reproduced'
           else:
-              prefix_len = len(failure_engine._ensure_current_action().moves)
-
-              def verify_witness(witness):
-                  suffix = tuple(witness[prefix_len:])
-                  probe = deepcopy(failure_engine)
-                  for move in suffix:
-                      spec = MoveSpec.from_move(move)
-                      resolved = resolve_move_spec(probe, spec)
-                      if not probe.execute_action_move(resolved):
-                          return {'valid': False, 'suffix_moves': len(suffix), 'reason': 'execute_rejected'}
-                  return {
-                      'valid': bool(probe.can_submit_action()),
-                      'suffix_moves': len(suffix),
-                      'reason': None if probe.can_submit_action() else 'not_submit_capable',
-                  }
-
-              for states in (256, 4096):
-                  started = time.perf_counter()
-                  result = ActionSearch(
-                      max_states=states,
-                      max_depth=64,
-                      max_seconds=5.0,
-                  ).find_legal_completion(failure_engine)
-                  item = {
-                      'search': 'engine_action_search',
-                      'max_states': states,
-                      'max_seconds': 5.0,
-                      'has_legal_action': result.has_legal_action,
-                      'explored_states': result.explored_states,
-                      'termination_reason': result.termination_reason,
-                      'witness_moves': len(result.witness),
-                      'wall_ms': (time.perf_counter() - started) * 1000.0,
-                  }
-                  if result.has_legal_action:
-                      item['verification'] = verify_witness(result.witness)
-                  report['comparisons'].append(item)
-
-              started = time.perf_counter()
-              planner = ActionPlanner(ActionSearchBudget(
-                  max_states=4096,
-                  max_actions=1,
-                  max_move_depth=64,
-                  max_seconds=5.0,
+              started = time.monotonic()
+              explored = 0
+              termination = None
+              depth_attempts = []
+              required_at_root = set(ActionRules.required_boards(
+                  failure_engine._ensure_current_action(), failure_engine.timeline_manager.timelines
               ))
-              planner_result = planner.search(failure_engine)
-              planner_item = {
-                  'search': 'current_action_planner',
-                  'max_states': 4096,
-                  'max_seconds': 5.0,
-                  'candidate_count': len(planner_result.candidates),
-                  'explored_states': planner_result.explored_states,
-                  'termination_reason': planner_result.termination_reason,
-                  'wall_ms': (time.perf_counter() - started) * 1000.0,
-              }
-              if planner_result.candidates:
-                  probe = deepcopy(failure_engine)
-                  for spec in planner_result.candidates[0]:
-                      resolved = resolve_move_spec(probe, spec)
-                      assert probe.execute_action_move(resolved)
-                  planner_item['verification'] = {
-                      'valid': bool(probe.can_submit_action()),
-                      'suffix_moves': len(planner_result.candidates[0]),
-                  }
-              report['comparisons'].append(planner_item)
+              lower_bound = max(0, math.ceil(len(required_at_root) / 2))
 
-          path = root / 'witness-comparison.json'
-          path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+              def budget_hit():
+                  nonlocal termination
+                  if time.monotonic() - started >= 5.0:
+                      termination = 'time_budget'
+                      return True
+                  if explored >= 256:
+                      termination = 'state_budget'
+                      return True
+                  return False
+
+              def search_depth(state, path, depth, limit):
+                  nonlocal explored
+                  action = state._ensure_current_action()
+                  required = set(ActionRules.required_boards(action, state.timeline_manager.timelines))
+                  if not required and state.can_submit_action():
+                      return path
+                  if depth >= limit or budget_hit():
+                      return None
+                  explored += 1
+                  movable = ActionRules.movable_boards(action, state.timeline_manager.timelines)
+                  ordered_boards = tuple(sorted(
+                      movable,
+                      key=lambda board: (
+                          board not in required,
+                          board.timeline,
+                          board.turn,
+                          board.side.value,
+                      ),
+                  ))
+                  for board in ordered_boards:
+                      if budget_hit():
+                          return None
+                      position = state._resolve_position(board)
+                      if position is None:
+                          continue
+                      moves = sorted(
+                          state.get_legal_moves(position),
+                          key=lambda move: _required_move_sort_key(move, required),
+                      )
+                      for move in moves:
+                          if budget_hit():
+                              return None
+                          child = deepcopy(state)
+                          if not child.execute_action_move(move):
+                              continue
+                          witness = search_depth(
+                              child,
+                              path + (MoveSpec.from_move(move),),
+                              depth + 1,
+                              limit,
+                          )
+                          if witness is not None:
+                              return witness
+                  return None
+
+              witness = None
+              for limit in range(lower_bound, 9):
+                  before_states = explored
+                  before_time = time.monotonic()
+                  witness = search_depth(failure_engine, (), 0, limit)
+                  depth_attempts.append({
+                      'depth_limit': limit,
+                      'states': explored - before_states,
+                      'wall_ms': (time.monotonic() - before_time) * 1000.0,
+                      'found': witness is not None,
+                  })
+                  if witness is not None or termination is not None:
+                      break
+
+              verify = None
+              if witness is not None:
+                  probe = deepcopy(failure_engine)
+                  for spec in witness:
+                      move = resolve_move_spec(probe, spec)
+                      assert probe.execute_action_move(move)
+                  verify = {'submit_capable': bool(probe.can_submit_action()), 'moves': len(witness)}
+
+              report['comparisons'].append({
+                  'search': 'minimal_depth_iddfs',
+                  'found': witness is not None,
+                  'witness_moves': len(witness) if witness is not None else 0,
+                  'explored_states': explored,
+                  'termination_reason': termination,
+                  'wall_ms': (time.monotonic() - started) * 1000.0,
+                  'depth_attempts': depth_attempts,
+                  'verification': verify,
+              })
+
+              started_current = time.perf_counter()
+              current = ActionPlanner(ActionSearchBudget(
+                  max_states=256, max_actions=1, max_move_depth=32, max_seconds=5.0
+              )).search(failure_engine)
+              report['comparisons'].append({
+                  'search': 'current_dfs',
+                  'candidate_count': len(current.candidates),
+                  'explored_states': current.explored_states,
+                  'termination_reason': current.termination_reason,
+                  'wall_ms': (time.perf_counter() - started_current) * 1000.0,
+              })
+
+          (root / 'min-depth-witness.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
           print(json.dumps(report, indent=2, sort_keys=True))
           if failure_engine is None:
               raise SystemExit(2)
@@ -221,7 +245,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-witness-comparison-${{ github.run_id }}
-          path: _work/witness-comparison
+          name: temp-arena-min-depth-witness-${{ github.run_id }}
+          path: _work/min-depth-witness
           retention-days: 3
           if-no-files-found: error
