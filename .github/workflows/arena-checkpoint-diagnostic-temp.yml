@@ -5,6 +5,8 @@ on:
     branches: [feat/local-ai-training-v2]
     paths:
       - .github/workflows/arena-checkpoint-diagnostic-temp.yml
+      - src/training/arena.py
+      - src/training/agent.py
 
 permissions:
   contents: read
@@ -102,6 +104,7 @@ jobs:
                       'planner_clean': planner_clean,
                       'budget_termination_count': data.get('budget_termination_count'),
                       'proven_terminal_adjudication_count': data.get('proven_terminal_adjudication_count'),
+                      'candidate_breadth': data.get('candidate_breadth'),
                       'result': data,
                   })
                   if planner_clean and selected is None:
@@ -162,6 +165,7 @@ jobs:
               )
               gate['budget_termination_count'] = data.get('budget_termination_count')
               gate['proven_terminal_adjudication_count'] = data.get('proven_terminal_adjudication_count')
+              gate['candidate_breadth'] = data.get('candidate_breadth')
           (root / 'twenty-game-gate.json').write_text(json.dumps(gate, indent=2, sort_keys=True), encoding='utf-8')
           print(json.dumps(gate, indent=2, sort_keys=True))
           PY
