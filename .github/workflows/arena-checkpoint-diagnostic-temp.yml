@@ -194,7 +194,10 @@ jobs:
               started = time.perf_counter()
               outcome = OutcomeRules.evaluate(failure_engine)
               report['canonical_outcome'] = {
-                  'result': outcome.name,
+                  'result': outcome.kind.value if outcome is not None else None,
+                  'in_check': outcome.in_check if outcome is not None else None,
+                  'explored_states': outcome.explored_states if outcome is not None else None,
+                  'rule_warning': getattr(failure_engine, 'rule_warning', None),
                   'wall_ms': (time.perf_counter() - started) * 1000.0,
               }
 
