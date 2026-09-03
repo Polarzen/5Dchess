@@ -9,6 +9,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import statistics
+import subprocess
 import tempfile
 import time
 import urllib.request
@@ -52,10 +53,17 @@ def _legacy_move_sort_key(move):
 
 
 def _download_checkpoint(root: Path) -> Path:
+    extraheader = subprocess.check_output(
+        ["git", "config", "--local", "--get", "http.https://github.com/.extraheader"],
+        text=True,
+    ).strip()
+    _, _, auth_value = extraheader.partition(":")
+    assert auth_value.strip(), "checkout credential header unavailable"
     request = urllib.request.Request(
         ARTIFACT_URL,
         headers={
             "Accept": "application/vnd.github+json",
+            "Authorization": auth_value.strip(),
             "User-Agent": "5dchess-planner-benchmark",
             "X-GitHub-Api-Version": "2022-11-28",
         },
