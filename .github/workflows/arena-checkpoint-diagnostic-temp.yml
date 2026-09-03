@@ -13,7 +13,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-checkpoint-validation-${{ github.ref }}
+  group: temp-arena-checkpoint-validation-v2-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
