@@ -378,6 +378,8 @@ def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
         return (
             base[0],
             -_required_board_progress(move, required),
+            move.piece.piece_type is not PieceType.KING,
+            move.captured is None,
             *base[1:],
         )
     return (
@@ -508,6 +510,42 @@ class ActionPlanner:
                 ),
             )
         )
+
+        # With exactly two required Present boards, a complete Action can be a
+        # single cross-timeline Move between them.  Rank legal Moves from both
+        # required boards together so a completion on the second board is not
+        # hidden behind a deep dead-end from the first board.  Optional boards
+        # remain fully searchable afterwards; this changes ordering only.
+        if len(required) == 2:
+            required_moves: list[Move] = []
+            optional_boards: list[BoardCoord] = []
+            for board in ordered_boards:
+                if board not in required:
+                    optional_boards.append(board)
+                    continue
+                position = state._resolve_position(board)
+                if position is None:
+                    continue
+                required_moves.extend(state.get_legal_moves(position))
+
+            for move in sorted(
+                required_moves,
+                key=lambda candidate: _required_move_sort_key(candidate, required),
+            ):
+                if tracker.check(depth):
+                    return
+                child = deepcopy(state)
+                if not child.execute_action_move(move):
+                    continue
+                self._dfs(
+                    child,
+                    path + (MoveSpec.from_move(move),),
+                    depth + 1,
+                    tracker,
+                    candidates,
+                )
+
+            ordered_boards = tuple(optional_boards)
 
         for board in ordered_boards:
             if tracker.check(depth):
