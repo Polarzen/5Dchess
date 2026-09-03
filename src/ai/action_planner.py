@@ -369,9 +369,17 @@ def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
 
 
 def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
-    """Prefer non-branching Moves, then safe required-board progress."""
+    """Prioritize safe completion moves only for genuinely complex Actions."""
     base = _move_sort_key(move)
-    return (base[0], -_required_board_progress(move, required), *base[1:])
+    if len(required) < 3:
+        return base
+    return (
+        base[0],
+        move.piece.piece_type is not PieceType.KING,
+        move.captured is None,
+        -_required_board_progress(move, required),
+        *base[1:],
+    )
 
 
 class ActionPlanner:
