@@ -39,7 +39,6 @@ def _profile(engine: FiveDEngine, *, seconds: float):
         "royal_is_action_safe": [],
         "sorting": [],
     }
-    nested = {"can_submit": 0}
     first_candidate_ms = None
     search_started = None
 
@@ -93,13 +92,11 @@ def _profile(engine: FiveDEngine, *, seconds: float):
 
     def timed_can_submit(self, *args, **kwargs):
         nonlocal first_candidate_ms
-        nested["can_submit"] += 1
         started = time.perf_counter()
         try:
             result = original_can_submit(self, *args, **kwargs)
         finally:
             samples["can_submit_action"].append((time.perf_counter() - started) * 1000.0)
-            nested["can_submit"] -= 1
         if result and first_candidate_ms is None and search_started is not None:
             first_candidate_ms = (time.perf_counter() - search_started) * 1000.0
         return result
@@ -155,3 +152,14 @@ def test_profile_current_deterministic_prefix_temp():
     report = _profile(engine, seconds=2.0)
     warnings.warn("PLANNER_PROFILE_TEMP=" + json.dumps(report, sort_keys=True))
     assert report["candidate_count"] >= 1
+
+
+def test_baseline_budget_matrix_temp():
+    engine = fixture.build_deterministic_complex_engine()
+    current_key = action_planner._move_sort_key
+    matrix = {"legacy": [], "current": []}
+    for seconds in (0.5, 1.0, 2.0, 5.0):
+        matrix["legacy"].append(fixture._benchmark(engine, fixture._legacy_move_sort_key, seconds))
+        matrix["current"].append(fixture._benchmark(engine, current_key, seconds))
+    warnings.warn("PLANNER_BASELINE_MATRIX_TEMP=" + json.dumps(matrix, sort_keys=True))
+    assert any(row["candidate_count"] for row in matrix["current"])
