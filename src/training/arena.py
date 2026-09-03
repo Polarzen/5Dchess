@@ -23,6 +23,7 @@ from src.ai.alpha_beta import AlphaBetaAI
 from src.ai.hard_ai import HardAI
 from src.ai.random_ai import RandomAI
 from src.engine.engine import FiveDEngine
+from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.training.agent import NeuralPolicyValueAgent
 from src.training.checkpoint import load_checkpoint
 from src.training.config import (
@@ -201,6 +202,25 @@ def _baseline(name: str, color: ChessColor, seed: int, budget: ActionSearchBudge
     raise ValueError("opponent must be easy, medium, or hard")
 
 
+def _adjudicate_proven_no_action(
+    engine: FiveDEngine,
+    planning_error: ActionPlanningError,
+) -> None:
+    """Finish a game from a complete planner proof without repeating the search."""
+    if planning_error.incomplete or planning_error.reason != "no_legal_action":
+        raise ValueError("terminal adjudication requires a complete no-action proof")
+    outcome = OutcomeRules.classify_proven_no_legal_action(
+        engine,
+        engine.current_turn_color,
+        explored_states=planning_error.explored_states,
+    )
+    engine.game_state = (
+        GameState.CHECKMATE
+        if outcome.kind == OutcomeKind.CHECKMATE
+        else GameState.STALEMATE
+    )
+
+
 def evaluate_arena(
     *,
     checkpoint: str | Path,
@@ -254,6 +274,7 @@ def evaluate_arena(
     wins = draws = losses = 0
     illegal = stale_failures = budget_terminations = 0
     planning_failures = unexpected_failures = 0
+    proven_terminal_adjudications = 0
     first_failure: dict[str, Any] | None = None
     action_counts: list[int] = []
     inference_times: list[float] = []
@@ -300,6 +321,14 @@ def evaluate_arena(
                 apply_action_plan(engine, plan)
                 completed_actions += 1
             except Exception as exc:
+                if (
+                    isinstance(exc, ActionPlanningError)
+                    and exc.reason == "no_legal_action"
+                    and not exc.incomplete
+                ):
+                    _adjudicate_proven_no_action(engine, exc)
+                    proven_terminal_adjudications += 1
+                    break
                 if isinstance(exc, StaleActionPlanError):
                     stale_failures += 1
                 elif isinstance(exc, (InvalidActionPlanError, ActionApplicationError)):
@@ -364,6 +393,7 @@ def evaluate_arena(
         "budget_termination_count": budget_terminations,
         "planning_failure_count": planning_failures,
         "unexpected_failure_count": unexpected_failures,
+        "proven_terminal_adjudication_count": proven_terminal_adjudications,
         "first_failure": first_failure,
         "average_inference_ms": (
             sum(inference_times) / len(inference_times) if inference_times else 0.0
