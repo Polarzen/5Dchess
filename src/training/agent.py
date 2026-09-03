@@ -105,6 +105,8 @@ class NeuralPolicyValueAgent:
                 "candidate_count": len(result.candidates),
                 "selected_index": decision.selected_index,
                 "explored_states": result.explored_states,
+                "search_complete": not result.exhausted,
+                "search_termination_reason": result.termination_reason,
                 "inference_ms": decision.inference_ms,
                 "neural_value": decision.value,
             },
