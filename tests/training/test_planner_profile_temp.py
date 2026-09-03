@@ -9,7 +9,7 @@ import time
 import warnings
 
 import src.ai.action_planner as action_planner
-from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+from src.ai.action_planner import ActionPlanner, ActionSearchBudget, MoveSpec
 from src.engine import ActionRules, FiveDEngine
 from src.engine.royal_rules import RoyalRules
 from src.engine.timeline_rules import TimelineRules
@@ -182,6 +182,88 @@ def _measure(engine: FiveDEngine, seconds: float) -> dict:
     }
 
 
+def _single_clone_first_witness(engine: FiveDEngine, seconds: float) -> dict:
+    """Measure the existing DFS first branch without per-level child deepcopy.
+
+    This is telemetry only. It mutates one private deepcopy, uses only canonical
+    legal Move generation/execution, and accepts a witness only after the same
+    canonical can_submit_action() boundary as ActionPlanner.
+    """
+    started = time.perf_counter()
+    state = deepcopy(engine)
+    state.timeline_manager.refresh_activity()
+    state._ensure_current_action()
+    path: list[MoveSpec] = []
+    explored = 0
+    termination = None
+    first_candidate_ms = None
+
+    while True:
+        action = state._ensure_current_action()
+        required = set(ActionRules.required_boards(
+            action, state.timeline_manager.timelines
+        ))
+        if not required:
+            if state.can_submit_action():
+                first_candidate_ms = (time.perf_counter() - started) * 1000.0
+                break
+            termination = "royal_unsafe"
+            break
+
+        if time.perf_counter() - started >= seconds:
+            termination = "time_budget"
+            break
+        if len(path) >= 64:
+            termination = "move_depth_budget"
+            break
+        if explored >= 128:
+            termination = "state_budget"
+            break
+        explored += 1
+
+        movable = ActionRules.movable_boards(
+            action, state.timeline_manager.timelines
+        )
+        ordered_boards = tuple(sorted(
+            movable,
+            key=lambda board: (
+                board not in required,
+                board.timeline,
+                board.turn,
+                board.side.value,
+            ),
+        ))
+        chosen = None
+        for board in ordered_boards:
+            position = state._resolve_position(board)
+            if position is None:
+                continue
+            legal_moves = sorted(
+                state.get_legal_moves(position),
+                key=lambda move: action_planner._required_move_sort_key(move, required),
+            )
+            if legal_moves:
+                chosen = legal_moves[0]
+                break
+        if chosen is None:
+            termination = "no_legal_move"
+            break
+        if not state.execute_action_move(chosen):
+            termination = "execution_rejected"
+            break
+        path.append(MoveSpec.from_move(chosen))
+
+    return {
+        "budget": seconds,
+        "first_candidate_ms": first_candidate_ms,
+        "candidate_count": int(first_candidate_ms is not None),
+        "first_candidate_depth": len(path) if first_candidate_ms is not None else None,
+        "explored_states": explored,
+        "termination": termination,
+        "wall_ms": (time.perf_counter() - started) * 1000.0,
+    }
+
+
 def test_profile_optimized_deterministic_prefix_temp():
     engine = fixture.build_deterministic_complex_engine()
     report = _profile(engine, seconds=2.0)
@@ -206,3 +288,14 @@ def test_optimized_32_required_board_matrix_temp():
     assert len(required) == 32
     matrix = [_measure(engine, seconds) for seconds in (0.5, 1.0, 2.0, 5.0)]
     warnings.warn("PLANNER_32_REQUIRED_MATRIX_TEMP=" + json.dumps(matrix, sort_keys=True))
+
+
+def test_single_clone_first_witness_temp():
+    prefix = fixture.build_deterministic_complex_engine()
+    final_state = deepcopy(prefix)
+    fixture._apply_recorded_action(final_state, fixture.FINAL_ACTION, 34)
+    report = {
+        "required16": [_single_clone_first_witness(prefix, seconds) for seconds in (0.5, 1.0, 2.0, 5.0)],
+        "required32": [_single_clone_first_witness(final_state, seconds) for seconds in (0.5, 1.0, 2.0, 5.0)],
+    }
+    warnings.warn("PLANNER_SINGLE_CLONE_WITNESS_TEMP=" + json.dumps(report, sort_keys=True))
