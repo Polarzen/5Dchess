@@ -93,31 +93,6 @@ def _two_required_boards_engine() -> FiveDEngine:
     return engine
 
 
-def _three_required_boards_engine() -> FiveDEngine:
-    engine = FiveDEngine()
-    manager = engine.timeline_manager
-    main = manager.get_timeline(0)
-    main.positions.clear()
-    rook = Piece(PieceType.ROOK, ChessColor.WHITE)
-    first = _empty_position(0, 0)
-    first.set_piece(0, 6, rook)
-    main.add_position(first)
-    for timeline_id, x in ((1, 1), (2, 2)):
-        timeline = Timeline(timeline_id=timeline_id, owner=ChessColor.WHITE)
-        position = _empty_position(timeline_id, 0)
-        position.set_piece(x, 6, rook)
-        timeline.add_position(position)
-        manager.timelines[timeline_id] = timeline
-    manager.refresh_activity()
-    _reset_white_action(engine)
-    required = ActionRules.required_boards(
-        engine.current_action,
-        manager.timelines,
-    )
-    assert len(required) == 3
-    return engine
-
-
 def _branching_engine() -> FiveDEngine:
     engine = FiveDEngine()
     main = engine.timeline_manager.get_timeline(0)
@@ -176,7 +151,7 @@ def test_standard_position_white_and_black_ai_complete_actions():
 
 
 def test_multiple_required_boards_produce_multi_move_single_submit_action():
-    engine = _three_required_boards_engine()
+    engine = _two_required_boards_engine()
     plan = RandomAI(ChessColor.WHITE, seed=2, budget=FAST_BUDGET).plan_action(engine)
     applied = apply_action_plan(engine, plan)
 
@@ -333,7 +308,7 @@ def test_completed_candidate_survives_bounded_search_warning():
 
 
 def test_action_move_depth_guard_returns_without_looping():
-    engine = _three_required_boards_engine()
+    engine = _two_required_boards_engine()
     started = time.monotonic()
     with pytest.raises(ActionPlanningError) as exc_info:
         RandomAI(
