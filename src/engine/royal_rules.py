@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Mapping, TYPE_CHECKING
+from typing import Iterator, Mapping, TYPE_CHECKING
 
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.multiverse import MultiverseBoardView
@@ -123,19 +123,23 @@ class RoyalRules:
         )
 
     @classmethod
-    def _direct_threats_in(
+    def _iter_direct_threats_in(
         cls,
         timelines: Mapping[int, "Timeline"],
         color: ChessColor,
-    ) -> tuple[RoyalThreat, ...]:
-        """Find captures available to the opponent from currently playable boards."""
+    ) -> Iterator[RoyalThreat]:
+        """Yield opponent captures from currently playable boards.
+
+        Enumeration callers still receive every threat. Boolean safety queries
+        consume only the first yielded threat, avoiding a full multiverse scan
+        once royal exposure has already been proved.
+        """
         if not timelines:
-            return ()
+            return
 
         by_color = color.opposite()
         view = MultiverseBoardView(timelines)
         kings = cls._king_squares_in(timelines, color)
-        threats: list[RoyalThreat] = []
 
         # Playable boards on inactive timelines are included deliberately: they
         # are optional moves and therefore can still be used to capture a King.
@@ -145,10 +149,10 @@ class RoyalRules:
                 for king in kings:
                     if king.side != by_color:
                         continue
-                    target_piece = view.resolve(king.board)
-                    if target_piece is None:
+                    target_position = view.resolve(king.board)
+                    if target_position is None:
                         continue
-                    king_piece = target_piece.get_piece(king.x, king.y)
+                    king_piece = target_position.get_piece(king.x, king.y)
                     if (
                         king_piece is None
                         or king_piece.color != color
@@ -156,9 +160,25 @@ class RoyalRules:
                     ):
                         continue
                     if cls._attacks_square_with_view(piece, source, king, view):
-                        threats.append(RoyalThreat(piece, source, king))
+                        yield RoyalThreat(piece, source, king)
 
-        return tuple(threats)
+    @classmethod
+    def _direct_threats_in(
+        cls,
+        timelines: Mapping[int, "Timeline"],
+        color: ChessColor,
+    ) -> tuple[RoyalThreat, ...]:
+        """Find every capture available to the opponent from playable boards."""
+        return tuple(cls._iter_direct_threats_in(timelines, color))
+
+    @classmethod
+    def _has_direct_threat_in(
+        cls,
+        timelines: Mapping[int, "Timeline"],
+        color: ChessColor,
+    ) -> bool:
+        """Return as soon as one canonical direct royal threat is found."""
+        return next(cls._iter_direct_threats_in(timelines, color), None) is not None
 
     def direct_threats_against(self, color: ChessColor) -> tuple[RoyalThreat, ...]:
         """Threats available in the already-materialized current state."""
@@ -205,7 +225,8 @@ class RoyalRules:
 
     def is_in_check(self, color: ChessColor) -> bool:
         """Whether ``color`` is in 5D check under the Present-pass definition."""
-        return bool(self.threats_against(color))
+        simulated = self._after_virtual_present_pass(color)
+        return self._has_direct_threat_in(simulated, color)
 
     def is_action_safe(self, color: ChessColor) -> bool:
         """Whether a completed Action can be submitted without exposing a King.
@@ -217,4 +238,4 @@ class RoyalRules:
         present = TimelineRules.present(self.timelines)
         if present is None or present.side == color:
             return False
-        return not self.direct_threats_against(color)
+        return not self._has_direct_threat_in(self.timelines, color)
