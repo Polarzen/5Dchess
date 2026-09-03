@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: temp-arena-checkpoint-validation-v2-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   arena-validation:
@@ -75,6 +75,28 @@ jobs:
             status=$?
             set -e
             echo "$status" > "_work/arena-validation/five-${budget}.exit"
+
+            result_path="_work/arena-validation/five-${budget}.json"
+            if [[ -f "$result_path" ]] && python - "$result_path" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          data = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          clean = (
+              data.get('games') == 5
+              and data.get('planning_failure_count') == 0
+              and data.get('illegal_action_count') == 0
+              and data.get('stale_failure_count') == 0
+              and data.get('unexpected_failure_count') == 0
+              and data.get('first_failure') is None
+          )
+          raise SystemExit(0 if clean else 1)
+          PY
+            then
+              echo "planner-clean at ${budget}s; skipping larger budgets"
+              break
+            fi
           done
 
       - name: Select minimum planner-clean five-game budget
