@@ -347,6 +347,31 @@ def _move_sort_key(move: Move) -> tuple:
     )
 
 
+def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
+    """Return how many currently-required boards this legal Move advances.
+
+    Every generated Move advances its source board.  A non-branching
+    cross-timeline Move also advances the distinct destination board.  This is
+    only a search-order heuristic: no Move is filtered and canonical execution
+    remains the source of truth for the child state.
+    """
+    progress = int(move.source.board in required)
+    if (
+        move.is_cross_timeline
+        and not move.is_branching
+        and move.destination.board != move.source.board
+        and move.destination.board in required
+    ):
+        progress += 1
+    return progress
+
+
+def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
+    """Prefer non-branching Moves, then those advancing more required boards."""
+    base = _move_sort_key(move)
+    return (base[0], -_required_board_progress(move, required), *base[1:])
+
+
 class ActionPlanner:
     """Enumerate complete legal Actions without mutating the caller."""
 
@@ -421,12 +446,20 @@ class ActionPlanner:
         candidates: list[tuple[MoveSpec, ...]],
     ) -> None:
         action = state._ensure_current_action()
+        required = set(ActionRules.required_boards(
+            action,
+            state.timeline_manager.timelines,
+        ))
 
+        # A non-empty required set proves that The Present still belongs to the
+        # acting color, so ActionRules.can_submit() must be false.  Avoid the
+        # redundant Present query on those nodes; once no board is required we
+        # still delegate the decisive royal-safety check to the canonical API.
         # Completion is checked before the budget so a witness exactly at the
         # configured depth is still accepted.  A submit-capable state is also
         # allowed to continue through optional boards: callers may deliberately
         # include those moves before the one final submission.
-        if state.can_submit_action():
+        if not required and state.can_submit_action():
             candidates.append(path)
             tracker.explored_actions += 1
             if (
@@ -440,10 +473,6 @@ class ActionPlanner:
             return
         tracker.explored_states += 1
 
-        required = set(ActionRules.required_boards(
-            action,
-            state.timeline_manager.timelines,
-        ))
         movable = ActionRules.movable_boards(
             action,
             state.timeline_manager.timelines,
@@ -474,7 +503,7 @@ class ActionPlanner:
             # are retained and passed through the engine's canonical API.
             legal_moves = sorted(
                 state.get_legal_moves(position),
-                key=_move_sort_key,
+                key=lambda move: _required_move_sort_key(move, required),
             )
             for move in legal_moves:
                 if tracker.check(depth):
@@ -558,47 +587,40 @@ def _apply_specs_once(
     if not engine.can_submit_action():
         raise ActionApplicationError("plan does not reach a submit-capable Action")
     if not engine.submit_action():
-        raise ActionApplicationError("engine rejected Action submission")
+        raise ActionApplicationError("engine refused to submit an otherwise valid Action")
     return tuple(applied)
 
 
 def apply_action_plan(engine: "FiveDEngine", plan: AIActionPlan) -> tuple[Move, ...]:
-    """Preflight and apply a complete plan, submitting exactly once.
+    """Apply one complete plan atomically through canonical engine methods.
 
-    The preflight runs all exact resolutions and the single submission on a
-    deep copy.  The real engine is then resolved afresh for every step and is
-    submitted once only after all steps succeed. The canonical Move objects
-    actually applied to the live engine are returned in execution order.
+    The plan is first resolved and executed on a deepcopy.  Only after every
+    Move and the single final submission succeed do we replay the same immutable
+    specs against the caller.  Expected stale/malformed plans therefore leave
+    the caller untouched and cannot partially mutate a live game.
     """
     _verify_plan_start(engine, plan)
 
-    preflight = deepcopy(engine)
+    probe = deepcopy(engine)
     try:
-        _apply_specs_once(preflight, plan)
+        _apply_specs_once(probe, plan)
     except InvalidActionPlanError:
         raise
-    except Exception as exc:
-        raise ActionApplicationError(f"plan preflight failed: {exc}") from exc
+    except (ValueError, RuntimeError) as exc:
+        raise ActionApplicationError(f"plan validation failed: {exc}") from exc
 
-    # The signature was checked before preflight; this second check catches a
-    # concurrent caller changing state while the copy was being validated.
-    _verify_plan_start(engine, plan)
-    return _apply_specs_once(engine, plan)
+    try:
+        return _apply_specs_once(engine, plan)
+    except InvalidActionPlanError:
+        raise
+    except (ValueError, RuntimeError) as exc:
+        raise ActionApplicationError(f"plan application failed: {exc}") from exc
 
 
-__all__ = [
-    "ActionApplicationError",
-    "ActionPlanError",
-    "ActionPlanner",
-    "ActionPlanningError",
-    "ActionSearchBudget",
-    "ActionSearchResult",
-    "AIActionPlan",
-    "InvalidActionPlanError",
-    "MoveSpec",
-    "StaleActionPlanError",
-    "apply_action_plan",
-    "engine_state_signature",
-    "enumerate_action_candidates",
-    "resolve_move_spec",
-]
+def plan_action(
+    engine: "FiveDEngine",
+    budget: ActionSearchBudget | None = None,
+    **kwargs,
+) -> AIActionPlan:
+    """Convenience wrapper returning the first complete legal Action plan."""
+    return ActionPlanner(budget).plan(engine, **kwargs)
