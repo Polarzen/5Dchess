@@ -19,6 +19,7 @@ from src.ai.action_planner import (
 )
 from src.ai.evaluator import Evaluator
 from src.engine.engine import FiveDEngine
+from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.training.config import (
     DEFAULT_PLANNER_CANDIDATE_LIMIT,
     DEFAULT_PLANNER_SECONDS,
@@ -56,6 +57,21 @@ def _candidate_plan(engine, specs) -> AIActionPlan:
     )
 
 
+def _adjudicate_proven_no_action(engine, explored_states: int) -> str:
+    """Apply terminal state from a complete planner no-action proof."""
+    outcome = OutcomeRules.classify_proven_no_legal_action(
+        engine,
+        engine.current_turn_color,
+        explored_states=explored_states,
+    )
+    engine.game_state = (
+        GameState.CHECKMATE
+        if outcome.kind == OutcomeKind.CHECKMATE
+        else GameState.STALEMATE
+    )
+    return outcome.kind.value
+
+
 def _evaluate_after(engine, specs, perspective: ChessColor) -> tuple[float, object]:
     child = deepcopy(engine)
     apply_action_plan(child, _candidate_plan(child, specs))
@@ -91,7 +107,14 @@ def _select_hard(engine, candidates, planner_config: PlannerConfig) -> int:
             continue
         responses = ActionPlanner(response_budget).search(child)
         if not responses.candidates:
-            root_scores.append((evaluator.evaluate_engine(child, color), root_index))
+            if responses.termination_reason is None:
+                terminal = _adjudicate_proven_no_action(
+                    child, responses.explored_states
+                )
+                score = 100000.0 if terminal == "checkmate" else 0.0
+                root_scores.append((score, root_index))
+            else:
+                root_scores.append((evaluator.evaluate_engine(child, color), root_index))
             continue
         worst = float("inf")
         for response in responses.candidates:
@@ -215,9 +238,12 @@ def generate_selfplay(
                     _budget(planner_config, deterministic=deterministic_planner)
                 ).search(engine)
                 if not result.candidates:
-                    termination_reason = (
-                        "planner_budget" if result.termination_reason else "error"
-                    )
+                    if result.termination_reason:
+                        termination_reason = "planner_budget"
+                    else:
+                        termination_reason = _adjudicate_proven_no_action(
+                            engine, result.explored_states
+                        )
                     break
                 player = engine.current_turn_color
                 state = encode_state(engine, player)
