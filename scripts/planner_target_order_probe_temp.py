@@ -1,6 +1,6 @@
 """Temporary deterministic search-order probe for captured Arena failure state.
 
-The input trace is downloaded from GitHub Actions run 33813126560.  All probes
+The input trace is downloaded from GitHub Actions run 33813126560. All probes
 operate on deep copies and only change exploration order; canonical Move
 generation/execution and submit legality remain untouched.
 """
@@ -10,18 +10,20 @@ from copy import deepcopy
 import argparse
 import json
 from pathlib import Path
+import sys
 import time
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from src.ai.action_planner import (
-    ActionPlanner,
-    ActionSearchBudget,
-    MoveSpec,
     _move_sort_key,
     _required_move_sort_key,
 )
 from src.engine import ActionRules, BoardCoord, FiveDEngine, Square5D
-from src.engine.action_search import ActionSearch, ActionSearchResult
-from src.utils.constants import ChessColor, GameState, PieceType
+from src.engine.action_search import ActionSearch
+from src.utils.constants import ChessColor, PieceType
 
 
 def _square(raw) -> Square5D:
@@ -138,11 +140,11 @@ class OrderedWitnessSearch(ActionSearch):
             moves = list(state.get_legal_moves(position))
             if self.mode in {"global-static", "global-child"}:
                 for move in moves:
-                    prepared.append((board, move, None, None))
+                    prepared.append((board, move, None))
             else:
                 moves = sorted(moves, key=lambda m: _required_move_sort_key(m, required))
                 for move in moves:
-                    prepared.append((board, move, None, None))
+                    prepared.append((board, move, None))
 
         if self.mode == "global-static":
             prepared.sort(key=lambda item: (
@@ -151,7 +153,7 @@ class OrderedWitnessSearch(ActionSearch):
             ))
         elif self.mode == "global-child":
             scored = []
-            for board, move, _, _ in prepared:
+            for board, move, _ in prepared:
                 if self._termination_reason is not None:
                     return None
                 child = deepcopy(state)
@@ -172,9 +174,9 @@ class OrderedWitnessSearch(ActionSearch):
                     child,
                 ))
             scored.sort(key=lambda item: item[0])
-            prepared = [(board, move, child, None) for _, board, move, child in scored]
+            prepared = [(board, move, child) for _, board, move, child in scored]
 
-        for _, move, prepared_child, _ in prepared:
+        for _, move, prepared_child in prepared:
             if self._termination_reason is not None:
                 return None
             child = prepared_child if prepared_child is not None else deepcopy(state)
@@ -225,7 +227,6 @@ def main() -> int:
         "root": root_inventory(engine),
         "searches": [],
     }
-    # Current-like state-aware nested ordering, then focused ordering probes.
     for mode, seconds in (
         ("nested", 5.0),
         ("reverse-required", 5.0),
@@ -237,10 +238,6 @@ def main() -> int:
         result = run_search(engine, mode, seconds)
         report["searches"].append(result)
         print(json.dumps(result, sort_keys=True))
-        if result["has_legal_action"] and mode in {"global-static", "global-child"}:
-            # One successful focused mode is enough; retain later variants only
-            # when needed to distinguish the ordering cause.
-            pass
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return 0
