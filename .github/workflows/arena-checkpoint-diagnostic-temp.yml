@@ -1,0 +1,245 @@
+name: TEMP Arena checkpoint diagnostic
+
+on:
+  push:
+    branches: [feat/local-ai-training-v2]
+    paths:
+      - .github/workflows/arena-checkpoint-diagnostic-temp.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: temp-arena-checkpoint-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  arena-diagnostic:
+    name: Existing checkpoint staged Arena gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+
+      - name: Download run 33347901504 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-33347901504
+          path: _work/checkpoint
+          repository: ${{ github.repository }}
+          run-id: "33347901504"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run one-game planner budget matrix
+        shell: bash
+        run: |
+          set -u
+          mkdir -p _work/arena-diagnostic
+          for budget in 0.5 1.0 2.0 5.0; do
+            echo "=== one game, planner budget ${budget}s ==="
+            set +e
+            python -m src.training.arena \
+              --checkpoint _work/checkpoint/best \
+              --opponent easy \
+              --games 1 \
+              --planner-seconds "$budget" \
+              --planner-actions 24 \
+              --planner-states 256 \
+              --planner-moves 32 \
+              --device cpu \
+              --seed 42 \
+              --max-actions 120 \
+              --output json \
+              --result-json "_work/arena-diagnostic/one-${budget}.json"
+            status=$?
+            set -e
+            echo "$status" > "_work/arena-diagnostic/one-${budget}.exit"
+          done
+
+      - name: Select minimum valid one-game budget
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('_work/arena-diagnostic')
+          budgets = ['0.5', '1.0', '2.0', '5.0']
+          report = {'stage': 'one-game', 'budgets': [], 'selected_budget': None}
+          selected = None
+          for budget in budgets:
+              path = root / f'one-{budget}.json'
+              entry = {'budget': float(budget), 'result_present': path.exists()}
+              if path.exists():
+                  data = json.loads(path.read_text(encoding='utf-8'))
+                  valid = (
+                      data.get('games') == 1
+                      and data.get('planning_failure_count') == 0
+                      and data.get('illegal_action_count') == 0
+                      and data.get('stale_failure_count') == 0
+                      and data.get('unexpected_failure_count') == 0
+                      and data.get('first_failure') is None
+                  )
+                  entry.update({'valid': valid, 'result': data})
+                  if valid and selected is None:
+                      selected = budget
+              else:
+                  entry['valid'] = False
+              report['budgets'].append(entry)
+          report['selected_budget'] = float(selected) if selected is not None else None
+          (root / 'one-game-gate.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          (root / 'selected-budget.txt').write_text(selected or '', encoding='utf-8')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Run five-game validation
+        shell: bash
+        run: |
+          budget="$(cat _work/arena-diagnostic/selected-budget.txt)"
+          if [[ -z "$budget" ]]; then
+            echo '{"stage":"five-game","skipped":true,"reason":"no valid one-game budget"}' > _work/arena-diagnostic/five-game-gate.json
+            exit 0
+          fi
+          set +e
+          python -m src.training.arena \
+            --checkpoint _work/checkpoint/best \
+            --opponent easy \
+            --games 5 \
+            --planner-seconds "$budget" \
+            --planner-actions 24 \
+            --planner-states 256 \
+            --planner-moves 32 \
+            --device cpu \
+            --seed 42 \
+            --max-actions 120 \
+            --max-wall-seconds 3600 \
+            --output json \
+            --result-json _work/arena-diagnostic/five-game.json
+          status=$?
+          set -e
+          echo "$status" > _work/arena-diagnostic/five-game.exit
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('_work/arena-diagnostic')
+          path = root / 'five-game.json'
+          gate = {'stage': 'five-game', 'skipped': False, 'valid': False}
+          if path.exists():
+              data = json.loads(path.read_text(encoding='utf-8'))
+              gate['result'] = data
+              gate['valid'] = (
+                  data.get('games') == 5
+                  and data.get('planning_failure_count') == 0
+                  and data.get('illegal_action_count') == 0
+                  and data.get('stale_failure_count') == 0
+                  and data.get('unexpected_failure_count') == 0
+                  and data.get('first_failure') is None
+              )
+          (root / 'five-game-gate.json').write_text(json.dumps(gate, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(gate, indent=2, sort_keys=True))
+          PY
+
+      - name: Run twenty-game final Arena gate
+        shell: bash
+        run: |
+          budget="$(cat _work/arena-diagnostic/selected-budget.txt)"
+          proceed="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('_work/arena-diagnostic/five-game-gate.json')
+          print('yes' if p.exists() and json.loads(p.read_text(encoding='utf-8')).get('valid') else 'no')
+          PY
+          )"
+          if [[ -z "$budget" || "$proceed" != "yes" ]]; then
+            echo '{"stage":"twenty-game","skipped":true,"reason":"five-game gate not valid"}' > _work/arena-diagnostic/twenty-game-gate.json
+            exit 0
+          fi
+          set +e
+          python -m src.training.arena \
+            --checkpoint _work/checkpoint/best \
+            --opponent easy \
+            --games 20 \
+            --planner-seconds "$budget" \
+            --planner-actions 24 \
+            --planner-states 256 \
+            --planner-moves 32 \
+            --device cpu \
+            --seed 42 \
+            --max-actions 120 \
+            --max-wall-seconds 9000 \
+            --output json \
+            --result-json _work/arena-diagnostic/twenty-game.json
+          status=$?
+          set -e
+          echo "$status" > _work/arena-diagnostic/twenty-game.exit
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('_work/arena-diagnostic')
+          path = root / 'twenty-game.json'
+          gate = {'stage': 'twenty-game', 'skipped': False, 'valid': False}
+          if path.exists():
+              data = json.loads(path.read_text(encoding='utf-8'))
+              gate['result'] = data
+              gate['valid'] = (
+                  data.get('games') == 20
+                  and data.get('planning_failure_count') == 0
+                  and data.get('illegal_action_count') == 0
+                  and data.get('stale_failure_count') == 0
+                  and data.get('unexpected_failure_count') == 0
+                  and data.get('first_failure') is None
+              )
+          (root / 'twenty-game-gate.json').write_text(json.dumps(gate, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(gate, indent=2, sort_keys=True))
+          PY
+
+      - name: Write final diagnostic verdict
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('_work/arena-diagnostic')
+          selected = (root / 'selected-budget.txt').read_text(encoding='utf-8').strip()
+          twenty_path = root / 'twenty-game-gate.json'
+          twenty = json.loads(twenty_path.read_text(encoding='utf-8')) if twenty_path.exists() else {}
+          summary = {
+              'checkpoint_run_id': 33347901504,
+              'checkpoint_path': '_work/checkpoint/best',
+              'candidate_limit': 24,
+              'opponent': 'easy',
+              'seed': 42,
+              'selected_budget': float(selected) if selected else None,
+              'ready': bool(twenty.get('valid')),
+              'twenty_game_gate': twenty,
+          }
+          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if not summary['ready']:
+              raise SystemExit(1)
+          PY
+
+      - name: Upload diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: temp-arena-checkpoint-diagnostic-${{ github.run_id }}
+          path: _work/arena-diagnostic
+          retention-days: 3
+          if-no-files-found: error
