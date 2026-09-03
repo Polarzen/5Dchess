@@ -1,4 +1,4 @@
-name: TEMP Arena minimal-depth witness diagnostic
+name: TEMP Arena root planner profile
 
 on:
   push:
@@ -11,12 +11,12 @@ permissions:
   actions: read
 
 concurrency:
-  group: temp-arena-min-depth-witness-${{ github.ref }}
+  group: temp-arena-root-profile-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  witness-diagnostic:
-    name: Compare depth-first and minimal-depth witness search
+  root-profile:
+    name: Profile reproduced Arena planner root
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -48,37 +48,37 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Reproduce failure and run minimal-depth search
+      - name: Reproduce and profile root
         run: |
-          mkdir -p _work/min-depth-witness
+          mkdir -p _work/root-profile
           python - <<'PY'
           from __future__ import annotations
 
           from copy import deepcopy
           import hashlib
           import json
-          import math
           from pathlib import Path
+          import statistics
           import time
 
           from src.ai.action_planner import (
-              ActionPlanner,
               ActionPlanningError,
               ActionSearchBudget,
-              MoveSpec,
+              _required_board_progress,
               _required_move_sort_key,
+              apply_action_plan,
               engine_state_signature,
-              resolve_move_spec,
           )
           from src.ai.random_ai import RandomAI
           from src.engine import ActionRules
           from src.engine.engine import FiveDEngine
+          from src.engine.royal_rules import RoyalRules
           from src.training.agent import NeuralPolicyValueAgent
           from src.training.checkpoint import load_checkpoint
           from src.training.utils import resolve_device, seed_everything
           from src.utils.constants import ChessColor, GameState
 
-          root = Path('_work/min-depth-witness')
+          root = Path('_work/root-profile')
           seed_everything(42)
           device = resolve_device('cpu')
           model, metadata = load_checkpoint('_work/checkpoint/best', device=device)
@@ -101,7 +101,7 @@ jobs:
                   except ActionPlanningError as exc:
                       failure_engine = deepcopy(engine)
                       action = engine._ensure_current_action()
-                      required = ActionRules.required_boards(action, engine.timeline_manager.timelines)
+                      required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
                       movable = ActionRules.movable_boards(action, engine.timeline_manager.timelines)
                       failure = {
                           'game_index': game_index,
@@ -117,124 +117,130 @@ jobs:
                           'state_signature_sha256': hashlib.sha256(repr(engine_state_signature(engine)).encode('utf-8')).hexdigest(),
                       }
                       break
-                  from src.ai.action_planner import apply_action_plan
                   apply_action_plan(engine, plan)
               if failure_engine is not None:
                   break
 
-          report = {'checkpoint_epoch': metadata.get('epoch'), 'failure': failure, 'comparisons': []}
+          report = {'checkpoint_epoch': metadata.get('epoch'), 'failure': failure}
           if failure_engine is None:
               report['error'] = 'no planning failure reproduced'
           else:
-              started = time.monotonic()
-              search_state = {'explored': 0, 'termination': None}
-              depth_attempts = []
-              required_at_root = set(ActionRules.required_boards(
-                  failure_engine._ensure_current_action(), failure_engine.timeline_manager.timelines
-              ))
-              lower_bound = max(0, math.ceil(len(required_at_root) / 2))
+              state = failure_engine
+              action = state._ensure_current_action()
+              required = set(ActionRules.required_boards(action, state.timeline_manager.timelines))
+              movable = ActionRules.movable_boards(action, state.timeline_manager.timelines)
+              safety_started = time.perf_counter()
+              in_check = RoyalRules(state.timeline_manager.timelines).is_in_check(state.current_turn_color)
+              check_ms = (time.perf_counter() - safety_started) * 1000.0
+              threats_started = time.perf_counter()
+              threats = RoyalRules(state.timeline_manager.timelines).threats_against(state.current_turn_color)
+              threats_ms = (time.perf_counter() - threats_started) * 1000.0
 
-              def budget_hit():
-                  if search_state['termination'] is not None:
-                      return True
-                  if time.monotonic() - started >= 5.0:
-                      search_state['termination'] = 'time_budget'
-                      return True
-                  if search_state['explored'] >= 256:
-                      search_state['termination'] = 'state_budget'
-                      return True
-                  return False
-
-              def search_depth(state, path, depth, limit):
-                  action = state._ensure_current_action()
-                  required = set(ActionRules.required_boards(action, state.timeline_manager.timelines))
-                  if not required and state.can_submit_action():
-                      return path
-                  if depth >= limit or budget_hit():
-                      return None
-                  search_state['explored'] += 1
-                  movable = ActionRules.movable_boards(action, state.timeline_manager.timelines)
-                  ordered_boards = tuple(sorted(
-                      movable,
-                      key=lambda board: (
-                          board not in required,
-                          board.timeline,
-                          board.turn,
-                          board.side.value,
-                      ),
-                  ))
-                  for board in ordered_boards:
-                      if budget_hit():
-                          return None
-                      position = state._resolve_position(board)
-                      if position is None:
-                          continue
-                      moves = sorted(
-                          state.get_legal_moves(position),
-                          key=lambda move: _required_move_sort_key(move, required),
-                      )
-                      for move in moves:
-                          if budget_hit():
-                              return None
-                          child = deepcopy(state)
-                          if not child.execute_action_move(move):
-                              continue
-                          witness = search_depth(
-                              child,
-                              path + (MoveSpec.from_move(move),),
-                              depth + 1,
-                              limit,
-                          )
-                          if witness is not None:
-                              return witness
-                  return None
-
-              witness = None
-              for limit in range(lower_bound, 9):
-                  before_states = search_state['explored']
-                  before_time = time.monotonic()
-                  witness = search_depth(failure_engine, (), 0, limit)
-                  depth_attempts.append({
-                      'depth_limit': limit,
-                      'states': search_state['explored'] - before_states,
-                      'wall_ms': (time.monotonic() - before_time) * 1000.0,
-                      'found': witness is not None,
+              board_profiles = []
+              all_moves = []
+              ordered_boards = tuple(sorted(movable, key=lambda b: (b not in required, b.timeline, b.turn, b.side.value)))
+              for board in ordered_boards:
+                  position = state._resolve_position(board)
+                  if position is None:
+                      continue
+                  started = time.perf_counter()
+                  moves = state.get_legal_moves(position)
+                  legal_ms = (time.perf_counter() - started) * 1000.0
+                  started = time.perf_counter()
+                  ordered = sorted(moves, key=lambda m: _required_move_sort_key(m, required))
+                  sort_ms = (time.perf_counter() - started) * 1000.0
+                  counts = {
+                      'total': len(ordered),
+                      'branching': sum(bool(m.is_branching) for m in ordered),
+                      'cross_timeline': sum(bool(m.is_cross_timeline) for m in ordered),
+                      'captures': sum(m.captured is not None for m in ordered),
+                      'king_moves': sum(m.piece.piece_type.value == 'king' for m in ordered),
+                      'progress_2': sum(_required_board_progress(m, required) >= 2 for m in ordered),
+                      'progress_1': sum(_required_board_progress(m, required) == 1 for m in ordered),
+                  }
+                  board_profiles.append({
+                      'board': [board.timeline, board.turn, board.side.value],
+                      'required': board in required,
+                      'legal_ms': legal_ms,
+                      'sort_ms': sort_ms,
+                      'counts': counts,
                   })
-                  if witness is not None or search_state['termination'] is not None:
-                      break
+                  all_moves.extend(ordered)
 
-              verify = None
-              if witness is not None:
-                  probe = deepcopy(failure_engine)
-                  for spec in witness:
-                      move = resolve_move_spec(probe, spec)
-                      assert probe.execute_action_move(move)
-                  verify = {'submit_capable': bool(probe.can_submit_action()), 'moves': len(witness)}
+              copy_ms = []
+              execute_ms = []
+              child_required_counts = []
+              terminal_ms = []
+              terminal_checks = 0
+              submit_capable = 0
+              first_submit_rank = None
+              move_samples = []
+              for rank, move in enumerate(all_moves, start=1):
+                  started = time.perf_counter()
+                  child = deepcopy(state)
+                  copy_ms.append((time.perf_counter() - started) * 1000.0)
+                  started = time.perf_counter()
+                  ok = child.execute_action_move(move)
+                  execute_ms.append((time.perf_counter() - started) * 1000.0)
+                  if not ok:
+                      continue
+                  child_required = set(ActionRules.required_boards(child._ensure_current_action(), child.timeline_manager.timelines))
+                  child_required_counts.append(len(child_required))
+                  can_submit = None
+                  can_submit_ms = None
+                  if not child_required:
+                      terminal_checks += 1
+                      started = time.perf_counter()
+                      can_submit = child.can_submit_action()
+                      can_submit_ms = (time.perf_counter() - started) * 1000.0
+                      terminal_ms.append(can_submit_ms)
+                      if can_submit:
+                          submit_capable += 1
+                          if first_submit_rank is None:
+                              first_submit_rank = rank
+                  if rank <= 30:
+                      move_samples.append({
+                          'rank': rank,
+                          'piece': move.piece.piece_type.value,
+                          'capture': move.captured.piece_type.value if move.captured else None,
+                          'branching': bool(move.is_branching),
+                          'cross_timeline': bool(move.is_cross_timeline),
+                          'progress': _required_board_progress(move, required),
+                          'source': [move.source.board.timeline, move.source.board.turn, move.source.board.side.value, move.source.x, move.source.y],
+                          'destination': [move.destination.board.timeline, move.destination.board.turn, move.destination.board.side.value, move.destination.x, move.destination.y],
+                          'child_required_count': len(child_required),
+                          'can_submit': can_submit,
+                          'can_submit_ms': can_submit_ms,
+                      })
 
-              report['comparisons'].append({
-                  'search': 'minimal_depth_iddfs',
-                  'found': witness is not None,
-                  'witness_moves': len(witness) if witness is not None else 0,
-                  'explored_states': search_state['explored'],
-                  'termination_reason': search_state['termination'],
-                  'wall_ms': (time.monotonic() - started) * 1000.0,
-                  'depth_attempts': depth_attempts,
-                  'verification': verify,
-              })
+              def stat(values):
+                  if not values:
+                      return {'count': 0, 'total_ms': 0.0, 'median_ms': 0.0, 'max_ms': 0.0}
+                  return {
+                      'count': len(values),
+                      'total_ms': sum(values),
+                      'median_ms': statistics.median(values),
+                      'max_ms': max(values),
+                  }
 
-              started_current = time.perf_counter()
-              current = ActionPlanner(ActionSearchBudget(
-                  max_states=256, max_actions=1, max_move_depth=32, max_seconds=5.0
-              )).search(failure_engine)
-              report['comparisons'].append({
-                  'search': 'current_dfs',
-                  'candidate_count': len(current.candidates),
-                  'explored_states': current.explored_states,
-                  'termination_reason': current.termination_reason,
-                  'wall_ms': (time.perf_counter() - started_current) * 1000.0,
-              })
+              report['root_profile'] = {
+                  'in_check': in_check,
+                  'in_check_ms': check_ms,
+                  'threat_count': len(threats),
+                  'threats_ms': threats_ms,
+                  'boards': board_profiles,
+                  'total_root_moves': len(all_moves),
+                  'deepcopy': stat(copy_ms),
+                  'execute': stat(execute_ms),
+                  'terminal_checks': terminal_checks,
+                  'terminal_check': stat(terminal_ms),
+                  'one_move_submit_capable': submit_capable,
+                  'first_one_move_submit_rank': first_submit_rank,
+                  'child_required_counts': {str(v): child_required_counts.count(v) for v in sorted(set(child_required_counts))},
+                  'first_30_moves': move_samples,
+              }
 
-          (root / 'min-depth-witness.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
+          (root / 'root-profile.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
           print(json.dumps(report, indent=2, sort_keys=True))
           if failure_engine is None:
               raise SystemExit(2)
@@ -244,7 +250,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-min-depth-witness-${{ github.run_id }}
-          path: _work/min-depth-witness
+          name: temp-arena-root-profile-${{ github.run_id }}
+          path: _work/root-profile
           retention-days: 3
           if-no-files-found: error
