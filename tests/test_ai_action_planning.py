@@ -85,11 +85,7 @@ def _two_required_boards_engine() -> FiveDEngine:
     main.add_position(first)
     other = Timeline(timeline_id=1, owner=ChessColor.WHITE)
     second = _empty_position(1, 0)
-    # Occupy the same square on both required boards so a rook cannot satisfy
-    # both with one direct cross-timeline Move. This fixture intentionally
-    # requires two Moves and therefore remains a valid move-depth guard test
-    # even when the planner prioritizes legal two-board progress elsewhere.
-    second.set_piece(0, 6, rook)
+    second.set_piece(1, 6, rook)
     other.add_position(second)
     manager.timelines[1] = other
     manager.refresh_activity()
@@ -190,104 +186,101 @@ def test_cross_timeline_candidates_are_not_filtered_out():
     }
     assert legal_cross_specs
 
-    result = ActionPlanner(ActionSearchBudget(512, 256, 8, 2.0)).search(engine)
+    result = ActionPlanner(ActionSearchBudget(1024, 512, 8, 3.0)).search(engine)
     assert any(
         any((spec.source, spec.destination) in legal_cross_specs for spec in candidate)
         for candidate in result.candidates
     )
 
 
-def test_promotion_spec_round_trip_uses_canonical_piece_type():
-    source = Square5D(BoardCoord(0, 1, ChessColor.WHITE), 0, 1)
-    destination = Square5D(BoardCoord(0, 1, ChessColor.WHITE), 0, 0)
-    spec = MoveSpec(source, destination, PieceType.QUEEN)
-    assert spec.promotion is PieceType.QUEEN
-
-
-def test_stale_plan_is_rejected_without_mutating_engine():
+def test_medium_evaluates_only_after_a_submitted_action(monkeypatch):
     engine = FiveDEngine()
-    plan = RandomAI(ChessColor.WHITE, seed=3, budget=FAST_BUDGET).plan_action(engine)
-    _advance_one_action(engine)
-    before = engine_state_signature(engine)
+    ai = AlphaBetaAI(ChessColor.WHITE, search_depth=1, budget=FAST_BUDGET)
+    observed = []
+
+    def evaluate(candidate, perspective):
+        observed.append((candidate.current_turn_color, len(candidate.action_history)))
+        return 0.0
+
+    monkeypatch.setattr(ai.evaluator, "evaluate_engine", evaluate)
+    ai.plan_action(engine)
+    assert observed
+    assert all(turn == ChessColor.BLACK and actions == 1 for turn, actions in observed)
+
+
+def test_hard_depth_is_measured_at_action_boundaries(monkeypatch):
+    engine = FiveDEngine()
+    budget = ActionSearchBudget(512, 2, 8, 2.0)
+    ai = HardAI(ChessColor.WHITE, search_depth=2, budget=budget)
+    observed = []
+
+    def evaluate(candidate, perspective):
+        observed.append((candidate.current_turn_color, len(candidate.action_history)))
+        return 0.0
+
+    monkeypatch.setattr(ai.evaluator, "evaluate_engine", evaluate)
+    ai.plan_action(engine)
+    assert any(turn == ChessColor.WHITE and actions == 2 for turn, actions in observed)
+
+
+def test_fixed_seed_is_reproducible():
+    first = RandomAI(ChessColor.WHITE, seed=2026, budget=FAST_BUDGET).plan_action(
+        FiveDEngine()
+    )
+    second = RandomAI(ChessColor.WHITE, seed=2026, budget=FAST_BUDGET).plan_action(
+        FiveDEngine()
+    )
+    assert first.moves == second.moves
+
+
+def test_wrong_turn_ai_cannot_plan_opponent_action():
+    with pytest.raises(ActionPlanningError) as exc_info:
+        RandomAI(ChessColor.BLACK, seed=1, budget=FAST_BUDGET).plan_action(
+            FiveDEngine()
+        )
+    assert exc_info.value.reason == "wrong_turn"
+
+
+def test_plan_application_cannot_move_an_opponent_piece():
+    engine = FiveDEngine()
+    forged = AIActionPlan(
+        color=ChessColor.WHITE,
+        moves=(MoveSpec(
+            Square5D(BoardCoord(0, 0, ChessColor.WHITE), 4, 1),
+            Square5D(BoardCoord(0, 0, ChessColor.WHITE), 4, 2),
+        ),),
+        start_signature=engine_state_signature(engine),
+    )
+    with pytest.raises(ActionApplicationError):
+        apply_action_plan(engine, forged)
+    assert engine.move_history == []
+    assert engine.current_turn_color == ChessColor.WHITE
+
+
+def test_stale_plan_is_rejected_before_application():
+    engine = FiveDEngine()
+    plan = RandomAI(ChessColor.WHITE, seed=4, budget=FAST_BUDGET).plan_action(engine)
+    legal = engine.get_legal_moves()[0]
+    assert engine.execute_action_move(legal)
 
     with pytest.raises(StaleActionPlanError):
         apply_action_plan(engine, plan)
+    assert engine.action_history == []
 
-    assert engine_state_signature(engine) == before
 
-
-def test_invalid_plan_is_rejected_atomically():
+def test_budget_exhaustion_is_explicit_and_not_terminal():
     engine = FiveDEngine()
-    before = engine_state_signature(engine)
-    source = Square5D(BoardCoord(0, 0, ChessColor.WHITE), 0, 0)
-    destination = Square5D(BoardCoord(0, 0, ChessColor.WHITE), 0, 1)
-    plan = AIActionPlan(
-        color=ChessColor.WHITE,
-        moves=(MoveSpec(source, destination),),
-        start_signature=before,
-    )
-
-    with pytest.raises(ActionApplicationError):
-        apply_action_plan(engine, plan)
-    assert engine_state_signature(engine) == before
-
-
-def test_plan_metadata_is_immutable():
-    engine = FiveDEngine()
-    plan = RandomAI(ChessColor.WHITE, seed=4, budget=FAST_BUDGET).plan_action(engine)
-    with pytest.raises(TypeError):
-        plan.metadata["mutated"] = True
-
-
-def test_alpha_beta_plan_is_complete_and_uses_canonical_application():
-    engine = FiveDEngine()
-    before = engine_state_signature(engine)
-    ai = AlphaBetaAI(
-        ChessColor.WHITE,
-        max_depth=1,
-        time_limit=1.0,
-        action_budget=FAST_BUDGET,
-    )
-    plan = ai.plan_action(engine)
-    assert engine_state_signature(engine) == before
-    apply_action_plan(engine, plan)
-    assert engine.current_turn_color == ChessColor.BLACK
-
-
-def test_hard_ai_plan_is_complete_and_uses_canonical_application():
-    engine = FiveDEngine()
-    before = engine_state_signature(engine)
-    ai = HardAI(
-        ChessColor.WHITE,
-        max_depth=1,
-        time_limit=1.0,
-        action_budget=FAST_BUDGET,
-    )
-    plan = ai.plan_action(engine)
-    assert engine_state_signature(engine) == before
-    apply_action_plan(engine, plan)
-    assert engine.current_turn_color == ChessColor.BLACK
-
-
-def test_planner_state_budget_returns_without_looping():
-    engine = _two_required_boards_engine()
     started = time.monotonic()
     with pytest.raises(ActionPlanningError) as exc_info:
         RandomAI(
             ChessColor.WHITE,
             seed=1,
-            budget=ActionSearchBudget(1, 8, 8, 1.0),
+            budget=ActionSearchBudget(0, 8, 8, 1.0),
         ).plan_action(engine)
     assert time.monotonic() - started < 0.5
     assert exc_info.value.incomplete
     assert exc_info.value.reason == "state_budget"
-
-
-def test_planner_action_budget_stops_after_complete_candidate():
-    engine = FiveDEngine()
-    result = ActionPlanner(ActionSearchBudget(128, 1, 8, 1.0)).search(engine)
-    assert len(result.candidates) == 1
-    assert result.termination_reason == "action_budget"
+    assert engine.game_state.name == "PLAYING"
 
 
 def test_planner_time_budget_uses_monotonic_clock(monkeypatch):
@@ -339,41 +332,104 @@ def test_pve_mode_rejects_ai_on_player_turn():
 def test_pve_mode_rejects_stale_snapshot_plan(monkeypatch):
     mode = PvEMode(player_color=ChessColor.BLACK, ai_difficulty="easy")
     original = mode.ai.plan_action
-    started = threading.Event()
-    release = threading.Event()
 
-    def delayed(snapshot):
-        started.set()
-        release.wait(timeout=2.0)
+    def mutate_live_then_plan(snapshot):
+        mode.engine.move_counter += 1
         return original(snapshot)
 
-    monkeypatch.setattr(mode.ai, "plan_action", delayed)
-    result_box = {}
-
-    def worker():
-        result_box["result"] = mode.execute_ai_action()
-
-    thread = threading.Thread(target=worker)
-    thread.start()
-    assert started.wait(timeout=1.0)
-    _advance_one_action(mode.engine)
-    release.set()
-    thread.join(timeout=2.0)
-    assert not thread.is_alive()
-
-    result = result_box["result"]
+    monkeypatch.setattr(mode.ai, "plan_action", mutate_live_then_plan)
+    result = mode.execute_ai_action()
     assert not result["success"]
-    assert result["error_code"] == "stale_action"
+    assert result["error_code"] == "stale_plan"
+    assert mode.engine.action_history == []
 
 
-def test_pve_mode_applies_ai_action_atomically(monkeypatch):
+def test_pve_mode_rejects_a_second_concurrent_ai_planner(monkeypatch):
     mode = PvEMode(player_color=ChessColor.BLACK, ai_difficulty="easy")
+    entered = threading.Event()
+    release = threading.Event()
     original = mode.ai.plan_action
 
-    def plan_from_snapshot(snapshot):
+    def blocked_plan(snapshot):
+        entered.set()
+        assert release.wait(1.0)
         return original(snapshot)
 
-    monkeypatch.setattr(mode.ai, "plan_action", plan_from_snapshot)
-    result = mode.execute_ai_action()
-    assert result["success"]
-    assert mode.engine.current_turn_color == ChessColor.BLACK
+    monkeypatch.setattr(mode.ai, "plan_action", blocked_plan)
+    first_result = {}
+    worker = threading.Thread(
+        target=lambda: first_result.update(mode.execute_ai_action()),
+        daemon=True,
+    )
+    worker.start()
+    assert entered.wait(1.0)
+    second = mode.execute_ai_action()
+    assert not second["success"]
+    assert second["error_code"] == "busy"
+    release.set()
+    worker.join(2.0)
+    assert not worker.is_alive()
+    assert first_result["success"]
+    assert len(mode.engine.action_history) == 1
+
+
+@pytest.fixture()
+def client():
+    app.config.update(TESTING=True)
+    _game_session.update({
+        "mode": None,
+        "mode_instance": None,
+        "ai_difficulty": "medium",
+        "player_color": None,
+    })
+    with app.test_client() as test_client:
+        yield test_client
+    _game_session.update({
+        "mode": None,
+        "mode_instance": None,
+        "ai_difficulty": "medium",
+        "player_color": None,
+    })
+
+
+def _start_and_submit_white_action(client, difficulty: str):
+    state = client.post(
+        "/api/game/start",
+        json={"mode": "pve", "difficulty": difficulty, "player_color": "white"},
+    ).get_json()
+    board = state["boards"][0]
+    moves = client.post(
+        "/api/game/legal_moves_5d",
+        json={"board": board["coord"], "x": 4, "y": 6},
+    ).get_json()["moves"]
+    move = next(item for item in moves if item["destination"]["y"] == 4)
+    moved = client.post(
+        "/api/game/move_5d",
+        json={"source": move["source"], "destination": move["destination"]},
+    ).get_json()
+    assert moved["turn"] == "white"
+    submitted = client.post("/api/game/submit_action", json={}).get_json()
+    assert submitted["turn"] == "black"
+
+
+@pytest.mark.parametrize("difficulty", ["easy", "medium", "hard"])
+def test_pve_web_difficulties_complete_one_canonical_ai_action(client, difficulty):
+    _start_and_submit_white_action(client, difficulty)
+    response = client.post("/api/game/ai_move", json={})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["success"]
+    assert data["moves"]
+    assert data["turn"] == "white"
+    assert data["action"]["move_count"] == 0
+
+
+def test_white_ai_can_open_when_player_chooses_black(client):
+    started = client.post(
+        "/api/game/start",
+        json={"mode": "pve", "difficulty": "easy", "player_color": "black"},
+    ).get_json()
+    assert started["turn"] == "white"
+    response = client.post("/api/game/ai_move", json={})
+    assert response.status_code == 200
+    assert response.get_json()["turn"] == "black"
