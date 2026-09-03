@@ -202,3 +202,31 @@ def test_action_submission_allows_safe_completed_action():
     assert ActionRules.can_submit(action, timelines)
     assert ActionRules.submit(action, timelines)
     assert action.submitted
+
+
+def test_action_safety_boolean_short_circuits_after_first_threat(monkeypatch):
+    black_turn = _position(
+        0,
+        1,
+        (4, 7, "K"),
+        (4, 0, "r"),
+        (0, 0, "r"),
+    )
+    rules = RoyalRules({0: _timeline(0, black_turn)})
+    calls = 0
+
+    def always_threat(piece, source, target, view):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise AssertionError("boolean royal-safety query did not short-circuit")
+        return True
+
+    monkeypatch.setattr(
+        RoyalRules,
+        "_attacks_square_with_view",
+        staticmethod(always_threat),
+    )
+
+    assert not rules.is_action_safe(ChessColor.WHITE)
+    assert calls == 1
