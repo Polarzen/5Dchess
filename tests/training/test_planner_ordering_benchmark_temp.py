@@ -30,8 +30,7 @@ from src.training.utils import seed_everything
 from src.utils.constants import ChessColor, GameState
 
 TARGET_SHA = "03c8c0604a132d66fa1197145805e5fc3fe51579667ff2424a483353ee52bb03"
-COMMENT_MARKER = "<!-- planner-benchmark-checkpoint -->"
-COMMENTS_URL = "https://api.github.com/repos/Polarzen/5Dchess/issues/24/comments?per_page=100"
+ARTIFACT_URL = "https://api.github.com/repos/Polarzen/5Dchess/actions/artifacts/9748029228/zip"
 
 
 def _legacy_move_sort_key(move):
@@ -52,17 +51,18 @@ def _legacy_move_sort_key(move):
     )
 
 
-def _checkpoint_from_pr_comment(root: Path) -> Path:
-    request = urllib.request.Request(COMMENTS_URL, headers={"User-Agent": "5dchess-planner-benchmark"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        comments = json.load(response)
-    body = next(
-        item["body"] for item in reversed(comments)
-        if COMMENT_MARKER in (item.get("body") or "")
+def _download_checkpoint(root: Path) -> Path:
+    request = urllib.request.Request(
+        ARTIFACT_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "5dchess-planner-benchmark",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
     )
-    url = next(line.strip() for line in body.splitlines() if line.startswith("https://"))
     archive = root / "checkpoint.zip"
-    urllib.request.urlretrieve(url, archive)
+    with urllib.request.urlopen(request, timeout=60) as response, archive.open("wb") as output:
+        output.write(response.read())
     with zipfile.ZipFile(archive) as zf:
         zf.extractall(root / "checkpoint")
     best = root / "checkpoint" / "best"
@@ -138,7 +138,7 @@ def _benchmark(state, key, seconds: float):
 
 def test_exact_failure_state_ordering_ab_and_one_game_arena():
     with tempfile.TemporaryDirectory(prefix="planner-ordering-benchmark-") as temp:
-        checkpoint = _checkpoint_from_pr_comment(Path(temp))
+        checkpoint = _download_checkpoint(Path(temp))
         state, action_index, observed = _replay_failure_state(checkpoint)
         assert action_index == 34
         assert _state_signature_sha256(state) == TARGET_SHA
