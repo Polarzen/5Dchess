@@ -331,18 +331,18 @@ class _BudgetTracker:
 
 def _move_sort_key(move: Move) -> tuple:
     return (
-        move.source.board.timeline,
-        move.source.board.turn,
-        _enum_value(move.source.board.side),
-        move.source.y,
-        move.source.x,
+        bool(move.is_branching),
         move.destination.board.timeline,
         move.destination.board.turn,
         _enum_value(move.destination.board.side),
         move.destination.y,
         move.destination.x,
+        move.source.board.timeline,
+        move.source.board.turn,
+        _enum_value(move.source.board.side),
+        move.source.y,
+        move.source.x,
         _enum_value(move.promotion) or "",
-        bool(move.is_branching),
         bool(move.is_cross_timeline),
     )
 
