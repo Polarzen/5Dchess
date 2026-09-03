@@ -147,19 +147,62 @@ def _profile(engine: FiveDEngine, *, seconds: float):
     return report
 
 
-def test_profile_current_deterministic_prefix_temp():
+def _measure(engine: FiveDEngine, seconds: float) -> dict:
+    original_can_submit = FiveDEngine.can_submit_action
+    started = time.perf_counter()
+    first_candidate_ms = None
+
+    def timed_can_submit(self, *args, **kwargs):
+        nonlocal first_candidate_ms
+        result = original_can_submit(self, *args, **kwargs)
+        if result and first_candidate_ms is None:
+            first_candidate_ms = (time.perf_counter() - started) * 1000.0
+        return result
+
+    FiveDEngine.can_submit_action = timed_can_submit
+    try:
+        result = ActionPlanner(ActionSearchBudget(
+            max_states=128,
+            max_actions=24,
+            max_move_depth=64,
+            max_seconds=seconds,
+        )).search(engine)
+        wall_ms = (time.perf_counter() - started) * 1000.0
+    finally:
+        FiveDEngine.can_submit_action = original_can_submit
+
+    return {
+        "budget": seconds,
+        "first_candidate_ms": first_candidate_ms,
+        "candidate_count": len(result.candidates),
+        "first_candidate_depth": len(result.candidates[0]) if result.candidates else None,
+        "explored_states": result.explored_states,
+        "termination": result.termination_reason,
+        "wall_ms": wall_ms,
+    }
+
+
+def test_profile_optimized_deterministic_prefix_temp():
     engine = fixture.build_deterministic_complex_engine()
     report = _profile(engine, seconds=2.0)
-    warnings.warn("PLANNER_PROFILE_TEMP=" + json.dumps(report, sort_keys=True))
+    warnings.warn("PLANNER_OPTIMIZED_PROFILE_TEMP=" + json.dumps(report, sort_keys=True))
     assert report["candidate_count"] >= 1
 
 
-def test_baseline_budget_matrix_temp():
+def test_optimized_budget_matrix_temp():
     engine = fixture.build_deterministic_complex_engine()
-    current_key = action_planner._move_sort_key
-    matrix = {"legacy": [], "current": []}
-    for seconds in (0.5, 1.0, 2.0, 5.0):
-        matrix["legacy"].append(fixture._benchmark(engine, fixture._legacy_move_sort_key, seconds))
-        matrix["current"].append(fixture._benchmark(engine, current_key, seconds))
-    warnings.warn("PLANNER_BASELINE_MATRIX_TEMP=" + json.dumps(matrix, sort_keys=True))
-    assert any(row["candidate_count"] for row in matrix["current"])
+    matrix = [_measure(engine, seconds) for seconds in (0.5, 1.0, 2.0, 5.0)]
+    warnings.warn("PLANNER_OPTIMIZED_MATRIX_TEMP=" + json.dumps(matrix, sort_keys=True))
+    assert any(row["candidate_count"] for row in matrix)
+
+
+def test_optimized_32_required_board_matrix_temp():
+    engine = fixture.build_deterministic_complex_engine()
+    fixture._apply_recorded_action(engine, fixture.FINAL_ACTION, 34)
+    required = ActionRules.required_boards(
+        engine._ensure_current_action(), engine.timeline_manager.timelines
+    )
+    assert len(engine.timeline_manager.timelines) == 32
+    assert len(required) == 32
+    matrix = [_measure(engine, seconds) for seconds in (0.5, 1.0, 2.0, 5.0)]
+    warnings.warn("PLANNER_32_REQUIRED_MATRIX_TEMP=" + json.dumps(matrix, sort_keys=True))
