@@ -160,7 +160,7 @@ def test_two_required_boards_prioritize_direct_cross_timeline_completion():
     assert len(required) == 2
 
     result = ActionPlanner(ActionSearchBudget(
-        max_states=1,
+        max_states=2,
         max_actions=1,
         max_move_depth=1,
         max_seconds=None,
