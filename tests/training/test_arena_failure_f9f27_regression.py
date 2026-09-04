@@ -1,15 +1,19 @@
 """Deterministic regression for the real checkpoint Arena failure f9f27a86.
 
 The fixture is the complete canonical Action trace captured by GitHub Actions
-run 33813126560.  Replaying it does not depend on the model, RNG, wall-clock
-budgets, or direct engine mutation.  Every Move is resolved from the engine's
+run 33813126560. Replaying it does not depend on the model, RNG, wall-clock
+budgets, or direct engine mutation. Every Move is resolved from the engine's
 current canonical legal Move set and every Action is submitted normally.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
+from enum import Enum
+import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,12 +26,40 @@ from src.ai.action_planner import (
 )
 from src.engine import ActionRules, BoardCoord, FiveDEngine, Square5D
 from src.engine.action_search import ActionSearch
-from src.training.arena import _state_signature_sha256
 from src.utils.constants import ChessColor, PieceType
 
 
 TRACE_PATH = Path(__file__).parent / "fixtures" / "arena_failure_f9f27_trace.json"
 TARGET_SHA = "f9f27a862e3213dcef554db5045e846d58f6c887821470bc75b797b91f24f637"
+
+
+def _jsonable(value: Any) -> Any:
+    """Mirror Arena's stable forensic JSON conversion without importing Torch."""
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _jsonable(item())
+        except Exception:
+            pass
+    return str(value)
+
+
+def _state_signature_sha256(engine: FiveDEngine) -> str:
+    payload = json.dumps(
+        _jsonable(engine_state_signature(engine)),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _move_spec(raw: dict) -> MoveSpec:
