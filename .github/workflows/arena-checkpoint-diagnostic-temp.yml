@@ -15,10 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  arena-validation:
-    name: Existing checkpoint staged Arena gate
+  profile-planner:
+    name: Profile Arena planner safety bottleneck
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
+    timeout-minutes: 120
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
@@ -48,181 +48,61 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run five-game planner budget matrix
+      - name: Profile five-game 5s Arena
         shell: bash
         run: |
-          set -u
-          mkdir -p _work/arena-validation
-          for budget in 0.5 1.0 2.0 5.0; do
-            echo "=== five games, planner budget ${budget}s ==="
-            set +e
-            python -m src.training.arena \
-              --checkpoint _work/checkpoint/best \
-              --opponent easy \
-              --games 5 \
-              --planner-seconds "$budget" \
-              --planner-actions 24 \
-              --planner-states 256 \
-              --planner-moves 32 \
-              --device cpu \
-              --seed 42 \
-              --max-actions 120 \
-              --max-wall-seconds 3600 \
-              --output json \
-              --result-json "_work/arena-validation/five-${budget}.json"
-            status=$?
-            set -e
-            echo "$status" > "_work/arena-validation/five-${budget}.exit"
-
-            result_path="_work/arena-validation/five-${budget}.json"
-            if [[ -f "$result_path" ]] && python - "$result_path" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          data = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
-          clean = (
-              data.get('games') == 5
-              and data.get('planning_failure_count') == 0
-              and data.get('illegal_action_count') == 0
-              and data.get('stale_failure_count') == 0
-              and data.get('unexpected_failure_count') == 0
-              and data.get('first_failure') is None
-          )
-          raise SystemExit(0 if clean else 1)
-          PY
-            then
-              echo "planner-clean at ${budget}s; skipping larger budgets"
-              break
-            fi
-          done
-
-      - name: Select minimum planner-clean five-game budget
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          root = Path('_work/arena-validation')
-          budgets = ['0.5', '1.0', '2.0', '5.0']
-          report = {'checkpoint_run_id': 33347901504, 'stage': 'five-game', 'budgets': [], 'selected_budget': None}
-          selected = None
-          for budget in budgets:
-              path = root / f'five-{budget}.json'
-              entry = {'budget': float(budget), 'result_present': path.exists()}
-              if path.exists():
-                  data = json.loads(path.read_text(encoding='utf-8'))
-                  planner_clean = (
-                      data.get('games') == 5
-                      and data.get('planning_failure_count') == 0
-                      and data.get('illegal_action_count') == 0
-                      and data.get('stale_failure_count') == 0
-                      and data.get('unexpected_failure_count') == 0
-                      and data.get('first_failure') is None
-                  )
-                  entry.update({
-                      'planner_clean': planner_clean,
-                      'budget_termination_count': data.get('budget_termination_count'),
-                      'proven_terminal_adjudication_count': data.get('proven_terminal_adjudication_count'),
-                      'candidate_breadth': data.get('candidate_breadth'),
-                      'result': data,
-                  })
-                  if planner_clean and selected is None:
-                      selected = budget
-              else:
-                  entry['planner_clean'] = False
-              report['budgets'].append(entry)
-          report['selected_budget'] = float(selected) if selected is not None else None
-          (root / 'five-game-matrix.json').write_text(json.dumps(report, indent=2, sort_keys=True), encoding='utf-8')
-          (root / 'selected-budget.txt').write_text(selected or '', encoding='utf-8')
-          print(json.dumps(report, indent=2, sort_keys=True))
-          PY
-
-      - name: Run twenty-game final Arena gate
-        shell: bash
-        run: |
-          budget="$(cat _work/arena-validation/selected-budget.txt)"
-          if [[ -z "$budget" ]]; then
-            echo '{"stage":"twenty-game","skipped":true,"reason":"no planner-clean five-game budget"}' > _work/arena-validation/twenty-game-gate.json
-            exit 0
-          fi
-          echo "=== twenty games, selected planner budget ${budget}s ==="
           set +e
-          python -m src.training.arena \
+          mkdir -p _work/profile
+          python -m cProfile -o _work/profile/arena-5s.pstats -m src.training.arena \
             --checkpoint _work/checkpoint/best \
             --opponent easy \
-            --games 20 \
-            --planner-seconds "$budget" \
+            --games 5 \
+            --planner-seconds 5.0 \
             --planner-actions 24 \
             --planner-states 256 \
             --planner-moves 32 \
             --device cpu \
             --seed 42 \
             --max-actions 120 \
-            --max-wall-seconds 9000 \
+            --max-wall-seconds 3600 \
             --output json \
-            --result-json _work/arena-validation/twenty-game.json
-          status=$?
+            --result-json _work/profile/arena-result.json \
+            > _work/profile/arena-stdout.txt 2>&1
+          echo "$?" > _work/profile/arena-exit.txt
           set -e
-          echo "$status" > _work/arena-validation/twenty-game.exit
-          python - <<'PY'
-          import json
-          from pathlib import Path
 
-          root = Path('_work/arena-validation')
-          path = root / 'twenty-game.json'
-          gate = {'stage': 'twenty-game', 'skipped': False, 'planner_clean': False}
-          if path.exists():
-              data = json.loads(path.read_text(encoding='utf-8'))
-              gate['result'] = data
-              gate['planner_clean'] = (
-                  data.get('games') == 20
-                  and data.get('planning_failure_count') == 0
-                  and data.get('illegal_action_count') == 0
-                  and data.get('stale_failure_count') == 0
-                  and data.get('unexpected_failure_count') == 0
-                  and data.get('first_failure') is None
-              )
-              gate['budget_termination_count'] = data.get('budget_termination_count')
-              gate['proven_terminal_adjudication_count'] = data.get('proven_terminal_adjudication_count')
-              gate['candidate_breadth'] = data.get('candidate_breadth')
-          (root / 'twenty-game-gate.json').write_text(json.dumps(gate, indent=2, sort_keys=True), encoding='utf-8')
-          print(json.dumps(gate, indent=2, sort_keys=True))
-          PY
-
-      - name: Write diagnostic verdict
+      - name: Render profiler reports
         run: |
           python - <<'PY'
-          import json
           from pathlib import Path
+          import pstats
 
-          root = Path('_work/arena-validation')
-          matrix = json.loads((root / 'five-game-matrix.json').read_text(encoding='utf-8'))
-          twenty_path = root / 'twenty-game-gate.json'
-          twenty = json.loads(twenty_path.read_text(encoding='utf-8')) if twenty_path.exists() else {}
-          summary = {
-              'checkpoint_run_id': 33347901504,
-              'checkpoint_epoch': 20,
-              'candidate_limit': 24,
-              'opponent': 'easy',
-              'seed': 42,
-              'selected_budget': matrix.get('selected_budget'),
-              'five_game_matrix': matrix.get('budgets'),
-              'twenty_game_gate': twenty,
-              'planner_ready': bool(twenty.get('planner_clean')),
-              'note': 'budget_termination_count also includes max_actions bounded draws; planning_failure_count/first_failure distinguish planner failure',
-          }
-          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
-          print(json.dumps(summary, indent=2, sort_keys=True))
-          if not summary['planner_ready']:
-              raise SystemExit(1)
+          root = Path('_work/profile')
+          stats_path = root / 'arena-5s.pstats'
+          with (root / 'profile-cumulative.txt').open('w', encoding='utf-8') as fh:
+              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats(120)
+          with (root / 'profile-tottime.txt').open('w', encoding='utf-8') as fh:
+              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('tottime').print_stats(120)
+          with (root / 'profile-royal.txt').open('w', encoding='utf-8') as fh:
+              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats('royal_rules')
+          with (root / 'profile-action.txt').open('w', encoding='utf-8') as fh:
+              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats('action_planner')
           PY
 
-      - name: Upload diagnostic evidence
+          echo '=== RoyalRules ==='
+          cat _work/profile/profile-royal.txt
+          echo '=== ActionPlanner ==='
+          cat _work/profile/profile-action.txt
+          echo '=== Top cumulative ==='
+          head -n 90 _work/profile/profile-cumulative.txt
+          echo '=== Arena result ==='
+          cat _work/profile/arena-result.json || true
+
+      - name: Upload profiling evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: temp-arena-checkpoint-validation-${{ github.run_id }}
-          path: _work/arena-validation
+          name: temp-arena-planner-profile-${{ github.run_id }}
+          path: _work/profile
           retention-days: 3
           if-no-files-found: error
