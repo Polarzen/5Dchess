@@ -22,32 +22,31 @@ jobs:
           repository: ${{ github.repository }}
           run-id: "33952173118"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Print targeted profile evidence
+      - name: Print raw deepcopy attribution
         run: |
           python - <<'PY'
           import pstats
           from pathlib import Path
+
           path = Path('profile/arena-5s.pstats')
-          patterns = [
-              'submit_action',
-              '_check_multiverse_game_result',
-              '_evaluate_multiverse_game_result',
-              'apply_action_plan',
-              '_apply_specs_once',
-              'resolve_move_spec',
-              'encode_candidates',
-              'encode_action',
-              'filter_legal_moves',
-          ]
           stats = pstats.Stats(str(path)).strip_dirs().sort_stats('cumulative')
-          print('=== TARGETED FUNCTIONS ===')
-          for pattern in patterns:
-              print(f'--- {pattern} ---')
-              stats.print_stats(pattern)
-          print('=== POSITION.COPY CALLERS ===')
-          stats.print_callers('board.py:127(copy)')
-          print('=== ENCODE_ACTION CALLERS ===')
-          stats.print_callers('encoding.py:250(encode_action)')
-          print('=== ACTION PLANNER DEEPCOPY SOURCE CONTEXT ALREADY IN PROFILE ===')
-          stats.print_callers('deepcopy')
+
+          def dump_function(filename, funcname):
+              matches = [
+                  (key, value)
+                  for key, value in stats.stats.items()
+                  if key[0].endswith(filename) and key[2] == funcname
+              ]
+              print(f'=== {filename}:{funcname} RAW ===')
+              for key, value in matches:
+                  cc, nc, tt, ct, callers = value
+                  print('FUNCTION', key, 'cc=', cc, 'nc=', nc, 'tt=', tt, 'ct=', ct)
+                  for caller, contribution in sorted(
+                      callers.items(), key=lambda item: item[1][-1], reverse=True
+                  ):
+                      print('CALLER', caller, 'CONTRIB', contribution)
+
+          dump_function('board.py', 'copy')
+          dump_function('copy.py', 'deepcopy')
+          dump_function('encoding.py', 'encode_action')
           PY
