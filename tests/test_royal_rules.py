@@ -224,7 +224,7 @@ def test_action_safety_boolean_short_circuits_after_first_threat(monkeypatch):
 
     monkeypatch.setattr(
         RoyalRules,
-        "_attacks_square_with_view",
+        "_attacks_prevalidated_square_with_view",
         staticmethod(always_threat),
     )
 
