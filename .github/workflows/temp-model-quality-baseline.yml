@@ -75,6 +75,7 @@ jobs:
           OPPONENT: ${{ matrix.opponent }}
         run: |
           mkdir -p _work/benchmark
+          set +e
           python -m src.training.benchmark \
             --checkpoint _work/checkpoint/best \
             --checkpoint-source-run 33347901504 \
@@ -89,13 +90,50 @@ jobs:
             --max-actions 120 \
             --output text \
             --result-json "_work/benchmark/${OPPONENT}.json"
+          benchmark_rc=$?
+          set -e
+
+          if [ ! -f "_work/benchmark/${OPPONENT}.json" ]; then
+            echo "benchmark exited ${benchmark_rc} before producing its report"
+            exit "${benchmark_rc:-1}"
+          fi
+          if [ "$benchmark_rc" -ne 0 ] && [ "$benchmark_rc" -ne 1 ]; then
+            echo "benchmark failed with unexpected exit code ${benchmark_rc}"
+            exit "$benchmark_rc"
+          fi
+
+          python - <<'PY'
+          import os
+          from src.training.utils import read_json
+
+          opponent = os.environ['OPPONENT']
+          report = read_json(f'_work/benchmark/{opponent}.json')
+          reliability = report['overall']
+          print(
+              'RELIABILITY:',
+              {
+                  'illegal_action_count': reliability['illegal_action_count'],
+                  'stale_failure_count': reliability['stale_failure_count'],
+                  'unexpected_failure_count': reliability['unexpected_failure_count'],
+                  'planner_failure_count': reliability['planner_failure_count'],
+                  'budget_termination_count': reliability['budget_termination_count'],
+              },
+          )
+          if (
+              reliability['illegal_action_count']
+              or reliability['stale_failure_count']
+              or reliability['unexpected_failure_count']
+          ):
+              raise SystemExit('benchmark has a hard canonical reliability regression')
+          PY
       - name: Upload opponent benchmark report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: model-quality-baseline-${{ matrix.opponent }}-${{ github.run_id }}
           path: _work/benchmark/${{ matrix.opponent }}.json
           retention-days: 7
-          if-no-files-found: error
+          if-no-files-found: warn
 
   aggregate:
     name: Validate and aggregate 60-game baseline
