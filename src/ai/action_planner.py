@@ -600,7 +600,11 @@ def resolve_move_spec(engine: "FiveDEngine", spec: MoveSpec) -> Move:
     position = engine._resolve_position(spec.source.board)
     if position is None:
         raise InvalidActionPlanError(f"source board does not exist: {spec.source.board}")
-    legal_moves = engine.get_legal_moves(position)
+    legal_moves = engine.get_legal_moves_from_square(
+        position,
+        spec.source.x,
+        spec.source.y,
+    )
     matches = [move for move in legal_moves if _spec_matches(move, spec)]
     if len(matches) != 1:
         if not matches:
