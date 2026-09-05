@@ -9,12 +9,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Mapping, TYPE_CHECKING
+from typing import Iterator, Mapping, TYPE_CHECKING
 
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.multiverse import MultiverseBoardView
 from src.engine.path_rules import PathRules
-from src.engine.pawn_rules import PawnRules
 from src.engine.piece import Piece
 from src.engine.piece_movement import PieceMovementRules
 from src.engine.timeline_rules import TimelineRules
@@ -59,6 +58,99 @@ class RoyalRules:
         return self._king_squares_in(self.timelines, color)
 
     @staticmethod
+    def _attack_geometry_matches(
+        piece: Piece,
+        source: Square5D,
+        target: Square5D,
+    ) -> bool:
+        """Fast exact capture geometry without allocating a Vector4D per pair.
+
+        Royal safety evaluates a very large attacker × historical-King product.
+        Constructing ``Vector4D`` objects and repeatedly materializing their
+        derived tuples dominates safe-position scans.  These integer predicates
+        are algebraically equivalent to ``PieceMovementRules`` / pawn capture
+        geometry and leave slider path validation to ``PathRules`` below.
+        """
+        if source.side != target.side:
+            return False
+
+        dx = target.x - source.x
+        dy = target.y - source.y
+        dt = target.turn - source.turn
+        dl = target.timeline - source.timeline
+        piece_type = piece.piece_type
+
+        if piece_type == PieceType.PAWN:
+            spatial_forward = -1 if piece.color == ChessColor.WHITE else 1
+            timeline_forward = -1 if piece.color == ChessColor.WHITE else 1
+            return (
+                (
+                    abs(dx) == 1
+                    and dy == spatial_forward
+                    and dt == 0
+                    and dl == 0
+                )
+                or (
+                    dx == 0
+                    and dy == 0
+                    and abs(dt) == 1
+                    and dl == timeline_forward
+                )
+            )
+
+        adx = abs(dx)
+        ady = abs(dy)
+        adt = abs(dt)
+        adl = abs(dl)
+        dimensions = (
+            int(dx != 0)
+            + int(dy != 0)
+            + int(dt != 0)
+            + int(dl != 0)
+        )
+        if dimensions == 0:
+            return False
+
+        max_magnitude = max(adx, ady, adt, adl)
+        magnitude_sum = adx + ady + adt + adl
+
+        if piece_type == PieceType.ROOK:
+            return dimensions == 1
+        if piece_type == PieceType.BISHOP:
+            return dimensions == 2 and magnitude_sum == 2 * max_magnitude
+        if piece_type == PieceType.QUEEN:
+            return magnitude_sum == dimensions * max_magnitude
+        if piece_type == PieceType.KING:
+            return max_magnitude == 1
+        if piece_type == PieceType.KNIGHT:
+            return (
+                dimensions == 2
+                and max_magnitude == 2
+                and magnitude_sum == 3
+            )
+        return False
+
+    @staticmethod
+    def _attacks_prevalidated_square_with_view(
+        piece: Piece,
+        source: Square5D,
+        target: Square5D,
+        view: MultiverseBoardView,
+    ) -> bool:
+        """Attack geometry/path after caller has validated source and target."""
+        if not RoyalRules._attack_geometry_matches(piece, source, target):
+            return False
+
+        if PieceMovementRules.is_slider(piece.piece_type):
+            return PathRules.is_clear(
+                piece.piece_type,
+                source,
+                target,
+                view.resolve,
+            )
+        return True
+
+    @staticmethod
     def _attacks_square_with_view(
         piece: Piece,
         source: Square5D,
@@ -79,34 +171,12 @@ class RoyalRules:
         if target_piece is not None and target_piece.color == piece.color:
             return False
 
-        try:
-            vector = source.vector_to(target)
-        except ValueError:
-            return False
-
-        if piece.piece_type == PieceType.PAWN:
-            # Pawn attack geometry is independent of first-move state.
-            return PawnRules.is_valid_vector(
-                piece.color,
-                vector,
-                capture=True,
-                unmoved=False,
-            )
-
-        try:
-            if not PieceMovementRules.is_valid(piece.piece_type, vector):
-                return False
-        except (ValueError, NotImplementedError):
-            return False
-
-        if PieceMovementRules.is_slider(piece.piece_type):
-            return PathRules.is_clear(
-                piece.piece_type,
-                source,
-                target,
-                view.resolve,
-            )
-        return True
+        return RoyalRules._attacks_prevalidated_square_with_view(
+            piece,
+            source,
+            target,
+            view,
+        )
 
     def attacks_square(
         self,
@@ -123,42 +193,81 @@ class RoyalRules:
         )
 
     @classmethod
+    def _iter_direct_threats_in(
+        cls,
+        timelines: Mapping[int, "Timeline"],
+        color: ChessColor,
+    ) -> Iterator[RoyalThreat]:
+        """Yield opponent captures from currently playable boards.
+
+        Enumeration callers still receive every threat. Boolean safety queries
+        consume only the first yielded threat, avoiding a full multiverse scan
+        once royal exposure has already been proved.
+        """
+        if not timelines:
+            return
+
+        by_color = color.opposite()
+        view = MultiverseBoardView(timelines)
+
+        # An attacker and its target must live on boards whose side-to-move is
+        # the attacker's color. Pre-filter and validate those King instances
+        # once instead of repeating the same side/lookup checks for every
+        # attacker × historical-King pair.
+        kings: list[Square5D] = []
+        for king in cls._king_squares_in(timelines, color):
+            if king.side != by_color:
+                continue
+            target_position = view.resolve(king.board)
+            if target_position is None:
+                continue
+            king_piece = target_position.get_piece(king.x, king.y)
+            if (
+                king_piece is None
+                or king_piece.color != color
+                or king_piece.piece_type != PieceType.KING
+            ):
+                continue
+            kings.append(king)
+
+        if not kings:
+            return
+
+        # Playable boards on inactive timelines are included deliberately: they
+        # are optional moves and therefore can still be used to capture a King.
+        # ``get_all_pieces`` validates each source against exactly this board,
+        # and ``kings`` above validates each target once, so the hot cross-product
+        # can reuse the canonical geometry/path predicate without re-resolving
+        # the same endpoints millions of times.
+        for board in view.iter_boards(side=by_color, playable_only=True):
+            for x, y, piece in board.position.get_all_pieces(by_color):
+                source = Square5D(board.coord, x, y)
+                for king in kings:
+                    if cls._attacks_prevalidated_square_with_view(
+                        piece,
+                        source,
+                        king,
+                        view,
+                    ):
+                        yield RoyalThreat(piece, source, king)
+
+    @classmethod
     def _direct_threats_in(
         cls,
         timelines: Mapping[int, "Timeline"],
         color: ChessColor,
     ) -> tuple[RoyalThreat, ...]:
-        """Find captures available to the opponent from currently playable boards."""
-        if not timelines:
-            return ()
+        """Find every capture available to the opponent from playable boards."""
+        return tuple(cls._iter_direct_threats_in(timelines, color))
 
-        by_color = color.opposite()
-        view = MultiverseBoardView(timelines)
-        kings = cls._king_squares_in(timelines, color)
-        threats: list[RoyalThreat] = []
-
-        # Playable boards on inactive timelines are included deliberately: they
-        # are optional moves and therefore can still be used to capture a King.
-        for board in view.iter_boards(side=by_color, playable_only=True):
-            for x, y, piece in board.position.get_all_pieces(by_color):
-                source = Square5D(board.coord, x, y)
-                for king in kings:
-                    if king.side != by_color:
-                        continue
-                    target_piece = view.resolve(king.board)
-                    if target_piece is None:
-                        continue
-                    king_piece = target_piece.get_piece(king.x, king.y)
-                    if (
-                        king_piece is None
-                        or king_piece.color != color
-                        or king_piece.piece_type != PieceType.KING
-                    ):
-                        continue
-                    if cls._attacks_square_with_view(piece, source, king, view):
-                        threats.append(RoyalThreat(piece, source, king))
-
-        return tuple(threats)
+    @classmethod
+    def _has_direct_threat_in(
+        cls,
+        timelines: Mapping[int, "Timeline"],
+        color: ChessColor,
+    ) -> bool:
+        """Return as soon as one canonical direct royal threat is found."""
+        return next(cls._iter_direct_threats_in(timelines, color), None) is not None
 
     def direct_threats_against(self, color: ChessColor) -> tuple[RoyalThreat, ...]:
         """Threats available in the already-materialized current state."""
@@ -205,7 +314,8 @@ class RoyalRules:
 
     def is_in_check(self, color: ChessColor) -> bool:
         """Whether ``color`` is in 5D check under the Present-pass definition."""
-        return bool(self.threats_against(color))
+        simulated = self._after_virtual_present_pass(color)
+        return self._has_direct_threat_in(simulated, color)
 
     def is_action_safe(self, color: ChessColor) -> bool:
         """Whether a completed Action can be submitted without exposing a King.
@@ -217,4 +327,4 @@ class RoyalRules:
         present = TimelineRules.present(self.timelines)
         if present is None or present.side == color:
             return False
-        return not self.direct_threats_against(color)
+        return not self._has_direct_threat_in(self.timelines, color)

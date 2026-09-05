@@ -4,13 +4,16 @@ from src.engine import (
     Action,
     ActionRules,
     BoardCoord,
+    PawnRules,
+    Piece,
+    PieceMovementRules,
     Position,
     RoyalRules,
     Square5D,
     Timeline,
     TimelineRules,
 )
-from src.utils.constants import ChessColor
+from src.utils.constants import ChessColor, PieceType
 
 
 def _position(timeline_id: int, time_point: int, *pieces):
@@ -202,3 +205,68 @@ def test_action_submission_allows_safe_completed_action():
     assert ActionRules.can_submit(action, timelines)
     assert ActionRules.submit(action, timelines)
     assert action.submitted
+
+
+def test_action_safety_boolean_short_circuits_after_first_threat(monkeypatch):
+    black_turn = _position(
+        0,
+        1,
+        (4, 7, "K"),
+        (4, 0, "r"),
+        (0, 0, "r"),
+    )
+    rules = RoyalRules({0: _timeline(0, black_turn)})
+    calls = 0
+
+    def always_threat(piece, source, target, view):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise AssertionError("boolean royal-safety query did not short-circuit")
+        return True
+
+    monkeypatch.setattr(
+        RoyalRules,
+        "_attacks_prevalidated_square_with_view",
+        staticmethod(always_threat),
+    )
+
+    assert not rules.is_action_safe(ChessColor.WHITE)
+    assert calls == 1
+
+
+def test_fast_royal_geometry_matches_canonical_vector_rules():
+    """The allocation-free hot-path predicate must remain rule-equivalent."""
+    piece_types = (
+        PieceType.ROOK,
+        PieceType.BISHOP,
+        PieceType.QUEEN,
+        PieceType.KING,
+        PieceType.KNIGHT,
+        PieceType.PAWN,
+    )
+
+    for color in (ChessColor.WHITE, ChessColor.BLACK):
+        source = Square5D(BoardCoord(0, 3, color), 3, 3)
+        for piece_type in piece_types:
+            piece = Piece(piece_type, color)
+            for timeline in range(-3, 4):
+                for turn in range(0, 7):
+                    for x in range(8):
+                        for y in range(8):
+                            target = Square5D(BoardCoord(timeline, turn, color), x, y)
+                            vector = source.vector_to(target)
+                            if piece_type == PieceType.PAWN:
+                                expected = PawnRules.is_valid_vector(
+                                    color,
+                                    vector,
+                                    capture=True,
+                                    unmoved=False,
+                                )
+                            else:
+                                expected = PieceMovementRules.is_valid(piece_type, vector)
+                            assert RoyalRules._attack_geometry_matches(
+                                piece,
+                                source,
+                                target,
+                            ) is expected

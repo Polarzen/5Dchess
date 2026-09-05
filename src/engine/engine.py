@@ -16,9 +16,12 @@ from src.engine.move_validator import MoveValidator
 from src.engine.multiverse import MultiverseBoardView
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.engine.pawn_rules import PawnRules
-from src.engine.timeline import TimelineManager
+from src.engine.timeline import Timeline, TimelineManager
 from src.engine.timeline_rules import PresentState, TimelineRules
 from src.engine.rules import RulesEngine
+
+
+_OUTCOME_UNSET = object()
 
 
 @dataclass
@@ -56,6 +59,100 @@ class FiveDEngine:
             self.timeline_manager.timelines,
         )
         logger.info("游戏初始化完成")
+
+    @staticmethod
+    def _clone_action_for_simulation(action: Action | None) -> Action | None:
+        """Copy mutable Action bookkeeping while sharing frozen move metadata."""
+        if action is None:
+            return None
+        return Action(
+            color=action.color,
+            starting_present=action.starting_present,
+            moves=list(action.moves),
+            submitted=action.submitted,
+        )
+
+    @staticmethod
+    def _clone_timeline_mapping_for_simulation(timelines) -> dict[int, Timeline]:
+        """Deep-copy timeline storage through Position's explicit copy contract."""
+        return {
+            timeline_id: Timeline(
+                timeline_id=timeline.timeline_id,
+                parent_id=timeline.parent_id,
+                branch_move_id=timeline.branch_move_id,
+                branch_turn=timeline.branch_turn,
+                positions={
+                    time_point: position.copy()
+                    for time_point, position in timeline.positions.items()
+                },
+                is_active=timeline.is_active,
+                created_at_turn=timeline.created_at_turn,
+                owner=timeline.owner,
+            )
+            for timeline_id, timeline in timelines.items()
+        }
+
+    def clone_for_simulation(self) -> "FiveDEngine":
+        """Return an isolated engine suitable for canonical Action simulation.
+
+        The clone may run move generation/validation, ``execute_action_move`` and
+        Action submission without mutating the source. Every mutable canonical
+        engine container is copied: timeline/history Positions, branch allocation
+        counters, move/action history lists, and current Action bookkeeping. Frozen
+        ``Move``/``Piece``/``PresentState`` values are intentionally shared.
+
+        ``RulesEngine`` is legacy board-local state and normally contains no bound
+        timelines. The canonical default is rebuilt cheaply; non-standard populated
+        instances fall back to deepcopy rather than sharing mutable rule state.
+        Unknown dynamic engine attributes fail closed instead of being silently
+        aliased or dropped. ``rule_warning`` is the one supported transient field.
+        """
+        expected = set(self.__dataclass_fields__) | {"rule_warning"}
+        unexpected = set(self.__dict__) - expected
+        if unexpected:
+            names = ", ".join(sorted(unexpected))
+            raise RuntimeError(
+                f"cannot safely simulation-clone unknown engine state: {names}"
+            )
+
+        clone = object.__new__(type(self))
+        clone.max_timelines = self.max_timelines
+        clone.max_turns = self.max_turns
+
+        source_manager = self.timeline_manager
+        manager = TimelineManager(max_timelines=source_manager.max_timelines)
+        manager.timelines = self._clone_timeline_mapping_for_simulation(
+            source_manager.timelines
+        )
+        manager.active_timeline_id = source_manager.active_timeline_id
+        manager._next_positive_id = source_manager._next_positive_id
+        manager._next_negative_id = source_manager._next_negative_id
+        clone.timeline_manager = manager
+
+        if (
+            not self.rules_engine.timelines
+            and not self.rules_engine.validator.timelines
+        ):
+            clone.rules_engine = RulesEngine()
+        else:
+            # Preserve non-standard legacy rule bindings conservatively. This is
+            # not the normal canonical engine path and deliberately favors exact
+            # isolation over speed.
+            from copy import deepcopy
+            clone.rules_engine = deepcopy(self.rules_engine)
+
+        clone.game_state = self.game_state
+        clone.move_history = list(self.move_history)
+        clone.move_counter = self.move_counter
+        clone.current_turn_color = self.current_turn_color
+        clone.action_history = [
+            self._clone_action_for_simulation(action)
+            for action in self.action_history
+        ]
+        clone.current_action = self._clone_action_for_simulation(self.current_action)
+        if hasattr(self, "rule_warning"):
+            clone.rule_warning = self.rule_warning
+        return clone
 
     def _board_view(self) -> MultiverseBoardView:
         """Return the canonical lookup layer over the current multiverse."""
@@ -208,6 +305,33 @@ class FiveDEngine:
         pseudo_moves = generator.generate_all()
         return validator.filter_legal_moves(position, pseudo_moves)
 
+    def get_legal_moves_from_square(
+        self,
+        position: Position,
+        x: int,
+        y: int,
+    ) -> list[Move]:
+        """Return the canonical legal-Move subset for one source square.
+
+        The same MoveGenerator and MoveValidator are used as ``get_legal_moves``;
+        only unrelated source pieces are skipped before validation.
+        """
+        if self.game_state != GameState.PLAYING:
+            return []
+
+        action = self._ensure_current_action()
+        coord = self._coord_for_position(position)
+        if coord not in ActionRules.movable_boards(
+            action,
+            self.timeline_manager.timelines,
+        ):
+            return []
+
+        generator = MoveGenerator(position, self.timeline_manager.timelines)
+        validator = MoveValidator(self.timeline_manager.timelines)
+        pseudo_moves = generator.generate_from_square(x, y)
+        return validator.filter_legal_moves(position, pseudo_moves)
+
     def execute_action_move(self, move: Move) -> bool:
         """Execute one Move inside the current player's Action without submitting.
 
@@ -252,8 +376,14 @@ class FiveDEngine:
             return self.submit_action()
         return True
 
-    def submit_action(self) -> bool:
-        """Finalize a royal-safe Action, then evaluate the opponent's full turn."""
+    def submit_action(self, *, evaluate_outcome: bool = True) -> bool:
+        """Finalize a royal-safe Action and, by default, evaluate the outcome.
+
+        ``evaluate_outcome=False`` is an internal transaction hook used only
+        when a caller has isolated the submitted state and will apply a
+        separately validated outcome. Canonical Action submission is never
+        skipped.
+        """
         if self.game_state != GameState.PLAYING:
             return False
 
@@ -269,8 +399,11 @@ class FiveDEngine:
         )
 
         # Checkmate/stalemate is global: after every submitted Action, determine
-        # whether the next player has at least one complete legal Action.
-        self._check_multiverse_game_result()
+        # whether the next player has at least one complete legal Action. The
+        # default public behavior is unchanged; the false branch is reserved for
+        # an isolated caller that already owns outcome-validation evidence.
+        if evaluate_outcome:
+            self._check_multiverse_game_result()
         return True
 
     def _execute_state_move(self, move: Move) -> Move | None:
@@ -454,9 +587,30 @@ class FiveDEngine:
                 if source.x == 0 and source.y == 0:
                     rights["black_queenside"] = False
 
-    def _check_multiverse_game_result(self) -> None:
-        """Update terminal state from complete Action-level 5D rules."""
+    def _evaluate_multiverse_game_result(self):
+        """Evaluate terminal state without applying it to ``game_state``."""
         outcome = OutcomeRules.evaluate(self, self.current_turn_color)
+        return outcome, getattr(self, "rule_warning", None)
+
+    def _check_multiverse_game_result(
+        self,
+        *,
+        precomputed_outcome=_OUTCOME_UNSET,
+        rule_warning: str | None = None,
+    ) -> None:
+        """Update terminal state from complete Action-level 5D rules.
+
+        Supplying ``precomputed_outcome`` applies outcome evidence produced from
+        an isolated but canonically submitted equivalent state. This avoids
+        repeating the expensive ActionSearch while keeping the normal no-argument
+        submission path unchanged.
+        """
+        if precomputed_outcome is _OUTCOME_UNSET:
+            outcome, _ = self._evaluate_multiverse_game_result()
+        else:
+            outcome = precomputed_outcome
+            setattr(self, "rule_warning", rule_warning)
+
         if outcome is None:
             return
 

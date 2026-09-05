@@ -4,7 +4,9 @@
 
 > **当前状态：核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2 已完成。**
 >
-> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training` 分支中。
+> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training-v2` 实验分支中。
+>
+> **当前 `feat/local-ai-training-v2` 仅为实验训练分支，未合并 `main`。Windows 本地训练步骤见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。**
 
 ---
 
@@ -376,13 +378,17 @@ PvE 现在使用 canonical Action 级 AI。AI 在引擎快照上规划一个可�
 
 搜索由状态数、候选 Action 数、单 Action Move 深度和单调时钟共同设限。预算耗尽不会被误判为将杀、逼和或“无合法 Action”：已有完整候选时从中安全选择；尚无完整候选时返回明确的 bounded-search failure 并停止本次 AI 执行。早期 `choose_move()` 和单 Move Opening Book 仅作为兼容接口保留，不进入 canonical PvE 主路径。
 
-AI Local Training、自对弈数据、模型结构与 checkpoint 管理尚未进入主线，继续作为下一阶段工作；现有历史分支为：
+AI Local Training、自对弈数据、模型结构与 checkpoint 管理尚未进入主线。当前实验分支为：
 
 ```text
-feat/local-ai-training
+feat/local-ai-training-v2
 ```
 
 规则、Web 与 Replay / Storage 主线不会直接混入本地训练实现。
+
+该实验分支提供手动触发的 **Local AI Cloud Training**：GitHub-hosted CPU runner 可独立完成
+canonical self-play、训练、Arena 与可续训 Artifact；启动后本地浏览器和电脑均可关闭。它不表示
+训练模型已完成，也不会把权重或训练代码自动合并到 `main`。详见训练文档。
 
 ---
 

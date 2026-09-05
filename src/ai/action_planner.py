@@ -299,7 +299,8 @@ class _BudgetTracker:
         self.explored_actions = 0
         self.termination_reason: str | None = None
 
-    def check(self, depth: int) -> bool:
+    def check_time(self) -> bool:
+        """Stop immediately when the wall-clock budget has expired."""
         if self.termination_reason is not None:
             return True
         if (
@@ -307,6 +308,11 @@ class _BudgetTracker:
             and time.monotonic() - self.started_at >= self.budget.max_seconds
         ):
             self.termination_reason = "time_budget"
+            return True
+        return False
+
+    def check(self, depth: int) -> bool:
+        if self.check_time():
             return True
         if (
             self.budget.max_move_depth is not None
@@ -331,19 +337,63 @@ class _BudgetTracker:
 
 def _move_sort_key(move: Move) -> tuple:
     return (
-        move.source.board.timeline,
-        move.source.board.turn,
-        _enum_value(move.source.board.side),
-        move.source.y,
-        move.source.x,
+        bool(move.is_branching),
         move.destination.board.timeline,
         move.destination.board.turn,
         _enum_value(move.destination.board.side),
         move.destination.y,
         move.destination.x,
+        move.source.board.timeline,
+        move.source.board.turn,
+        _enum_value(move.source.board.side),
+        move.source.y,
+        move.source.x,
         _enum_value(move.promotion) or "",
-        bool(move.is_branching),
         bool(move.is_cross_timeline),
+    )
+
+
+def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
+    """Return how many currently-required boards this legal Move advances.
+
+    A single non-branching cross-timeline Move can satisfy both its required
+    source board and a distinct required destination board.  With exactly one
+    required board left, preserve the established deterministic ordering;
+    with two or more, count that double progress so a one-Move completion is
+    not buried behind Moves that can advance only one required board.
+    """
+    progress = int(move.source.board in required)
+    if len(required) <= 1:
+        return progress
+    if (
+        move.is_cross_timeline
+        and not move.is_branching
+        and move.destination.board != move.source.board
+        and move.destination.board in required
+    ):
+        progress += 1
+    return progress
+
+
+def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
+    """Prioritize legal Moves that can complete required-board progress early."""
+    base = _move_sort_key(move)
+    if len(required) <= 1:
+        return base
+    if len(required) == 2:
+        return (
+            base[0],
+            -_required_board_progress(move, required),
+            move.piece.piece_type is not PieceType.KING,
+            move.captured is None,
+            *base[1:],
+        )
+    return (
+        base[0],
+        move.piece.piece_type is not PieceType.KING,
+        move.captured is None,
+        -_required_board_progress(move, required),
+        *base[1:],
     )
 
 
@@ -359,7 +409,7 @@ class ActionPlanner:
         if engine.game_state != GameState.PLAYING:
             return ActionSearchResult((), 0, "game_not_playing")
 
-        state = deepcopy(engine)
+        state = engine.clone_for_simulation()
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
         tracker = _BudgetTracker(self.budget)
@@ -420,13 +470,29 @@ class ActionPlanner:
         tracker: _BudgetTracker,
         candidates: list[tuple[MoveSpec, ...]],
     ) -> None:
-        action = state._ensure_current_action()
+        # Time is the only budget that must gate even completion checks.  This
+        # prevents entering a potentially expensive canonical submit query after
+        # the wall deadline has already elapsed.  Depth/state/action limits are
+        # still checked after completion so a witness exactly on those bounds is
+        # accepted as before.
+        if tracker.check_time():
+            return
 
-        # Completion is checked before the budget so a witness exactly at the
-        # configured depth is still accepted.  A submit-capable state is also
-        # allowed to continue through optional boards: callers may deliberately
-        # include those moves before the one final submission.
-        if state.can_submit_action():
+        action = state._ensure_current_action()
+        required = set(ActionRules.required_boards(
+            action,
+            state.timeline_manager.timelines,
+        ))
+
+        # A non-empty required set proves that The Present still belongs to the
+        # acting color, so ActionRules.can_submit() must be false.  Once no board
+        # is required we delegate the decisive royal-safety check to the
+        # canonical API, then re-check time before accepting the witness.  A
+        # query that began inside the deadline but returned after it is therefore
+        # inconclusive rather than silently accepted late.
+        if not required and state.can_submit_action():
+            if tracker.check_time():
+                return
             candidates.append(path)
             tracker.explored_actions += 1
             if (
@@ -440,10 +506,6 @@ class ActionPlanner:
             return
         tracker.explored_states += 1
 
-        required = set(ActionRules.required_boards(
-            action,
-            state.timeline_manager.timelines,
-        ))
         movable = ActionRules.movable_boards(
             action,
             state.timeline_manager.timelines,
@@ -463,6 +525,42 @@ class ActionPlanner:
             )
         )
 
+        # With exactly two required Present boards, a complete Action can be a
+        # single cross-timeline Move between them.  Rank legal Moves from both
+        # required boards together so a completion on the second board is not
+        # hidden behind a deep dead-end from the first board.  Optional boards
+        # remain fully searchable afterwards; this changes ordering only.
+        if len(required) == 2:
+            required_moves: list[Move] = []
+            optional_boards: list[BoardCoord] = []
+            for board in ordered_boards:
+                if board not in required:
+                    optional_boards.append(board)
+                    continue
+                position = state._resolve_position(board)
+                if position is None:
+                    continue
+                required_moves.extend(state.get_legal_moves(position))
+
+            for move in sorted(
+                required_moves,
+                key=lambda candidate: _required_move_sort_key(candidate, required),
+            ):
+                if tracker.check(depth):
+                    return
+                child = state.clone_for_simulation()
+                if not child.execute_action_move(move):
+                    continue
+                self._dfs(
+                    child,
+                    path + (MoveSpec.from_move(move),),
+                    depth + 1,
+                    tracker,
+                    candidates,
+                )
+
+            ordered_boards = tuple(optional_boards)
+
         for board in ordered_boards:
             if tracker.check(depth):
                 return
@@ -474,12 +572,12 @@ class ActionPlanner:
             # are retained and passed through the engine's canonical API.
             legal_moves = sorted(
                 state.get_legal_moves(position),
-                key=_move_sort_key,
+                key=lambda move: _required_move_sort_key(move, required),
             )
             for move in legal_moves:
                 if tracker.check(depth):
                     return
-                child = deepcopy(state)
+                child = state.clone_for_simulation()
                 if not child.execute_action_move(move):
                     continue
                 self._dfs(
@@ -516,7 +614,11 @@ def resolve_move_spec(engine: "FiveDEngine", spec: MoveSpec) -> Move:
     position = engine._resolve_position(spec.source.board)
     if position is None:
         raise InvalidActionPlanError(f"source board does not exist: {spec.source.board}")
-    legal_moves = engine.get_legal_moves(position)
+    legal_moves = engine.get_legal_moves_from_square(
+        position,
+        spec.source.x,
+        spec.source.y,
+    )
     matches = [move for move in legal_moves if _spec_matches(move, spec)]
     if len(matches) != 1:
         if not matches:
@@ -542,6 +644,8 @@ def _verify_plan_start(engine: "FiveDEngine", plan: AIActionPlan) -> None:
 def _apply_specs_once(
     engine: "FiveDEngine",
     plan: AIActionPlan,
+    *,
+    evaluate_outcome: bool = True,
 ) -> tuple[Move, ...]:
     applied: list[Move] = []
     for index, spec in enumerate(plan.moves):
@@ -555,50 +659,58 @@ def _apply_specs_once(
             raise ActionApplicationError(f"plan move {index} was rejected by engine")
         applied.append(move)
 
-    if not engine.can_submit_action():
+    # ``FiveDEngine.submit_action`` is the canonical submission boundary and
+    # already performs the full ActionRules.can_submit / royal-safety check.
+    # Calling ``can_submit_action`` immediately before it duplicates that exact
+    # validation on both the probe and live replay paths.
+    if not engine.submit_action(evaluate_outcome=evaluate_outcome):
         raise ActionApplicationError("plan does not reach a submit-capable Action")
-    if not engine.submit_action():
-        raise ActionApplicationError("engine rejected Action submission")
     return tuple(applied)
 
 
 def apply_action_plan(engine: "FiveDEngine", plan: AIActionPlan) -> tuple[Move, ...]:
-    """Preflight and apply a complete plan, submitting exactly once.
+    """Apply one complete plan atomically through canonical engine methods.
 
-    The preflight runs all exact resolutions and the single submission on a
-    deep copy.  The real engine is then resolved afresh for every step and is
-    submitted once only after all steps succeed. The canonical Move objects
-    actually applied to the live engine are returned in execution order.
+    The plan is first resolved and executed on a deepcopy.  Only after every
+    Move and the single final submission succeed do we replay the same immutable
+    specs against the caller.  Expected stale/malformed plans therefore leave
+    the caller untouched and cannot partially mutate a live game.
     """
     _verify_plan_start(engine, plan)
 
-    preflight = deepcopy(engine)
+    probe = deepcopy(engine)
     try:
-        _apply_specs_once(preflight, plan)
+        # Validate every Move and canonical ActionRules.submit() on the isolated
+        # engine, but do not run the expensive global outcome search inside
+        # submit_action. Evaluate that post-submit state exactly once afterwards
+        # so any evaluation exception is still discovered before live mutation.
+        _apply_specs_once(probe, plan, evaluate_outcome=False)
+        outcome, rule_warning = probe._evaluate_multiverse_game_result()
     except InvalidActionPlanError:
         raise
-    except Exception as exc:
-        raise ActionApplicationError(f"plan preflight failed: {exc}") from exc
+    except (ValueError, RuntimeError) as exc:
+        raise ActionApplicationError(f"plan validation failed: {exc}") from exc
 
-    # The signature was checked before preflight; this second check catches a
-    # concurrent caller changing state while the copy was being validated.
-    _verify_plan_start(engine, plan)
-    return _apply_specs_once(engine, plan)
+    try:
+        # Replay through the same canonical Move/Action submission path. The
+        # already-validated outcome is then applied on the live engine without
+        # repeating ActionSearch. Normal submit_action() callers remain unchanged.
+        applied = _apply_specs_once(engine, plan, evaluate_outcome=False)
+        engine._check_multiverse_game_result(
+            precomputed_outcome=outcome,
+            rule_warning=rule_warning,
+        )
+        return applied
+    except InvalidActionPlanError:
+        raise
+    except (ValueError, RuntimeError) as exc:
+        raise ActionApplicationError(f"plan application failed: {exc}") from exc
 
 
-__all__ = [
-    "ActionApplicationError",
-    "ActionPlanError",
-    "ActionPlanner",
-    "ActionPlanningError",
-    "ActionSearchBudget",
-    "ActionSearchResult",
-    "AIActionPlan",
-    "InvalidActionPlanError",
-    "MoveSpec",
-    "StaleActionPlanError",
-    "apply_action_plan",
-    "engine_state_signature",
-    "enumerate_action_candidates",
-    "resolve_move_spec",
-]
+def plan_action(
+    engine: "FiveDEngine",
+    budget: ActionSearchBudget | None = None,
+    **kwargs,
+) -> AIActionPlan:
+    """Convenience wrapper returning the first complete legal Action plan."""
+    return ActionPlanner(budget).plan(engine, **kwargs)

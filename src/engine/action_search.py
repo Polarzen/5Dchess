@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 from src.engine.action import ActionRules
 from src.engine.move_generator import Move
-from src.utils.constants import ChessColor, GameState
+from src.utils.constants import ChessColor, GameState, PieceType
 
 if TYPE_CHECKING:
     from src.engine.engine import FiveDEngine
@@ -29,6 +29,26 @@ if TYPE_CHECKING:
 DEFAULT_ACTION_SEARCH_MAX_STATES = 4096
 DEFAULT_ACTION_SEARCH_MAX_DEPTH = 64
 DEFAULT_ACTION_SEARCH_MAX_SECONDS = 3.0
+
+
+def _clone_state_for_action_search(engine: "FiveDEngine") -> "FiveDEngine":
+    """Clone canonical search state while respecting archive-only metadata.
+
+    ``GameArchive`` may attach ``_replay_origin`` dynamically.  That JSON
+    snapshot is storage/replay metadata rather than rule state, but the engine's
+    simulation clone deliberately fails closed on unknown dynamic attributes.
+    For such archive-decorated roots, preserve the legacy behavior once via a
+    conservative deepcopy, remove only the known archive-only marker on that
+    isolated copy, then enter the normal validated simulation-clone contract.
+    Descendants therefore use the fast clone without weakening the engine's
+    fail-closed handling for any other dynamic state.
+    """
+    if not hasattr(engine, "_replay_origin"):
+        return engine.clone_for_simulation()
+
+    sanitized = deepcopy(engine)
+    delattr(sanitized, "_replay_origin")
+    return sanitized.clone_for_simulation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +69,49 @@ class ActionSearchResult:
     def exhausted(self) -> bool:
         """Whether a safety budget stopped the search before completion."""
         return self.termination_reason is not None
+
+
+def _required_board_progress(move: Move, required: set) -> int:
+    """Count currently-required Present boards advanced by ``move``.
+
+    A non-branching cross-timeline Move can advance both its required source
+    board and a distinct required destination board.  This is an ordering
+    signal only; it never changes Move generation or legality.
+    """
+    progress = int(move.source.board in required)
+    if (
+        len(required) > 1
+        and move.is_cross_timeline
+        and not move.is_branching
+        and move.destination.board != move.source.board
+        and move.destination.board in required
+    ):
+        progress += 1
+    return progress
+
+
+def _ordered_move_key(move: Move, required: set) -> tuple:
+    """Deterministic witness-first ordering without filtering legal Moves."""
+    base = (
+        bool(move.is_branching),
+        move.destination.timeline,
+        move.destination.turn,
+        move.destination.y,
+        move.destination.x,
+        move.source.timeline,
+        move.source.turn,
+        move.source.y,
+        move.source.x,
+    )
+    if len(required) == 2:
+        return (
+            base[0],
+            -_required_board_progress(move, required),
+            move.piece.piece_type is not PieceType.KING,
+            move.captured is None,
+            *base[1:],
+        )
+    return base
 
 
 class ActionSearch:
@@ -87,10 +150,12 @@ class ActionSearch:
     ) -> ActionSearchResult:
         """Search from the start of ``color``'s Action.
 
-        ``engine`` is deep-copied.  Move history, UI selection and the caller's
-        real Timeline objects therefore remain untouched.
+        Canonical engine state is isolated through the explicit simulation clone
+        contract. Archive-decorated engines use one conservative compatibility
+        copy before entering that contract; replay metadata never participates in
+        the search itself.
         """
-        state = deepcopy(engine)
+        state = _clone_state_for_action_search(engine)
         state.game_state = GameState.PLAYING
         if color is None:
             color = state.current_turn_color
@@ -115,7 +180,7 @@ class ActionSearch:
         engine: "FiveDEngine",
     ) -> ActionSearchResult:
         """Search from the caller's current partially-built Action."""
-        state = deepcopy(engine)
+        state = _clone_state_for_action_search(engine)
         state.game_state = GameState.PLAYING
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
@@ -156,18 +221,41 @@ class ActionSearch:
 
         return False
 
+    def _search_move(
+        self,
+        state: "FiveDEngine",
+        move: Move,
+        depth: int,
+    ) -> tuple[Move, ...] | None:
+        """Execute one canonical Move on an isolated child and continue DFS."""
+        if self._termination_reason is not None:
+            return None
+        child = _clone_state_for_action_search(state)
+        if not child.execute_action_move(move):
+            return None
+        return self._dfs(child, depth=depth + 1)
+
     def _dfs(
         self,
         state: "FiveDEngine",
         depth: int,
     ) -> tuple[Move, ...] | None:
         action = state._ensure_current_action()
+        required = set(ActionRules.required_boards(
+            action,
+            state.timeline_manager.timelines,
+        ))
 
-        # This is the actual legal-Action terminal condition: The Present has
-        # shifted to the opponent and RoyalRules accepts the final state.  Check
-        # it before budgets so a completion exactly at the configured depth is
-        # still accepted.
-        if ActionRules.can_submit(action, state.timeline_manager.timelines):
+        # A non-empty required set proves that The Present still belongs to the
+        # acting color, so ActionRules.can_submit() must be false. Avoid the
+        # expensive royal-safety scan until Present progress is complete. This
+        # is only a predicate short-circuit: no Move, state, or legal completion
+        # is pruned. Completion remains checked before budgets so a witness
+        # exactly at the configured depth is accepted.
+        if (
+            not required
+            and ActionRules.can_submit(action, state.timeline_manager.timelines)
+        ):
             return tuple(action.moves)
 
         if self._budget_exhausted(depth):
@@ -188,11 +276,7 @@ class ActionSearch:
             return None
 
         # Required Present boards first is only an ordering heuristic. Optional
-        # boards remain in the list, so rewind/blocking resources are not lost.
-        required = set(ActionRules.required_boards(
-            action,
-            state.timeline_manager.timelines,
-        ))
+        # boards remain searchable, so rewind/blocking resources are not lost.
         ordered_boards = tuple(
             sorted(
                 movable,
@@ -205,6 +289,35 @@ class ActionSearch:
             )
         )
 
+        # When exactly two Present boards are required, a complete Action may
+        # be a single cross-timeline Move from either board into the other. Rank
+        # both required boards' canonical legal Moves in one queue so a witness
+        # on the second board cannot be hidden behind a deep dead-end rooted at
+        # the first. All Moves and all optional boards remain searchable.
+        if len(required) == 2:
+            required_moves: list[Move] = []
+            optional_boards = []
+            for board in ordered_boards:
+                if board not in required:
+                    optional_boards.append(board)
+                    continue
+                position = state._resolve_position(board)
+                if position is None:
+                    continue
+                required_moves.extend(state.get_legal_moves(position))
+
+            for move in sorted(
+                required_moves,
+                key=lambda candidate: _ordered_move_key(candidate, required),
+            ):
+                witness = self._search_move(state, move, depth)
+                if witness is not None:
+                    return witness
+                if self._termination_reason is not None:
+                    return None
+
+            ordered_boards = tuple(optional_boards)
+
         for board in ordered_boards:
             if self._termination_reason is not None:
                 return None
@@ -213,33 +326,20 @@ class ActionSearch:
             if position is None:
                 continue
 
-            moves = state.get_legal_moves(position)
-            # Prefer non-branching transitions first.  Branching is still fully
+            # Prefer non-branching transitions first. Branching is still fully
             # searched and can be the only way to rewind The Present out of a
             # board-local mate/stalemate.
             moves = sorted(
-                moves,
-                key=lambda move: (
-                    move.is_branching,
-                    move.destination.timeline,
-                    move.destination.turn,
-                    move.destination.y,
-                    move.destination.x,
-                    move.source.y,
-                    move.source.x,
-                ),
+                state.get_legal_moves(position),
+                key=lambda move: _ordered_move_key(move, required),
             )
 
             for move in moves:
-                if self._termination_reason is not None:
-                    return None
-
-                child = deepcopy(state)
-                if not child.execute_action_move(move):
-                    continue
-                witness = self._dfs(child, depth=depth + 1)
+                witness = self._search_move(state, move, depth)
                 if witness is not None:
                     return witness
+                if self._termination_reason is not None:
+                    return None
 
         # Never memoize a state as failed when a safety limit interrupted its
         # descendants; the state space was not fully proved unsatisfiable.

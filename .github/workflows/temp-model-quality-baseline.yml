@@ -1,0 +1,211 @@
+name: TEMP Model Quality Baseline
+
+on:
+  push:
+    branches: [feat/local-ai-training-v2]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  benchmark:
+    name: Baseline ${{ matrix.opponent }} 20 games
+    strategy:
+      fail-fast: false
+      matrix:
+        opponent: [easy, medium, hard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+      - name: Download baseline checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-33347901504
+          path: _work/checkpoint
+          repository: Polarzen/5Dchess
+          run-id: '33347901504'
+          github-token: ${{ github.token }}
+      - name: Repeat one fixed game to prove semantic determinism
+        if: matrix.opponent == 'easy'
+        run: |
+          python - <<'PY'
+          from src.ai.action_planner import ActionSearchBudget
+          from src.training.benchmark import determinism_fingerprint, run_single_game
+
+          budget = ActionSearchBudget(
+              max_states=256,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
+          kwargs = dict(
+              checkpoint='_work/checkpoint/best',
+              opponent='easy',
+              seed=101,
+              model_color='white',
+              device='cpu',
+              budget=budget,
+              max_actions=120,
+          )
+          first = run_single_game(**kwargs)
+          second = run_single_game(**kwargs)
+          first_fp = determinism_fingerprint(first)
+          second_fp = determinism_fingerprint(second)
+          print('first fingerprint:', first_fp)
+          print('second fingerprint:', second_fp)
+          if first_fp != second_fp:
+              raise SystemExit('fixed-seed Arena semantic determinism check failed')
+          PY
+      - name: Run 20-game fixed-seed side-balanced benchmark
+        env:
+          OPPONENT: ${{ matrix.opponent }}
+        run: |
+          mkdir -p _work/benchmark
+          set +e
+          python -m src.training.benchmark \
+            --checkpoint _work/checkpoint/best \
+            --checkpoint-source-run 33347901504 \
+            --checkpoint-artifact local-ai-checkpoint-33347901504 \
+            --git-sha "${{ github.sha }}" \
+            --opponent "$OPPONENT" \
+            --device cpu \
+            --planner-states 256 \
+            --planner-actions 24 \
+            --planner-moves 32 \
+            --planner-seconds 5.0 \
+            --max-actions 120 \
+            --output text \
+            --result-json "_work/benchmark/${OPPONENT}.json"
+          benchmark_rc=$?
+          set -e
+
+          if [ ! -f "_work/benchmark/${OPPONENT}.json" ]; then
+            echo "benchmark exited ${benchmark_rc} before producing its report"
+            exit "${benchmark_rc:-1}"
+          fi
+          if [ "$benchmark_rc" -ne 0 ] && [ "$benchmark_rc" -ne 1 ]; then
+            echo "benchmark failed with unexpected exit code ${benchmark_rc}"
+            exit "$benchmark_rc"
+          fi
+
+          python - <<'PY'
+          import os
+          from src.training.utils import read_json
+
+          opponent = os.environ['OPPONENT']
+          report = read_json(f'_work/benchmark/{opponent}.json')
+          reliability = report['overall']
+          print(
+              'RELIABILITY:',
+              {
+                  'illegal_action_count': reliability['illegal_action_count'],
+                  'stale_failure_count': reliability['stale_failure_count'],
+                  'unexpected_failure_count': reliability['unexpected_failure_count'],
+                  'planner_failure_count': reliability['planner_failure_count'],
+                  'budget_termination_count': reliability['budget_termination_count'],
+              },
+          )
+          if (
+              reliability['illegal_action_count']
+              or reliability['stale_failure_count']
+              or reliability['unexpected_failure_count']
+          ):
+              raise SystemExit('benchmark has a hard canonical reliability regression')
+          PY
+      - name: Upload opponent benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-quality-baseline-${{ matrix.opponent }}-${{ github.run_id }}
+          path: _work/benchmark/${{ matrix.opponent }}.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  aggregate:
+    name: Validate and aggregate 60-game baseline
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+      - name: Download opponent reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: model-quality-baseline-*-${{ github.run_id }}
+          path: _work/reports
+          merge-multiple: true
+      - name: Validate exact protocol and aggregate
+        run: |
+          mkdir -p _work/aggregate
+          python - <<'PY'
+          from pathlib import Path
+          from src.training.benchmark import (
+              DEFAULT_BLACK_SEEDS,
+              DEFAULT_WHITE_SEEDS,
+              merge_benchmark_reports,
+          )
+          from src.training.utils import read_json, write_json
+
+          paths = sorted(Path('_work/reports').glob('*.json'))
+          print('report files:', [str(path) for path in paths])
+          if len(paths) != 3:
+              raise SystemExit(f'expected exactly 3 opponent reports, got {len(paths)}')
+          report = merge_benchmark_reports([read_json(path) for path in paths])
+          if report['overall']['games'] != 60:
+              raise SystemExit('baseline must contain exactly 60 games')
+          expected_white = list(DEFAULT_WHITE_SEEDS)
+          expected_black = list(DEFAULT_BLACK_SEEDS)
+          if report['metadata']['seed_schedule'] != {'white': expected_white, 'black': expected_black}:
+              raise SystemExit('baseline seed schedule drifted')
+          for opponent in ('easy', 'medium', 'hard'):
+              summary = report['by_opponent'][opponent]
+              if summary['games'] != 20:
+                  raise SystemExit(f'{opponent}: expected 20 games')
+              if summary['side_split']['white']['games'] != 10 or summary['side_split']['black']['games'] != 10:
+                  raise SystemExit(f'{opponent}: expected exact 10 White / 10 Black split')
+              games = [game for game in report['games'] if game['opponent'] == opponent]
+              white = sorted(game['seed'] for game in games if game['model_color'] == 'white')
+              black = sorted(game['seed'] for game in games if game['model_color'] == 'black')
+              if white != sorted(expected_white) or black != sorted(expected_black):
+                  raise SystemExit(f'{opponent}: seed coverage mismatch')
+          reliability = report['overall']
+          if reliability['illegal_action_count'] or reliability['stale_failure_count'] or reliability['unexpected_failure_count']:
+              raise SystemExit('baseline has a hard canonical reliability regression')
+          print('BASELINE OVERALL:', reliability)
+          for opponent, summary in report['by_opponent'].items():
+              print(opponent.upper(), summary)
+          write_json('_work/aggregate/model-quality-baseline-60.json', report)
+          PY
+      - name: Upload aggregate baseline report
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-quality-baseline-60-${{ github.run_id }}
+          path: _work/aggregate/model-quality-baseline-60.json
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,7 @@
+# Local AI Training v2 only.  The normal game does not require these packages.
+# For NVIDIA CUDA on Windows, install the PyTorch build selected at
+# https://pytorch.org/get-started/locally/ first; pip will then keep that build
+# when the version requirement below is already satisfied.
+torch>=2.4
+safetensors>=0.4.5
+numpy>=1.24
