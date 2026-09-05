@@ -639,10 +639,12 @@ def _apply_specs_once(
             raise ActionApplicationError(f"plan move {index} was rejected by engine")
         applied.append(move)
 
-    if not engine.can_submit_action():
-        raise ActionApplicationError("plan does not reach a submit-capable Action")
+    # ``FiveDEngine.submit_action`` is the canonical submission boundary and
+    # already performs the full ActionRules.can_submit / royal-safety check.
+    # Calling ``can_submit_action`` immediately before it duplicates that exact
+    # validation on both the probe and live replay paths.
     if not engine.submit_action():
-        raise ActionApplicationError("engine refused to submit an otherwise valid Action")
+        raise ActionApplicationError("plan does not reach a submit-capable Action")
     return tuple(applied)
 
 
