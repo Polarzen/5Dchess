@@ -1,4 +1,4 @@
-name: TEMP Encoding simulation clone profile
+name: TEMP Encoding and planner simulation clone profile
 
 on:
   push:
