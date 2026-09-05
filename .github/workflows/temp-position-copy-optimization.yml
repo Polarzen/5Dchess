@@ -1,0 +1,61 @@
+name: TEMP Position copy optimization
+
+on:
+  push:
+    branches: [feat/local-ai-training-v2]
+    paths:
+      - .github/workflows/temp-position-copy-optimization.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/local-ai-training-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install game dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Apply explicit Position copy and regression tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/engine/board.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('from copy import deepcopy\n', '')
+          old = '''    def copy(self) -> "Position":\n        """深拷贝"""\n        return deepcopy(self)\n'''
+          new = '''    def copy(self) -> "Position":\n        """Copy one board state without generic object-graph traversal.\n\n        Every mutable Position field is duplicated explicitly. Enum/int values\n        and the en-passant coordinate tuple are immutable and may be shared.\n        This preserves deepcopy semantics while avoiding Python's recursive\n        dataclass reconstruction in MoveValidator and timeline transitions.\n        """\n        return Position(\n            board=[row[:] for row in self.board],\n            turn=self.turn,\n            timeline_id=self.timeline_id,\n            time_point=self.time_point,\n            move_number=self.move_number,\n            castling_rights=self.castling_rights.copy(),\n            en_passant_target=self.en_passant_target,\n            unmoved_pawns=set(self.unmoved_pawns),\n        )\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one Position.copy block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          Path('tests/test_position_copy_equivalence.py').write_text('''"""Semantic and isolation tests for the explicit Position copy path."""\nfrom copy import deepcopy\n\nimport pytest\n\nfrom src.ai import (\n    ActionSearchBudget,\n    RandomAI,\n    StaleActionPlanError,\n    apply_action_plan,\n    engine_state_signature,\n)\nfrom src.engine import FiveDEngine, Position, TimelineManager\nfrom src.utils.constants import ChessColor\n\n\ndef _legacy_copy(position: Position) -> Position:\n    return deepcopy(position)\n\n\ndef _plan(engine: FiveDEngine):\n    return RandomAI(\n        engine.current_turn_color,\n        seed=29,\n        budget=ActionSearchBudget(\n            max_states=256,\n            max_actions=8,\n            max_move_depth=8,\n            max_seconds=1.0,\n        ),\n    ).plan_action(engine)\n\n\ndef test_position_copy_matches_deepcopy_and_isolates_mutable_fields():\n    position = Position.initial(timeline_id=3, time_point=4)\n    position.move_number = 17\n    position.castling_rights["white_kingside"] = False\n    position.en_passant_target = (4, 5)\n    position.unmoved_pawns.add((3, 3))\n\n    expected = deepcopy(position)\n    clone = position.copy()\n\n    assert clone == expected\n    assert clone is not position\n    assert clone.board is not position.board\n    assert all(a is not b for a, b in zip(clone.board, position.board))\n    assert clone.castling_rights is not position.castling_rights\n    assert clone.unmoved_pawns is not position.unmoved_pawns\n\n    clone.board[0][0] = ""\n    clone.castling_rights["black_kingside"] = False\n    clone.unmoved_pawns.add((0, 0))\n    assert position.board[0][0] != clone.board[0][0]\n    assert position.castling_rights["black_kingside"] is True\n    assert (0, 0) not in position.unmoved_pawns\n\n\ndef test_position_copy_matches_legacy_engine_action_state(monkeypatch):\n    optimized = FiveDEngine()\n    legacy = deepcopy(optimized)\n    plan = _plan(optimized)\n\n    with monkeypatch.context() as patch:\n        patch.setattr(Position, "copy", _legacy_copy)\n        assert apply_action_plan(legacy, plan)\n\n    assert apply_action_plan(optimized, plan)\n    assert engine_state_signature(optimized) == engine_state_signature(legacy)\n    assert optimized.game_state == legacy.game_state\n    assert optimized.move_counter == legacy.move_counter\n    assert len(optimized.action_history) == len(legacy.action_history)\n\n\ndef test_timeline_branch_copies_history_without_aliasing():\n    manager = TimelineManager(max_timelines=4)\n    parent = manager.create_initial_timeline()\n    first = Position.initial(timeline_id=0, time_point=0)\n    second = first.copy()\n    second.time_point = 1\n    second.turn = ChessColor.BLACK\n    second.castling_rights["white_kingside"] = False\n    parent.positions = {0: first, 1: second}\n\n    branch = manager.create_branch(\n        parent_id=0,\n        branch_turn=1,\n        branch_move_id=7,\n        target_time=1,\n        creator=ChessColor.WHITE,\n    )\n    assert branch is not None\n    assert branch.timeline_id == 1\n    for time_point in (0, 1):\n        source = parent.positions[time_point]\n        copied = branch.positions[time_point]\n        assert copied.timeline_id == branch.timeline_id\n        assert copied.board == source.board\n        assert copied.board is not source.board\n        assert copied.castling_rights is not source.castling_rights\n        assert copied.unmoved_pawns is not source.unmoved_pawns\n\n    branch.positions[1].board[0][0] = ""\n    branch.positions[1].castling_rights["black_kingside"] = False\n    assert parent.positions[1].board[0][0] != branch.positions[1].board[0][0]\n    assert parent.positions[1].castling_rights["black_kingside"] is True\n\n\ndef test_position_copy_change_does_not_weaken_stale_plan_guard():\n    engine = FiveDEngine()\n    plan = _plan(engine)\n    position = engine.get_current_position()\n    move = engine.get_legal_moves(position)[0]\n    assert engine.execute_action_move(move)\n\n    with pytest.raises(StaleActionPlanError):\n        apply_action_plan(engine, plan)\n''', encoding='utf-8')
+          PY
+      - name: Compile and run clone/action regressions
+        run: |
+          python -m compileall -q src tests
+          python -m pytest -q \
+            tests/test_position_copy_equivalence.py \
+            tests/test_action_plan_outcome_efficiency.py \
+            tests/test_action_plan_submission_efficiency.py \
+            tests/test_ai_action_planning.py \
+            tests/test_engine.py \
+            tests/test_timeline.py
+      - name: Commit validated optimization only
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/engine/board.py tests/test_position_copy_equivalence.py
+          git diff --cached --check
+          git commit -m 'perf(engine): copy Position fields explicitly'
+          git push origin HEAD:feat/local-ai-training-v2
