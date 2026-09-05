@@ -6,6 +6,8 @@ param(
     [ValidateSet("auto", "cpu", "cuda")]
     [string]$Device = "auto",
     [int]$Seed = 100,
+    [ValidateSet("white", "black", "alternate")]
+    [string]$ModelColor = "alternate",
     [int]$MaxActions = 120
 )
 
@@ -22,6 +24,7 @@ try {
         --games $Games `
         --device $Device `
         --seed $Seed `
+        --model-color $ModelColor `
         --max-actions $MaxActions
 } finally { Pop-Location }
 exit $LASTEXITCODE
