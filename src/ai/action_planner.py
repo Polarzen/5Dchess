@@ -409,7 +409,7 @@ class ActionPlanner:
         if engine.game_state != GameState.PLAYING:
             return ActionSearchResult((), 0, "game_not_playing")
 
-        state = deepcopy(engine)
+        state = engine.clone_for_simulation()
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
         tracker = _BudgetTracker(self.budget)
@@ -548,7 +548,7 @@ class ActionPlanner:
             ):
                 if tracker.check(depth):
                     return
-                child = deepcopy(state)
+                child = state.clone_for_simulation()
                 if not child.execute_action_move(move):
                     continue
                 self._dfs(
@@ -577,7 +577,7 @@ class ActionPlanner:
             for move in legal_moves:
                 if tracker.check(depth):
                     return
-                child = deepcopy(state)
+                child = state.clone_for_simulation()
                 if not child.execute_action_move(move):
                     continue
                 self._dfs(
