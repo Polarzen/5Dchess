@@ -59,26 +59,13 @@ class RoyalRules:
         return self._king_squares_in(self.timelines, color)
 
     @staticmethod
-    def _attacks_square_with_view(
+    def _attacks_prevalidated_square_with_view(
         piece: Piece,
         source: Square5D,
         target: Square5D,
         view: MultiverseBoardView,
     ) -> bool:
-        """Return whether ``piece`` can capture ``target`` by 5D geometry/path."""
-        source_position = view.resolve(source.board)
-        target_position = view.resolve(target.board)
-        if source_position is None or target_position is None:
-            return False
-        if source_position.get_piece(source.x, source.y) != piece:
-            return False
-        if source.side != piece.color or target.side != piece.color:
-            return False
-
-        target_piece = target_position.get_piece(target.x, target.y)
-        if target_piece is not None and target_piece.color == piece.color:
-            return False
-
+        """Attack geometry/path after caller has validated source and target."""
         try:
             vector = source.vector_to(target)
         except ValueError:
@@ -107,6 +94,34 @@ class RoyalRules:
                 view.resolve,
             )
         return True
+
+    @staticmethod
+    def _attacks_square_with_view(
+        piece: Piece,
+        source: Square5D,
+        target: Square5D,
+        view: MultiverseBoardView,
+    ) -> bool:
+        """Return whether ``piece`` can capture ``target`` by 5D geometry/path."""
+        source_position = view.resolve(source.board)
+        target_position = view.resolve(target.board)
+        if source_position is None or target_position is None:
+            return False
+        if source_position.get_piece(source.x, source.y) != piece:
+            return False
+        if source.side != piece.color or target.side != piece.color:
+            return False
+
+        target_piece = target_position.get_piece(target.x, target.y)
+        if target_piece is not None and target_piece.color == piece.color:
+            return False
+
+        return RoyalRules._attacks_prevalidated_square_with_view(
+            piece,
+            source,
+            target,
+            view,
+        )
 
     def attacks_square(
         self,
@@ -141,10 +156,9 @@ class RoyalRules:
         view = MultiverseBoardView(timelines)
 
         # An attacker and its target must live on boards whose side-to-move is
-        # the attacker's color.  Pre-filter and validate those King instances
+        # the attacker's color. Pre-filter and validate those King instances
         # once instead of repeating the same side/lookup checks for every
-        # attacker × historical-King pair.  This changes only enumeration work;
-        # the canonical attack predicate still decides every capture relation.
+        # attacker × historical-King pair.
         kings: list[Square5D] = []
         for king in cls._king_squares_in(timelines, color):
             if king.side != by_color:
@@ -166,11 +180,20 @@ class RoyalRules:
 
         # Playable boards on inactive timelines are included deliberately: they
         # are optional moves and therefore can still be used to capture a King.
+        # ``get_all_pieces`` validates each source against exactly this board,
+        # and ``kings`` above validates each target once, so the hot cross-product
+        # can reuse the canonical geometry/path predicate without re-resolving
+        # the same endpoints millions of times.
         for board in view.iter_boards(side=by_color, playable_only=True):
             for x, y, piece in board.position.get_all_pieces(by_color):
                 source = Square5D(board.coord, x, y)
                 for king in kings:
-                    if cls._attacks_square_with_view(piece, source, king, view):
+                    if cls._attacks_prevalidated_square_with_view(
+                        piece,
+                        source,
+                        king,
+                        view,
+                    ):
                         yield RoyalThreat(piece, source, king)
 
     @classmethod
