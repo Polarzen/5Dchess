@@ -16,7 +16,7 @@ from src.engine.move_validator import MoveValidator
 from src.engine.multiverse import MultiverseBoardView
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.engine.pawn_rules import PawnRules
-from src.engine.timeline import TimelineManager
+from src.engine.timeline import Timeline, TimelineManager
 from src.engine.timeline_rules import PresentState, TimelineRules
 from src.engine.rules import RulesEngine
 
@@ -59,6 +59,100 @@ class FiveDEngine:
             self.timeline_manager.timelines,
         )
         logger.info("游戏初始化完成")
+
+    @staticmethod
+    def _clone_action_for_simulation(action: Action | None) -> Action | None:
+        """Copy mutable Action bookkeeping while sharing frozen move metadata."""
+        if action is None:
+            return None
+        return Action(
+            color=action.color,
+            starting_present=action.starting_present,
+            moves=list(action.moves),
+            submitted=action.submitted,
+        )
+
+    @staticmethod
+    def _clone_timeline_mapping_for_simulation(timelines) -> dict[int, Timeline]:
+        """Deep-copy timeline storage through Position's explicit copy contract."""
+        return {
+            timeline_id: Timeline(
+                timeline_id=timeline.timeline_id,
+                parent_id=timeline.parent_id,
+                branch_move_id=timeline.branch_move_id,
+                branch_turn=timeline.branch_turn,
+                positions={
+                    time_point: position.copy()
+                    for time_point, position in timeline.positions.items()
+                },
+                is_active=timeline.is_active,
+                created_at_turn=timeline.created_at_turn,
+                owner=timeline.owner,
+            )
+            for timeline_id, timeline in timelines.items()
+        }
+
+    def clone_for_simulation(self) -> "FiveDEngine":
+        """Return an isolated engine suitable for canonical Action simulation.
+
+        The clone may run move generation/validation, ``execute_action_move`` and
+        Action submission without mutating the source. Every mutable canonical
+        engine container is copied: timeline/history Positions, branch allocation
+        counters, move/action history lists, and current Action bookkeeping. Frozen
+        ``Move``/``Piece``/``PresentState`` values are intentionally shared.
+
+        ``RulesEngine`` is legacy board-local state and normally contains no bound
+        timelines. The canonical default is rebuilt cheaply; non-standard populated
+        instances fall back to deepcopy rather than sharing mutable rule state.
+        Unknown dynamic engine attributes fail closed instead of being silently
+        aliased or dropped. ``rule_warning`` is the one supported transient field.
+        """
+        expected = set(self.__dataclass_fields__) | {"rule_warning"}
+        unexpected = set(self.__dict__) - expected
+        if unexpected:
+            names = ", ".join(sorted(unexpected))
+            raise RuntimeError(
+                f"cannot safely simulation-clone unknown engine state: {names}"
+            )
+
+        clone = object.__new__(type(self))
+        clone.max_timelines = self.max_timelines
+        clone.max_turns = self.max_turns
+
+        source_manager = self.timeline_manager
+        manager = TimelineManager(max_timelines=source_manager.max_timelines)
+        manager.timelines = self._clone_timeline_mapping_for_simulation(
+            source_manager.timelines
+        )
+        manager.active_timeline_id = source_manager.active_timeline_id
+        manager._next_positive_id = source_manager._next_positive_id
+        manager._next_negative_id = source_manager._next_negative_id
+        clone.timeline_manager = manager
+
+        if (
+            not self.rules_engine.timelines
+            and not self.rules_engine.validator.timelines
+        ):
+            clone.rules_engine = RulesEngine()
+        else:
+            # Preserve non-standard legacy rule bindings conservatively. This is
+            # not the normal canonical engine path and deliberately favors exact
+            # isolation over speed.
+            from copy import deepcopy
+            clone.rules_engine = deepcopy(self.rules_engine)
+
+        clone.game_state = self.game_state
+        clone.move_history = list(self.move_history)
+        clone.move_counter = self.move_counter
+        clone.current_turn_color = self.current_turn_color
+        clone.action_history = [
+            self._clone_action_for_simulation(action)
+            for action in self.action_history
+        ]
+        clone.current_action = self._clone_action_for_simulation(self.current_action)
+        if hasattr(self, "rule_warning"):
+            clone.rule_warning = self.rule_warning
+        return clone
 
     def _board_view(self) -> MultiverseBoardView:
         """Return the canonical lookup layer over the current multiverse."""
