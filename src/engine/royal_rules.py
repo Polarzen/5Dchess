@@ -14,7 +14,6 @@ from typing import Iterator, Mapping, TYPE_CHECKING
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.multiverse import MultiverseBoardView
 from src.engine.path_rules import PathRules
-from src.engine.pawn_rules import PawnRules
 from src.engine.piece import Piece
 from src.engine.piece_movement import PieceMovementRules
 from src.engine.timeline_rules import TimelineRules
@@ -59,6 +58,79 @@ class RoyalRules:
         return self._king_squares_in(self.timelines, color)
 
     @staticmethod
+    def _attack_geometry_matches(
+        piece: Piece,
+        source: Square5D,
+        target: Square5D,
+    ) -> bool:
+        """Fast exact capture geometry without allocating a Vector4D per pair.
+
+        Royal safety evaluates a very large attacker × historical-King product.
+        Constructing ``Vector4D`` objects and repeatedly materializing their
+        derived tuples dominates safe-position scans.  These integer predicates
+        are algebraically equivalent to ``PieceMovementRules`` / pawn capture
+        geometry and leave slider path validation to ``PathRules`` below.
+        """
+        if source.side != target.side:
+            return False
+
+        dx = target.x - source.x
+        dy = target.y - source.y
+        dt = target.turn - source.turn
+        dl = target.timeline - source.timeline
+        piece_type = piece.piece_type
+
+        if piece_type == PieceType.PAWN:
+            spatial_forward = -1 if piece.color == ChessColor.WHITE else 1
+            timeline_forward = -1 if piece.color == ChessColor.WHITE else 1
+            return (
+                (
+                    abs(dx) == 1
+                    and dy == spatial_forward
+                    and dt == 0
+                    and dl == 0
+                )
+                or (
+                    dx == 0
+                    and dy == 0
+                    and abs(dt) == 1
+                    and dl == timeline_forward
+                )
+            )
+
+        adx = abs(dx)
+        ady = abs(dy)
+        adt = abs(dt)
+        adl = abs(dl)
+        dimensions = (
+            int(dx != 0)
+            + int(dy != 0)
+            + int(dt != 0)
+            + int(dl != 0)
+        )
+        if dimensions == 0:
+            return False
+
+        max_magnitude = max(adx, ady, adt, adl)
+        magnitude_sum = adx + ady + adt + adl
+
+        if piece_type == PieceType.ROOK:
+            return dimensions == 1
+        if piece_type == PieceType.BISHOP:
+            return dimensions == 2 and magnitude_sum == 2 * max_magnitude
+        if piece_type == PieceType.QUEEN:
+            return magnitude_sum == dimensions * max_magnitude
+        if piece_type == PieceType.KING:
+            return max_magnitude == 1
+        if piece_type == PieceType.KNIGHT:
+            return (
+                dimensions == 2
+                and max_magnitude == 2
+                and magnitude_sum == 3
+            )
+        return False
+
+    @staticmethod
     def _attacks_prevalidated_square_with_view(
         piece: Piece,
         source: Square5D,
@@ -66,24 +138,7 @@ class RoyalRules:
         view: MultiverseBoardView,
     ) -> bool:
         """Attack geometry/path after caller has validated source and target."""
-        try:
-            vector = source.vector_to(target)
-        except ValueError:
-            return False
-
-        if piece.piece_type == PieceType.PAWN:
-            # Pawn attack geometry is independent of first-move state.
-            return PawnRules.is_valid_vector(
-                piece.color,
-                vector,
-                capture=True,
-                unmoved=False,
-            )
-
-        try:
-            if not PieceMovementRules.is_valid(piece.piece_type, vector):
-                return False
-        except (ValueError, NotImplementedError):
+        if not RoyalRules._attack_geometry_matches(piece, source, target):
             return False
 
         if PieceMovementRules.is_slider(piece.piece_type):
