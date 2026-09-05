@@ -299,7 +299,8 @@ class _BudgetTracker:
         self.explored_actions = 0
         self.termination_reason: str | None = None
 
-    def check(self, depth: int) -> bool:
+    def check_time(self) -> bool:
+        """Stop immediately when the wall-clock budget has expired."""
         if self.termination_reason is not None:
             return True
         if (
@@ -307,6 +308,11 @@ class _BudgetTracker:
             and time.monotonic() - self.started_at >= self.budget.max_seconds
         ):
             self.termination_reason = "time_budget"
+            return True
+        return False
+
+    def check(self, depth: int) -> bool:
+        if self.check_time():
             return True
         if (
             self.budget.max_move_depth is not None
@@ -464,6 +470,14 @@ class ActionPlanner:
         tracker: _BudgetTracker,
         candidates: list[tuple[MoveSpec, ...]],
     ) -> None:
+        # Time is the only budget that must gate even completion checks.  This
+        # prevents entering a potentially expensive canonical submit query after
+        # the wall deadline has already elapsed.  Depth/state/action limits are
+        # still checked after completion so a witness exactly on those bounds is
+        # accepted as before.
+        if tracker.check_time():
+            return
+
         action = state._ensure_current_action()
         required = set(ActionRules.required_boards(
             action,
@@ -471,14 +485,14 @@ class ActionPlanner:
         ))
 
         # A non-empty required set proves that The Present still belongs to the
-        # acting color, so ActionRules.can_submit() must be false.  Avoid the
-        # redundant Present query on those nodes; once no board is required we
-        # still delegate the decisive royal-safety check to the canonical API.
-        # Completion is checked before the budget so a witness exactly at the
-        # configured depth is still accepted.  A submit-capable state is also
-        # allowed to continue through optional boards: callers may deliberately
-        # include those moves before the one final submission.
+        # acting color, so ActionRules.can_submit() must be false.  Once no board
+        # is required we delegate the decisive royal-safety check to the
+        # canonical API, then re-check time before accepting the witness.  A
+        # query that began inside the deadline but returned after it is therefore
+        # inconclusive rather than silently accepted late.
         if not required and state.can_submit_action():
+            if tracker.check_time():
+                return
             candidates.append(path)
             tracker.explored_actions += 1
             if (
