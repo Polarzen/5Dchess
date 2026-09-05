@@ -1,0 +1,33 @@
+name: TEMP Replay Metadata Validation
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile targets
+        run: python -m py_compile src/engine/action_search.py tests/test_action_search_replay_metadata.py
+      - name: Run focused regressions
+        run: >-
+          python -m pytest -q
+          tests/test_action_search_simulation_clone.py
+          tests/test_action_search_replay_metadata.py
+          tests/test_checkmate_stalemate.py
+          tests/test_replay_storage_v2.py
+          tests/test_web_5d_interaction.py
