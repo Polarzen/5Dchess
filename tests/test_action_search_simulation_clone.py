@@ -139,7 +139,9 @@ def _branching_engine() -> FiveDEngine:
 
 
 def _multi_required_engine() -> FiveDEngine:
-    first = _timeline(
+    # Three active Present boards force every legal Action witness to use at
+    # least two Moves: one Move can advance at most two required boards.
+    main = _timeline(
         0,
         _position(
             0,
@@ -149,7 +151,7 @@ def _multi_required_engine() -> FiveDEngine:
             unmoved_pawns={(4, 6)},
         ),
     )
-    second = _timeline(
+    white_lane = _timeline(
         1,
         _position(
             1,
@@ -160,7 +162,18 @@ def _multi_required_engine() -> FiveDEngine:
         ),
         owner=ChessColor.WHITE,
     )
-    return _engine_with_timelines([first, second])
+    black_lane = _timeline(
+        -1,
+        _position(
+            -1,
+            0,
+            ChessColor.WHITE,
+            (4, 6, "P"),
+            unmoved_pawns={(4, 6)},
+        ),
+        owner=ChessColor.BLACK,
+    )
+    return _engine_with_timelines([black_lane, main, white_lane])
 
 
 def _terminal_engine(*, stalemate: bool) -> FiveDEngine:
@@ -303,7 +316,8 @@ def test_partial_completion_matches_deepcopy_oracle_and_keeps_source_unchanged()
 
 def test_search_move_siblings_start_from_same_unmodified_parent():
     engine = _branching_engine()
-    position = engine.timeline_manager.get_timeline(0).latest_position
+    timeline = engine.timeline_manager.get_timeline(0)
+    position = timeline.get_position(timeline.latest_time)
     moves = engine.get_legal_moves(position)
     branching = next(move for move in moves if move.is_branching)
     ordinary = next(move for move in moves if not move.is_branching)
