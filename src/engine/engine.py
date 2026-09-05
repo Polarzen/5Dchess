@@ -208,6 +208,33 @@ class FiveDEngine:
         pseudo_moves = generator.generate_all()
         return validator.filter_legal_moves(position, pseudo_moves)
 
+    def get_legal_moves_from_square(
+        self,
+        position: Position,
+        x: int,
+        y: int,
+    ) -> list[Move]:
+        """Return the canonical legal-Move subset for one source square.
+
+        The same MoveGenerator and MoveValidator are used as ``get_legal_moves``;
+        only unrelated source pieces are skipped before validation.
+        """
+        if self.game_state != GameState.PLAYING:
+            return []
+
+        action = self._ensure_current_action()
+        coord = self._coord_for_position(position)
+        if coord not in ActionRules.movable_boards(
+            action,
+            self.timeline_manager.timelines,
+        ):
+            return []
+
+        generator = MoveGenerator(position, self.timeline_manager.timelines)
+        validator = MoveValidator(self.timeline_manager.timelines)
+        pseudo_moves = generator.generate_from_square(x, y)
+        return validator.filter_legal_moves(position, pseudo_moves)
+
     def execute_action_move(self, move: Move) -> bool:
         """Execute one Move inside the current player's Action without submitting.
 
