@@ -1,0 +1,53 @@
+name: TEMP Profile attribution readout
+
+on:
+  push:
+    branches: [feat/local-ai-training-v2]
+    paths:
+      - .github/workflows/temp-profile-readout.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  readout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: temp-arena-outcome-profile-33952173118
+          path: profile
+          repository: ${{ github.repository }}
+          run-id: "33952173118"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Print targeted profile evidence
+        run: |
+          python - <<'PY'
+          import pstats
+          from pathlib import Path
+          path = Path('profile/arena-5s.pstats')
+          patterns = [
+              'submit_action',
+              '_check_multiverse_game_result',
+              '_evaluate_multiverse_game_result',
+              'apply_action_plan',
+              '_apply_specs_once',
+              'resolve_move_spec',
+              'encode_candidates',
+              'encode_action',
+              'filter_legal_moves',
+          ]
+          stats = pstats.Stats(str(path)).strip_dirs().sort_stats('cumulative')
+          print('=== TARGETED FUNCTIONS ===')
+          for pattern in patterns:
+              print(f'--- {pattern} ---')
+              stats.print_stats(pattern)
+          print('=== POSITION.COPY CALLERS ===')
+          stats.print_callers('board.py:127(copy)')
+          print('=== ENCODE_ACTION CALLERS ===')
+          stats.print_callers('encoding.py:250(encode_action)')
+          print('=== ACTION PLANNER DEEPCOPY SOURCE CONTEXT ALREADY IN PROFILE ===')
+          stats.print_callers('deepcopy')
+          PY
