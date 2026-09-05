@@ -5,7 +5,11 @@ on:
     branches: [feat/local-ai-training-v2]
     paths:
       - .github/workflows/arena-checkpoint-diagnostic-temp.yml
+      - src/ai/action_planner.py
+      - src/engine/engine.py
+      - src/engine/move_generator.py
       - src/engine/royal_rules.py
+      - tests/test_action_plan_submission_efficiency.py
       - tests/test_royal_rules.py
 
 permissions:
@@ -18,7 +22,7 @@ concurrency:
 
 jobs:
   profile-planner:
-    name: Profile one-game Arena royal hot path
+    name: Profile one-game Arena planner hot paths
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -82,21 +86,25 @@ jobs:
           root = Path('_work/profile')
           stats_path = root / 'arena-5s.pstats'
           with (root / 'profile-cumulative.txt').open('w', encoding='utf-8') as fh:
-              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats(120)
+              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats(140)
           with (root / 'profile-tottime.txt').open('w', encoding='utf-8') as fh:
-              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('tottime').print_stats(120)
+              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('tottime').print_stats(140)
           with (root / 'profile-royal.txt').open('w', encoding='utf-8') as fh:
               pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats('royal_rules')
           with (root / 'profile-action.txt').open('w', encoding='utf-8') as fh:
               pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats('action_planner')
+          with (root / 'profile-engine.txt').open('w', encoding='utf-8') as fh:
+              pstats.Stats(str(stats_path), stream=fh).strip_dirs().sort_stats('cumulative').print_stats('engine.py')
           PY
 
-          echo '=== RoyalRules ==='
-          cat _work/profile/profile-royal.txt
           echo '=== ActionPlanner ==='
           cat _work/profile/profile-action.txt
+          echo '=== Engine ==='
+          cat _work/profile/profile-engine.txt
+          echo '=== RoyalRules ==='
+          cat _work/profile/profile-royal.txt
           echo '=== Top cumulative ==='
-          head -n 90 _work/profile/profile-cumulative.txt
+          head -n 110 _work/profile/profile-cumulative.txt
           echo '=== Arena result ==='
           cat _work/profile/arena-result.json || true
 
