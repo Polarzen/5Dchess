@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   profile-planner:
-    name: Profile Arena planner safety bottleneck
+    name: Profile Arena planner after royal endpoint reuse
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
