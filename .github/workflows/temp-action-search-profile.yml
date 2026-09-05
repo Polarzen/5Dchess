@@ -1,0 +1,106 @@
+name: TEMP ActionSearch Profile
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+      - uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-33347901504
+          path: _work/checkpoint
+          repository: Polarzen/5Dchess
+          run-id: '33347901504'
+          github-token: ${{ github.token }}
+      - name: Run exact Arena profile
+        run: |
+          mkdir -p _work/profile
+          python -m cProfile -o _work/profile/action-search.pstats -m src.training.arena \
+            --checkpoint _work/checkpoint/best \
+            --opponent easy \
+            --games 1 \
+            --planner-seconds 5.0 \
+            --planner-actions 24 \
+            --planner-states 256 \
+            --planner-moves 32 \
+            --device cpu \
+            --seed 42 \
+            --max-actions 40 \
+            --max-wall-seconds 300 \
+            --output json \
+            --result-json _work/profile/result.json
+      - name: Print targeted profile evidence
+        run: |
+          python - <<'PY'
+          import pstats
+          from pathlib import Path
+
+          path = '_work/profile/action-search.pstats'
+          stats = pstats.Stats(path).strip_dirs().sort_stats('cumulative')
+          print('=== RESULT ===')
+          print(Path('_work/profile/result.json').read_text())
+          print('=== TOTAL/TOP 30 CUMULATIVE ===')
+          stats.print_stats(30)
+          print('=== TARGETS ===')
+          for pattern in [
+              'find_legal_action', 'find_legal_completion', 'action_search.py',
+              'clone_for_simulation', '_clone_timeline_mapping_for_simulation',
+              'deepcopy', 'evaluate', 'apply_action_plan', 'action_planner.py',
+              'encode_candidates', 'encode_action', 'resolve_move_spec',
+              'filter_legal_moves', 'can_submit', 'is_action_safe', 'board.py',
+          ]:
+              print('---', pattern, '---')
+              stats.print_stats(pattern)
+          print('=== RAW DEEPCOPY CALLERS ===')
+          for key, value in stats.stats.items():
+              if key[0].endswith('copy.py') and key[2] == 'deepcopy':
+                  print('DEEPCOPY', key, value[:4])
+                  for caller, contribution in sorted(
+                      value[4].items(), key=lambda item: item[1][-1], reverse=True
+                  ):
+                      if not caller[0].endswith('copy.py'):
+                          print('CALLER', caller, contribution)
+          print('=== RAW CLONE CALLERS ===')
+          for key, value in stats.stats.items():
+              if key[0].endswith('engine.py') and key[2] == 'clone_for_simulation':
+                  print('CLONE', key, value[:4])
+                  for caller, contribution in sorted(
+                      value[4].items(), key=lambda item: item[1][-1], reverse=True
+                  ):
+                      print('CALLER', caller, contribution)
+          print('=== POSITION COPY CALLERS ===')
+          for key, value in stats.stats.items():
+              if key[0].endswith('board.py') and key[2] == 'copy':
+                  print('POSITION_COPY', key, value[:4])
+                  for caller, contribution in sorted(
+                      value[4].items(), key=lambda item: item[1][-1], reverse=True
+                  ):
+                      print('CALLER', caller, contribution)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: temp-action-search-profile-${{ github.run_id }}
+          path: _work/profile
+          retention-days: 3
