@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   profile-planner:
-    name: Profile one-game Arena royal hot path
+    name: Profile five-game Arena royal hot path
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -50,7 +50,7 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Profile one-game 5s Arena through action 60
+      - name: Profile five-game 5s Arena through action 120
         shell: bash
         run: |
           set +e
@@ -58,15 +58,15 @@ jobs:
           python -m cProfile -o _work/profile/arena-5s.pstats -m src.training.arena \
             --checkpoint _work/checkpoint/best \
             --opponent easy \
-            --games 1 \
+            --games 5 \
             --planner-seconds 5.0 \
             --planner-actions 24 \
             --planner-states 256 \
             --planner-moves 32 \
             --device cpu \
             --seed 42 \
-            --max-actions 60 \
-            --max-wall-seconds 600 \
+            --max-actions 120 \
+            --max-wall-seconds 1200 \
             --output json \
             --result-json _work/profile/arena-result.json \
             > _work/profile/arena-stdout.txt 2>&1
