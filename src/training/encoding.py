@@ -1,7 +1,6 @@
 """Deterministic bounded encoders for canonical multiverse states and Actions."""
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -266,7 +265,7 @@ def encode_action(
         dtype=np.float32,
     )
     move_mask = np.zeros((config.max_moves_per_action,), dtype=np.bool_)
-    clone = deepcopy(engine)
+    clone = engine.clone_for_simulation()
     has_branching = False
     has_cross = False
     for index, spec in enumerate(specs):
