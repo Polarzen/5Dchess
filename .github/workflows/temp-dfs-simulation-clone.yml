@@ -1,0 +1,55 @@
+name: TEMP Planner simulation clone validation
+
+on:
+  push:
+    branches: [feat/local-ai-training-v2]
+    paths:
+      - .github/workflows/temp-dfs-simulation-clone.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/local-ai-training-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt
+      - name: Patch planner clone sites
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/ai/action_planner.py')
+          s = p.read_text(encoding='utf-8')
+          root = '        state = deepcopy(engine)\n'
+          child = '                child = deepcopy(state)\n'
+          assert s.count(root) == 1
+          assert s.count(child) == 2
+          s = s.replace(root, '        state = engine.clone_for_simulation()\n', 1)
+          s = s.replace(child, '                child = state.clone_for_simulation()\n')
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Run planner oracle regressions
+        run: |
+          python -m compileall -q src
+          pytest -q \
+            tests/test_action_planner_simulation_clone.py \
+            tests/test_engine_simulation_clone.py \
+            tests/training/test_encoding_clone_equivalence.py \
+            tests/test_ai_action_planning.py \
+            tests/test_action_planner_wall_budget.py \
+            tests/test_action_plan_submission_efficiency.py
+      - name: Commit validated planner optimization
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ai/action_planner.py
+          git commit -m "perf(ai): use simulation clone in action search"
+          git push origin HEAD:feat/local-ai-training-v2
