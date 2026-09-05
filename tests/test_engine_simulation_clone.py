@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 from src.ai.action_planner import MoveSpec, engine_state_signature, resolve_move_spec
+from src.data.archive import GameArchive
 from src.engine.action import ActionRules
 from src.engine.board import Position
 from src.engine.engine import FiveDEngine
@@ -147,6 +148,22 @@ def test_simulation_clone_branching_matches_deepcopy():
     assert clone.timeline_manager._next_positive_id == 2
     assert clone.timeline_manager.get_timeline(1) is not None
     assert clone.can_submit_action() == legacy.can_submit_action()
+
+
+def test_simulation_clone_accepts_but_drops_archive_only_replay_origin():
+    engine = FiveDEngine()
+    origin = GameArchive.set_replay_origin(engine)
+    before = deepcopy(origin)
+
+    clone = engine.clone_for_simulation()
+
+    # Replay origin is storage-only metadata: canonical move/search simulation
+    # never reads it, so carrying the potentially large mutable JSON snapshot
+    # into every child clone would add aliasing/copy cost with no rule benefit.
+    assert not hasattr(clone, "_replay_origin")
+    assert engine._replay_origin == before
+    assert engine._replay_origin is origin
+    assert engine_state_signature(clone) == engine_state_signature(engine)
 
 
 def test_simulation_clone_fails_closed_on_unknown_dynamic_state():
