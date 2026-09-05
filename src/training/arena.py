@@ -213,6 +213,40 @@ def _candidate_stats(values: Sequence[int]) -> dict[str, int | float]:
     }
 
 
+def _normalize_model_color(value: str) -> str:
+    normalized = str(value).lower().strip()
+    if normalized not in {"white", "black", "alternate"}:
+        raise ValueError("model_color must be white, black, or alternate")
+    return normalized
+
+
+def _neural_color_for_game(model_color: str, game_index: int) -> ChessColor:
+    normalized = _normalize_model_color(model_color)
+    if normalized == "white":
+        return ChessColor.WHITE
+    if normalized == "black":
+        return ChessColor.BLACK
+    return ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
+
+
+def _normalize_game_seeds(
+    game_seeds: Sequence[int] | None,
+    *,
+    games: int,
+) -> tuple[int, ...] | None:
+    if game_seeds is None:
+        return None
+    values = tuple(game_seeds)
+    if len(values) != games:
+        raise ValueError("game_seeds length must equal games")
+    normalized: list[int] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("game_seeds must contain integers")
+        normalized.append(int(value))
+    return tuple(normalized)
+
+
 def _baseline(name: str, color: ChessColor, seed: int, budget: ActionSearchBudget):
     if name == "easy":
         return RandomAI(color, seed=seed, budget=budget)
@@ -253,6 +287,8 @@ def evaluate_arena(
     budget: ActionSearchBudget | None = None,
     max_wall_seconds: float | None = None,
     output: str = "text",
+    model_color: str = "alternate",
+    game_seeds: Sequence[int] | None = None,
 ) -> dict:
     if isinstance(games, bool) or not isinstance(games, int) or games < 1:
         raise ValueError("games must be at least 1")
@@ -266,6 +302,8 @@ def evaluate_arena(
     output = str(output).lower()
     if output not in {"text", "json"}:
         raise ValueError("output must be text or JSON")
+    model_color = _normalize_model_color(model_color)
+    explicit_game_seeds = _normalize_game_seeds(game_seeds, games=games)
     if budget is None:
         budget = ActionSearchBudget(
             max_states=256,
@@ -285,8 +323,9 @@ def evaluate_arena(
             max_seconds=planner_seconds,
         )
     quiet = output == "json"
-    # NumPy requires an unsigned seed; cloud workflow inputs intentionally
-    # allow signed decimal values.
+    # Preserve the historical Arena seed semantics when no explicit per-game
+    # schedule is supplied. Benchmark callers can provide game_seeds to reseed
+    # Python/NumPy/Torch and Easy's local RNG to the exact same per-game value.
     seed_everything(int(seed) % (2**32))
     device = resolve_device(device_name)
     if not quiet:
@@ -314,7 +353,12 @@ def evaluate_arena(
         ):
             budget_terminations += 1
             break
-        neural_color = ChessColor.WHITE if game_index % 2 == 0 else ChessColor.BLACK
+        neural_color = _neural_color_for_game(model_color, game_index)
+        if explicit_game_seeds is None:
+            baseline_seed = int(seed) + game_index + 1
+        else:
+            baseline_seed = explicit_game_seeds[game_index]
+            seed_everything(baseline_seed % (2**32))
         engine = FiveDEngine()
         neural = NeuralPolicyValueAgent(
             model,
@@ -325,7 +369,7 @@ def evaluate_arena(
         baseline = _baseline(
             opponent,
             neural_color.opposite(),
-            seed + game_index + 1,
+            baseline_seed,
             budget,
         )
         completed_actions = 0
@@ -416,7 +460,7 @@ def evaluate_arena(
         if not quiet:
             print(
                 f"arena game {game_index + 1}/{games}: neural={neural_color.value} "
-                f"actions={completed_actions} state={engine.game_state.name}"
+                f"seed={baseline_seed} actions={completed_actions} state={engine.game_state.name}"
             )
 
     total = games_played
@@ -457,11 +501,19 @@ def evaluate_arena(
                 if neural_stats["observations"]
                 else 0.0
             ),
+            "samples": {
+                "all_actions": [int(value) for value in all_candidate_counts],
+                "neural_actions": [int(value) for value in neural_candidate_counts],
+            },
         },
         "checkpoint_epoch": metadata.get("epoch"),
         "games_requested": games,
         "candidate_limit": budget.max_actions,
         "planner_budget_seconds": budget.max_seconds,
+        "model_color_mode": model_color,
+        "explicit_game_seeds": (
+            list(explicit_game_seeds) if explicit_game_seeds is not None else None
+        ),
     }
     if not quiet:
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -475,6 +527,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--games", type=int, default=20)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--seed", type=int, default=100)
+    parser.add_argument(
+        "--model-color",
+        choices=["white", "black", "alternate"],
+        default="alternate",
+        help="neural side; alternate preserves the historical game-index behavior",
+    )
     parser.add_argument("--max-actions", type=int, default=120)
     parser.add_argument("--planner-states", type=int, default=256)
     parser.add_argument(
@@ -518,6 +576,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         max_wall_seconds=args.max_wall_seconds,
         output=args.output,
+        model_color=args.model_color,
     )
     if str(args.output).lower() == "json":
         print(json.dumps(result, indent=2, sort_keys=True))
