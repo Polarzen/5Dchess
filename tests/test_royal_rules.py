@@ -4,13 +4,16 @@ from src.engine import (
     Action,
     ActionRules,
     BoardCoord,
+    PawnRules,
+    Piece,
+    PieceMovementRules,
     Position,
     RoyalRules,
     Square5D,
     Timeline,
     TimelineRules,
 )
-from src.utils.constants import ChessColor
+from src.utils.constants import ChessColor, PieceType
 
 
 def _position(timeline_id: int, time_point: int, *pieces):
@@ -230,3 +233,40 @@ def test_action_safety_boolean_short_circuits_after_first_threat(monkeypatch):
 
     assert not rules.is_action_safe(ChessColor.WHITE)
     assert calls == 1
+
+
+def test_fast_royal_geometry_matches_canonical_vector_rules():
+    """The allocation-free hot-path predicate must remain rule-equivalent."""
+    piece_types = (
+        PieceType.ROOK,
+        PieceType.BISHOP,
+        PieceType.QUEEN,
+        PieceType.KING,
+        PieceType.KNIGHT,
+        PieceType.PAWN,
+    )
+
+    for color in (ChessColor.WHITE, ChessColor.BLACK):
+        source = Square5D(BoardCoord(0, 3, color), 3, 3)
+        for piece_type in piece_types:
+            piece = Piece(piece_type, color)
+            for timeline in range(-3, 4):
+                for turn in range(0, 7):
+                    for x in range(8):
+                        for y in range(8):
+                            target = Square5D(BoardCoord(timeline, turn, color), x, y)
+                            vector = source.vector_to(target)
+                            if piece_type == PieceType.PAWN:
+                                expected = PawnRules.is_valid_vector(
+                                    color,
+                                    vector,
+                                    capture=True,
+                                    unmoved=False,
+                                )
+                            else:
+                                expected = PieceMovementRules.is_valid(piece_type, vector)
+                            assert RoyalRules._attack_geometry_matches(
+                                piece,
+                                source,
+                                target,
+                            ) is expected
