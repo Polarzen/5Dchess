@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import pytest
 
+import src.engine.action_search as action_search_module
 from src.ai.action_planner import engine_state_signature
 from src.data.archive import GameArchive
 from src.engine.action_search import ActionSearch
@@ -53,3 +54,33 @@ def test_replay_origin_does_not_mask_other_unknown_dynamic_engine_state():
 
     with pytest.raises(RuntimeError, match="unmodeled_mutable_state"):
         ActionSearch(**_limits()).find_legal_action(engine)
+
+
+def test_canonical_action_search_fast_path_never_uses_generic_deepcopy(monkeypatch):
+    engine = FiveDEngine()
+
+    def forbidden_deepcopy(*args, **kwargs):
+        raise AssertionError("canonical ActionSearch must use clone_for_simulation")
+
+    monkeypatch.setattr(action_search_module, "deepcopy", forbidden_deepcopy)
+    result = ActionSearch(**_limits()).find_legal_action(engine)
+
+    assert result.has_legal_action
+
+
+def test_replay_origin_uses_one_conservative_root_deepcopy_only(monkeypatch):
+    engine = FiveDEngine()
+    GameArchive.set_replay_origin(engine)
+    original = action_search_module.deepcopy
+    calls = 0
+
+    def counting_deepcopy(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(action_search_module, "deepcopy", counting_deepcopy)
+    result = ActionSearch(**_limits()).find_legal_action(engine)
+
+    assert result.has_legal_action
+    assert calls == 1
