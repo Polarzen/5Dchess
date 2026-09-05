@@ -644,6 +644,8 @@ def _verify_plan_start(engine: "FiveDEngine", plan: AIActionPlan) -> None:
 def _apply_specs_once(
     engine: "FiveDEngine",
     plan: AIActionPlan,
+    *,
+    evaluate_outcome: bool = True,
 ) -> tuple[Move, ...]:
     applied: list[Move] = []
     for index, spec in enumerate(plan.moves):
@@ -661,7 +663,7 @@ def _apply_specs_once(
     # already performs the full ActionRules.can_submit / royal-safety check.
     # Calling ``can_submit_action`` immediately before it duplicates that exact
     # validation on both the probe and live replay paths.
-    if not engine.submit_action():
+    if not engine.submit_action(evaluate_outcome=evaluate_outcome):
         raise ActionApplicationError("plan does not reach a submit-capable Action")
     return tuple(applied)
 
@@ -678,14 +680,27 @@ def apply_action_plan(engine: "FiveDEngine", plan: AIActionPlan) -> tuple[Move, 
 
     probe = deepcopy(engine)
     try:
-        _apply_specs_once(probe, plan)
+        # Validate every Move and canonical ActionRules.submit() on the isolated
+        # engine, but do not run the expensive global outcome search inside
+        # submit_action. Evaluate that post-submit state exactly once afterwards
+        # so any evaluation exception is still discovered before live mutation.
+        _apply_specs_once(probe, plan, evaluate_outcome=False)
+        outcome, rule_warning = probe._evaluate_multiverse_game_result()
     except InvalidActionPlanError:
         raise
     except (ValueError, RuntimeError) as exc:
         raise ActionApplicationError(f"plan validation failed: {exc}") from exc
 
     try:
-        return _apply_specs_once(engine, plan)
+        # Replay through the same canonical Move/Action submission path. The
+        # already-validated outcome is then applied on the live engine without
+        # repeating ActionSearch. Normal submit_action() callers remain unchanged.
+        applied = _apply_specs_once(engine, plan, evaluate_outcome=False)
+        engine._check_multiverse_game_result(
+            precomputed_outcome=outcome,
+            rule_warning=rule_warning,
+        )
+        return applied
     except InvalidActionPlanError:
         raise
     except (ValueError, RuntimeError) as exc:

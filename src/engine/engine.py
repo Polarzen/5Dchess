@@ -21,6 +21,9 @@ from src.engine.timeline_rules import PresentState, TimelineRules
 from src.engine.rules import RulesEngine
 
 
+_OUTCOME_UNSET = object()
+
+
 @dataclass
 class FiveDEngine:
     """5D国际象棋核心引擎。"""
@@ -279,8 +282,14 @@ class FiveDEngine:
             return self.submit_action()
         return True
 
-    def submit_action(self) -> bool:
-        """Finalize a royal-safe Action, then evaluate the opponent's full turn."""
+    def submit_action(self, *, evaluate_outcome: bool = True) -> bool:
+        """Finalize a royal-safe Action and, by default, evaluate the outcome.
+
+        ``evaluate_outcome=False`` is an internal transaction hook used only
+        when a caller has isolated the submitted state and will apply a
+        separately validated outcome. Canonical Action submission is never
+        skipped.
+        """
         if self.game_state != GameState.PLAYING:
             return False
 
@@ -296,8 +305,11 @@ class FiveDEngine:
         )
 
         # Checkmate/stalemate is global: after every submitted Action, determine
-        # whether the next player has at least one complete legal Action.
-        self._check_multiverse_game_result()
+        # whether the next player has at least one complete legal Action. The
+        # default public behavior is unchanged; the false branch is reserved for
+        # an isolated caller that already owns outcome-validation evidence.
+        if evaluate_outcome:
+            self._check_multiverse_game_result()
         return True
 
     def _execute_state_move(self, move: Move) -> Move | None:
@@ -481,9 +493,30 @@ class FiveDEngine:
                 if source.x == 0 and source.y == 0:
                     rights["black_queenside"] = False
 
-    def _check_multiverse_game_result(self) -> None:
-        """Update terminal state from complete Action-level 5D rules."""
+    def _evaluate_multiverse_game_result(self):
+        """Evaluate terminal state without applying it to ``game_state``."""
         outcome = OutcomeRules.evaluate(self, self.current_turn_color)
+        return outcome, getattr(self, "rule_warning", None)
+
+    def _check_multiverse_game_result(
+        self,
+        *,
+        precomputed_outcome=_OUTCOME_UNSET,
+        rule_warning: str | None = None,
+    ) -> None:
+        """Update terminal state from complete Action-level 5D rules.
+
+        Supplying ``precomputed_outcome`` applies outcome evidence produced from
+        an isolated but canonically submitted equivalent state. This avoids
+        repeating the expensive ActionSearch while keeping the normal no-argument
+        submission path unchanged.
+        """
+        if precomputed_outcome is _OUTCOME_UNSET:
+            outcome, _ = self._evaluate_multiverse_game_result()
+        else:
+            outcome = precomputed_outcome
+            setattr(self, "rule_warning", rule_warning)
+
         if outcome is None:
             return
 
