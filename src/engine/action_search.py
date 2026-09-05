@@ -13,7 +13,6 @@ checkmate/stalemate result.
 """
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 import time
 from typing import TYPE_CHECKING
@@ -130,10 +129,12 @@ class ActionSearch:
     ) -> ActionSearchResult:
         """Search from the start of ``color``'s Action.
 
-        ``engine`` is deep-copied.  Move history, UI selection and the caller's
-        real Timeline objects therefore remain untouched.
+        ``engine`` is cloned with the engine's explicit simulation-isolation
+        contract.  Move history, branch allocation, Action state, UI selection
+        and the caller's real Timeline/Position objects therefore remain
+        untouched while canonical engine execution is preserved.
         """
-        state = deepcopy(engine)
+        state = engine.clone_for_simulation()
         state.game_state = GameState.PLAYING
         if color is None:
             color = state.current_turn_color
@@ -158,7 +159,7 @@ class ActionSearch:
         engine: "FiveDEngine",
     ) -> ActionSearchResult:
         """Search from the caller's current partially-built Action."""
-        state = deepcopy(engine)
+        state = engine.clone_for_simulation()
         state.game_state = GameState.PLAYING
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
@@ -208,7 +209,7 @@ class ActionSearch:
         """Execute one canonical Move on an isolated child and continue DFS."""
         if self._termination_reason is not None:
             return None
-        child = deepcopy(state)
+        child = state.clone_for_simulation()
         if not child.execute_action_move(move):
             return None
         return self._dfs(child, depth=depth + 1)
