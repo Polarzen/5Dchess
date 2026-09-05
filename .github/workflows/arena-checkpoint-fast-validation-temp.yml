@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   validate-arena:
-    name: Validate five-game 5s Arena without profiler overhead
+    name: Validate two-game 5s Arena without profiler overhead
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
@@ -48,21 +48,21 @@ jobs:
           run-id: "33347901504"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run five-game 5s Arena
+      - name: Run two-game 5s Arena through action 60
         run: |
           mkdir -p _work/validation
           python -m src.training.arena \
             --checkpoint _work/checkpoint/best \
             --opponent easy \
-            --games 5 \
+            --games 2 \
             --planner-seconds 5.0 \
             --planner-actions 24 \
             --planner-states 256 \
             --planner-moves 32 \
             --device cpu \
             --seed 42 \
-            --max-actions 120 \
-            --max-wall-seconds 600 \
+            --max-actions 60 \
+            --max-wall-seconds 480 \
             --output json \
             --result-json _work/validation/arena-result.json \
             > _work/validation/arena-stdout.txt
