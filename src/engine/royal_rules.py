@@ -139,7 +139,30 @@ class RoyalRules:
 
         by_color = color.opposite()
         view = MultiverseBoardView(timelines)
-        kings = cls._king_squares_in(timelines, color)
+
+        # An attacker and its target must live on boards whose side-to-move is
+        # the attacker's color.  Pre-filter and validate those King instances
+        # once instead of repeating the same side/lookup checks for every
+        # attacker × historical-King pair.  This changes only enumeration work;
+        # the canonical attack predicate still decides every capture relation.
+        kings: list[Square5D] = []
+        for king in cls._king_squares_in(timelines, color):
+            if king.side != by_color:
+                continue
+            target_position = view.resolve(king.board)
+            if target_position is None:
+                continue
+            king_piece = target_position.get_piece(king.x, king.y)
+            if (
+                king_piece is None
+                or king_piece.color != color
+                or king_piece.piece_type != PieceType.KING
+            ):
+                continue
+            kings.append(king)
+
+        if not kings:
+            return
 
         # Playable boards on inactive timelines are included deliberately: they
         # are optional moves and therefore can still be used to capture a King.
@@ -147,18 +170,6 @@ class RoyalRules:
             for x, y, piece in board.position.get_all_pieces(by_color):
                 source = Square5D(board.coord, x, y)
                 for king in kings:
-                    if king.side != by_color:
-                        continue
-                    target_position = view.resolve(king.board)
-                    if target_position is None:
-                        continue
-                    king_piece = target_position.get_piece(king.x, king.y)
-                    if (
-                        king_piece is None
-                        or king_piece.color != color
-                        or king_piece.piece_type != PieceType.KING
-                    ):
-                        continue
                     if cls._attacks_square_with_view(piece, source, king, view):
                         yield RoyalThreat(piece, source, king)
 
