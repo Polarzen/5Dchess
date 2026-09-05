@@ -13,6 +13,7 @@ checkmate/stalemate result.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import time
 from typing import TYPE_CHECKING
@@ -28,6 +29,26 @@ if TYPE_CHECKING:
 DEFAULT_ACTION_SEARCH_MAX_STATES = 4096
 DEFAULT_ACTION_SEARCH_MAX_DEPTH = 64
 DEFAULT_ACTION_SEARCH_MAX_SECONDS = 3.0
+
+
+def _clone_state_for_action_search(engine: "FiveDEngine") -> "FiveDEngine":
+    """Clone canonical search state while respecting archive-only metadata.
+
+    ``GameArchive`` may attach ``_replay_origin`` dynamically.  That JSON
+    snapshot is storage/replay metadata rather than rule state, but the engine's
+    simulation clone deliberately fails closed on unknown dynamic attributes.
+    For such archive-decorated roots, preserve the legacy behavior once via a
+    conservative deepcopy, remove only the known archive-only marker on that
+    isolated copy, then enter the normal validated simulation-clone contract.
+    Descendants therefore use the fast clone without weakening the engine's
+    fail-closed handling for any other dynamic state.
+    """
+    if not hasattr(engine, "_replay_origin"):
+        return engine.clone_for_simulation()
+
+    sanitized = deepcopy(engine)
+    delattr(sanitized, "_replay_origin")
+    return sanitized.clone_for_simulation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,12 +150,12 @@ class ActionSearch:
     ) -> ActionSearchResult:
         """Search from the start of ``color``'s Action.
 
-        ``engine`` is cloned with the engine's explicit simulation-isolation
-        contract.  Move history, branch allocation, Action state, UI selection
-        and the caller's real Timeline/Position objects therefore remain
-        untouched while canonical engine execution is preserved.
+        Canonical engine state is isolated through the explicit simulation clone
+        contract. Archive-decorated engines use one conservative compatibility
+        copy before entering that contract; replay metadata never participates in
+        the search itself.
         """
-        state = engine.clone_for_simulation()
+        state = _clone_state_for_action_search(engine)
         state.game_state = GameState.PLAYING
         if color is None:
             color = state.current_turn_color
@@ -159,7 +180,7 @@ class ActionSearch:
         engine: "FiveDEngine",
     ) -> ActionSearchResult:
         """Search from the caller's current partially-built Action."""
-        state = engine.clone_for_simulation()
+        state = _clone_state_for_action_search(engine)
         state.game_state = GameState.PLAYING
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
@@ -209,7 +230,7 @@ class ActionSearch:
         """Execute one canonical Move on an isolated child and continue DFS."""
         if self._termination_reason is not None:
             return None
-        child = state.clone_for_simulation()
+        child = _clone_state_for_action_search(state)
         if not child.execute_action_move(move):
             return None
         return self._dfs(child, depth=depth + 1)
