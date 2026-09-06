@@ -1,0 +1,271 @@
+name: TEMP Stage1 Complete 500 Games
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-stage1-complete-500.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  continue_a:
+    name: Continue self-play 194 to 347
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+      - name: Download retained 194-game dataset
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-dataset-34012364504
+          path: _work/dataset
+          repository: ${{ github.repository }}
+          run-id: 34012364504
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate starting dataset
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('_work/dataset/metadata.json')
+          m=json.loads(p.read_text())
+          assert m['game_count'] == 194, m
+          assert m['sample_count'] == 7225, m
+          assert m['dataset_schema_version'] == 1
+          assert m['state_encoding_version'] == 1
+          assert m['action_encoding_version'] == 1
+          assert m['engine_baseline_sha'] == 'e3455901435e5c4dda66e5e141a9915fdfea0dee'
+          assert m['generator_config']['teacher'] == 'mixed'
+          assert m['generator_config']['max_actions'] == 120
+          assert m['generator_config']['planner'] == {'max_states':256,'max_actions':24,'max_move_depth':32,'max_seconds':0.5}
+          print('validated starting dataset:', m['game_count'], m['sample_count'])
+          PY
+      - name: Append 153 games with deterministic continuation seed
+        run: |
+          python -m src.training.selfplay \
+            --games 153 \
+            --teacher mixed \
+            --output _work/dataset \
+            --seed 236 \
+            --max-actions 120 \
+            --planner-states 256 \
+            --planner-actions 24 \
+            --planner-moves 32 \
+            --planner-seconds 0.5 \
+            --max-wall-seconds 18000 \
+            --resume
+      - name: Assert exactly 347 games and record continuation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('_work/dataset/metadata.json')
+          m=json.loads(p.read_text())
+          assert m['game_count'] == 347, m
+          assert m['generation_stop_reason'] == 'completed', m
+          hist=[
+            {'source_run_id':34012364504,'start_game':0,'games':194,'seed':42,'stop_reason':'wall_time_budget'},
+            {'start_game':194,'games':153,'seed':236,'stop_reason':'completed'},
+          ]
+          m['stage1_target_games']=500
+          m['stage1_base_seed']=42
+          m['stage1_continuation_history']=hist
+          m['games_requested']=500
+          m['requested_games']=500
+          m['games_generated']=347
+          m['generated_games']=347
+          p.write_text(json.dumps(m, indent=2, sort_keys=True)+'\n')
+          print('continuation A complete:', m['game_count'], m['sample_count'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage1-dataset-347-${{ github.run_id }}
+          path: _work/dataset
+          retention-days: 7
+          if-no-files-found: error
+
+  continue_b:
+    name: Continue self-play 347 to 500
+    needs: continue_a
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage1-dataset-347-${{ github.run_id }}
+          path: _work/dataset
+      - name: Append final 153 games with deterministic continuation seed
+        run: |
+          python -m src.training.selfplay \
+            --games 153 \
+            --teacher mixed \
+            --output _work/dataset \
+            --seed 389 \
+            --max-actions 120 \
+            --planner-states 256 \
+            --planner-actions 24 \
+            --planner-moves 32 \
+            --planner-seconds 0.5 \
+            --max-wall-seconds 18000 \
+            --resume
+      - name: Assert exactly 500 games and normalize Stage 1 metadata
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('_work/dataset/metadata.json')
+          m=json.loads(p.read_text())
+          assert m['game_count'] == 500, m
+          assert m['generation_stop_reason'] == 'completed', m
+          hist=list(m.get('stage1_continuation_history', []))
+          hist.append({'start_game':347,'games':153,'seed':389,'stop_reason':'completed'})
+          m['stage1_target_games']=500
+          m['stage1_base_seed']=42
+          m['stage1_continuation_history']=hist
+          m['games_requested']=500
+          m['requested_games']=500
+          m['games_generated']=500
+          m['generated_games']=500
+          m['generation_stop_reason']='completed'
+          p.write_text(json.dumps(m, indent=2, sort_keys=True)+'\n')
+          print('final Stage 1 dataset:', m['game_count'], m['sample_count'])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-dataset-stage1-500-${{ github.run_id }}
+          path: _work/dataset
+          retention-days: 7
+          if-no-files-found: error
+
+  train:
+    name: Train 20 epochs on exact 500-game dataset
+    needs: continue_b
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+      - uses: actions/download-artifact@v4
+        with:
+          name: local-ai-dataset-stage1-500-${{ github.run_id }}
+          path: _work/dataset
+      - name: Verify exact dataset before training
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('_work/dataset/metadata.json').read_text())
+          assert m['game_count'] == 500, m
+          assert m['games_generated'] == 500, m
+          assert m['generation_stop_reason'] == 'completed', m
+          assert m['dataset_schema_version'] == 1
+          assert m['state_encoding_version'] == 1
+          assert m['action_encoding_version'] == 1
+          assert len(m.get('stage1_continuation_history', [])) == 3, m
+          print('exact 500-game dataset verified; samples=', m['sample_count'])
+          PY
+      - name: Train canonical small model from scratch
+        run: |
+          python -m src.training.train \
+            --dataset _work/dataset \
+            --output _work/run \
+            --epochs 20 \
+            --batch-size 64 \
+            --preset small \
+            --seed 42 \
+            --device cpu \
+            --num-workers 2 \
+            --save-every 5 \
+            --no-mixed-precision \
+            --max-wall-seconds 19200
+      - name: Validate best and last checkpoints
+        run: |
+          python -m src.training.cloud check-resume --checkpoint _work/run/best --preset small
+          python -m src.training.cloud check-resume --checkpoint _work/run/last --preset small
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-checkpoint-stage1-500-${{ github.run_id }}
+          path: |
+            _work/run/best
+            _work/run/last
+            _work/run/history.jsonl
+            _work/run/run-config.json
+            _work/run/training-summary.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Build Stage 1 recovery report
+        run: |
+          mkdir -p _work/report
+          cp _work/dataset/metadata.json _work/report/dataset-metadata.json
+          cp _work/run/training-summary.json _work/report/training-summary.json
+          cp _work/run/best/metadata.json _work/report/best-metadata.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('_work/report/dataset-metadata.json').read_text())
+          t=json.loads(Path('_work/report/training-summary.json').read_text())
+          b=json.loads(Path('_work/report/best-metadata.json').read_text())
+          out={
+            'stage1_target_games':500,
+            'dataset_games':d['game_count'],
+            'dataset_samples':d['sample_count'],
+            'continuation_history':d['stage1_continuation_history'],
+            'training_seed':42,
+            'preset':'small',
+            'epochs':t['end_epoch'],
+            'global_step':t['global_step'],
+            'best_epoch':t['best_epoch'],
+            'best_validation_loss':t['best_validation_loss'],
+            'checkpoint_metadata':b,
+          }
+          Path('_work/report/stage1-recovery.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage1-recovery-report-${{ github.run_id }}
+          path: _work/report
+          retention-days: 30
+          if-no-files-found: error
