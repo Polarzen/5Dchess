@@ -1,0 +1,39 @@
+name: TEMP Stage1 500 Dispatcher
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-stage1-500-dispatch.yml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Dispatch formal 500-game training workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run local-ai-train.yml \
+            --repo "${{ github.repository }}" \
+            --ref feat/local-ai-training-v2 \
+            -f games=500 \
+            -f teacher=mixed \
+            -f target_epochs=20 \
+            -f batch_size=64 \
+            -f preset=small \
+            -f seed=42 \
+            -f max_actions=120 \
+            -f run_arena=false \
+            -f arena_opponent=easy \
+            -f arena_games=0 \
+            -f arena_planner_seconds=5 \
+            -f retain_dataset=true \
+            -f resume_run_id= \
+            -f resume_artifact=
