@@ -1,0 +1,81 @@
+name: TEMP Planner Budget Gradient
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-planner-gradient.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  gradient:
+    name: Planner ${{ matrix.case.seconds }}s
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - { label: "0p5", seconds: 0.5 }
+          - { label: "1", seconds: 1 }
+          - { label: "2", seconds: 2 }
+          - { label: "5", seconds: 5 }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+
+      - name: Install game and CPU training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+
+      - name: Download trusted checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-33347901504
+          path: _work/checkpoint
+          repository: ${{ github.repository }}
+          run-id: 33347901504
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate checkpoint shape
+        run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
+
+      - name: Run fixed-seed Arena gradient case
+        run: |
+          mkdir -p _work/arena-report
+          python -m src.training.arena \
+            --checkpoint _work/checkpoint/best \
+            --opponent easy \
+            --games 1 \
+            --planner-seconds "${{ matrix.case.seconds }}" \
+            --device cpu \
+            --seed 42 \
+            --max-actions 120 \
+            --max-wall-seconds 1800 \
+            --output json \
+            --result-json _work/arena-report/arena-result.json
+
+      - name: Upload gradient result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: planner-gradient-${{ matrix.case.label }}-${{ github.run_id }}
+          path: _work/arena-report
+          retention-days: 30
+          if-no-files-found: warn
