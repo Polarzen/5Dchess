@@ -1,0 +1,9 @@
+one-shot arena validation
+source_run_id=33347901504
+source_preset=small
+arena_opponent=easy
+arena_games=1
+arena_planner_seconds=5
+seed=42
+max_actions=120
+arena_wall_seconds=1800
