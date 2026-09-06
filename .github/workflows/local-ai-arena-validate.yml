@@ -49,6 +49,11 @@ on:
         required: true
         type: number
         default: 9000
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/arena-validation-trigger
 
 permissions:
   contents: read
@@ -85,12 +90,12 @@ jobs:
 
       - name: Validate inputs
         env:
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          ARENA_GAMES: ${{ inputs.arena_games }}
-          ARENA_PLANNER_SECONDS: ${{ inputs.arena_planner_seconds }}
-          SEED: ${{ inputs.seed }}
-          MAX_ACTIONS: ${{ inputs.max_actions }}
-          ARENA_WALL_SECONDS: ${{ inputs.arena_wall_seconds }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '33347901504' }}
+          ARENA_GAMES: ${{ inputs.arena_games || 1 }}
+          ARENA_PLANNER_SECONDS: ${{ inputs.arena_planner_seconds || 5 }}
+          SEED: ${{ inputs.seed || '42' }}
+          MAX_ACTIONS: ${{ inputs.max_actions || 120 }}
+          ARENA_WALL_SECONDS: ${{ inputs.arena_wall_seconds || 1800 }}
         run: |
           python - <<'PY'
           import math
@@ -120,26 +125,26 @@ jobs:
       - name: Download trusted checkpoint from source run
         uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.source_artifact != '' && inputs.source_artifact || format('local-ai-checkpoint-{0}', inputs.source_run_id) }}
+          name: ${{ inputs.source_artifact || format('local-ai-checkpoint-{0}', inputs.source_run_id || '33347901504') }}
           path: _work/checkpoint
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.source_run_id }}
+          run-id: ${{ inputs.source_run_id || '33347901504' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate checkpoint shape
         env:
-          INPUT_PRESET: ${{ inputs.source_preset }}
+          INPUT_PRESET: ${{ inputs.source_preset || 'small' }}
         run: |
           python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset "$INPUT_PRESET"
 
       - name: Run Arena only
         env:
-          INPUT_ARENA_OPPONENT: ${{ inputs.arena_opponent }}
-          INPUT_ARENA_GAMES: ${{ inputs.arena_games }}
-          INPUT_ARENA_PLANNER_SECONDS: ${{ inputs.arena_planner_seconds }}
-          INPUT_SEED: ${{ inputs.seed }}
-          INPUT_MAX_ACTIONS: ${{ inputs.max_actions }}
-          INPUT_ARENA_WALL_SECONDS: ${{ inputs.arena_wall_seconds }}
+          INPUT_ARENA_OPPONENT: ${{ inputs.arena_opponent || 'easy' }}
+          INPUT_ARENA_GAMES: ${{ inputs.arena_games || 1 }}
+          INPUT_ARENA_PLANNER_SECONDS: ${{ inputs.arena_planner_seconds || 5 }}
+          INPUT_SEED: ${{ inputs.seed || '42' }}
+          INPUT_MAX_ACTIONS: ${{ inputs.max_actions || 120 }}
+          INPUT_ARENA_WALL_SECONDS: ${{ inputs.arena_wall_seconds || 1800 }}
         run: |
           mkdir -p _work/arena-report
           python -m src.training.arena \
@@ -157,7 +162,7 @@ jobs:
       - name: Publish Arena summary
         if: ${{ always() }}
         env:
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '33347901504' }}
         run: |
           if [[ -f _work/arena-report/arena-result.json ]]; then
             python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
