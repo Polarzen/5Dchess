@@ -12,6 +12,12 @@ on:
         required: false
         type: string
         default: ""
+      source_preset:
+        description: PolicyValueModel preset used by the source checkpoint
+        required: true
+        type: choice
+        options: [tiny, small, medium]
+        default: small
       arena_opponent:
         description: Canonical Arena opponent
         required: true
@@ -122,7 +128,7 @@ jobs:
 
       - name: Validate checkpoint shape
         env:
-          INPUT_PRESET: small
+          INPUT_PRESET: ${{ inputs.source_preset }}
         run: |
           python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset "$INPUT_PRESET"
 
@@ -150,17 +156,20 @@ jobs:
 
       - name: Publish Arena summary
         if: ${{ always() }}
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           if [[ -f _work/arena-report/arena-result.json ]]; then
             python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
+          import os
           from pathlib import Path
 
           path = Path("_work/arena-report/arena-result.json")
           result = json.loads(path.read_text(encoding="utf-8"))
           print("# Local AI Arena Validation")
           print()
-          print(f"- Source run: `{${{ inputs.source_run_id }}}`")
+          print(f"- Source run: `{os.environ['SOURCE_RUN_ID']}`")
           print(f"- Opponent: `{result.get('opponent')}`")
           print(f"- Games played: `{result.get('games_played', result.get('games'))}`")
           print(f"- W/D/L: `{result.get('wins')}/{result.get('draws')}/{result.get('losses')}`")
