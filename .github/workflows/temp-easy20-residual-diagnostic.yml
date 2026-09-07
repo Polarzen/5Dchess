@@ -18,7 +18,7 @@ concurrency:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,9 +44,18 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Diagnose residual black-model seeds and recovery budgets
+      - name: Test generalized required-board ordering on residual seeds
         run: |
           mkdir -p _work/residual-diagnostic
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("src/engine/action_search.py")
+          text = p.read_text(encoding="utf-8")
+          old = "        if len(required) == 2:\n"
+          if text.count(old) != 1:
+              raise SystemExit(f"ordering anchor count={text.count(old)}")
+          p.write_text(text.replace(old, "        if len(required) >= 2:\n", 1), encoding="utf-8")
+          PY
           python - <<'PY'
           import json
           import time
@@ -54,12 +63,12 @@ jobs:
 
           import src.training.arena as arena_module
           from src.ai.action_planner import ActionSearchBudget
-          from src.engine.action_search import ActionSearch as CanonicalActionSearch
+          from src.engine.action import ActionRules
           from src.training.arena import evaluate_arena
 
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
-          seeds = [43,45,47,49,51,53,55,57,59,61]
+          seeds = [51, 53, 55]
           planner_budget = ActionSearchBudget(
               max_states=1024,
               max_actions=24,
@@ -67,17 +76,45 @@ jobs:
               max_seconds=5.0,
           )
 
-          def run_seed(seed: int, recovery_states: int, recovery_seconds: float):
-              if recovery_states == 4096 and recovery_seconds == 15.0:
-                  arena_module.ActionSearch = CanonicalActionSearch
-              else:
-                  def expanded_action_search(*args, **kwargs):
-                      return CanonicalActionSearch(
-                          max_states=recovery_states,
-                          max_depth=64,
-                          max_seconds=recovery_seconds,
-                      )
-                  arena_module.ActionSearch = expanded_action_search
+          original_recover = arena_module._recover_incomplete_planner_action
+          active_trace = None
+
+          def traced_recover(engine, planning_error):
+              global active_trace
+              action = engine._ensure_current_action()
+              required = tuple(ActionRules.required_boards(
+                  action, engine.timeline_manager.timelines
+              ))
+              movable = tuple(ActionRules.movable_boards(
+                  action, engine.timeline_manager.timelines
+              ))
+              started = time.monotonic()
+              kind, plan = original_recover(engine, planning_error)
+              elapsed = time.monotonic() - started
+              if active_trace is not None:
+                  active_trace.append({
+                      "player": engine.current_turn_color.name,
+                      "ply": engine.move_number,
+                      "timeline_count": len(engine.timeline_manager.timelines),
+                      "required_count": len(required),
+                      "required": [str(board) for board in required],
+                      "movable_count": len(movable),
+                      "movable": [str(board) for board in movable],
+                      "planner_reason": planning_error.reason,
+                      "planner_explored_states": planning_error.explored_states,
+                      "recovery_kind": kind,
+                      "recovery_elapsed_seconds": elapsed,
+                      "recovery_move_count": len(plan.moves) if plan is not None else None,
+                      "recovery_metadata": dict(plan.metadata) if plan is not None else None,
+                  })
+              return kind, plan
+
+          arena_module._recover_incomplete_planner_action = traced_recover
+
+          rows = []
+          for seed in seeds:
+              trace = []
+              active_trace = trace
               started = time.monotonic()
               result = evaluate_arena(
                   checkpoint=checkpoint,
@@ -92,105 +129,51 @@ jobs:
                   model_color="black",
                   game_seeds=[seed],
               )
-              result["diagnostic_recovery_budget"] = {
-                  "states": recovery_states,
-                  "seconds": recovery_seconds,
-              }
-              result["diagnostic_wall_seconds"] = time.monotonic() - started
-              return result
-
-          rows = []
-          for seed in seeds:
-              baseline = run_seed(seed, 4096, 15.0)
-              record = {
+              wall = time.monotonic() - started
+              row = {
                   "seed": seed,
-                  "baseline": baseline,
-                  "expanded_8192_30": None,
-                  "expanded_16384_45": None,
+                  "result": result,
+                  "recovery_trace": trace,
+                  "wall_seconds": wall,
               }
-              print(json.dumps({
+              rows.append(row)
+              print("ORDERING_RESULT=" + json.dumps({
                   "seed": seed,
-                  "phase": "baseline",
-                  "planning_failures": baseline["planning_failure_count"],
-                  "recoveries": baseline["planner_recovery_count"],
-                  "first_failure": baseline.get("first_failure"),
-                  "wall_seconds": baseline["diagnostic_wall_seconds"],
+                  "planning_failures": result["planning_failure_count"],
+                  "recoveries": result["planner_recovery_count"],
+                  "first_failure": result.get("first_failure"),
+                  "recovery_trace": trace,
+                  "wall_seconds": wall,
               }, sort_keys=True))
 
-              if baseline["planning_failure_count"]:
-                  expanded = run_seed(seed, 8192, 30.0)
-                  record["expanded_8192_30"] = expanded
-                  print(json.dumps({
-                      "seed": seed,
-                      "phase": "expanded_8192_30",
-                      "planning_failures": expanded["planning_failure_count"],
-                      "recoveries": expanded["planner_recovery_count"],
-                      "first_failure": expanded.get("first_failure"),
-                      "wall_seconds": expanded["diagnostic_wall_seconds"],
-                  }, sort_keys=True))
-
-                  if expanded["planning_failure_count"]:
-                      expanded2 = run_seed(seed, 16384, 45.0)
-                      record["expanded_16384_45"] = expanded2
-                      print(json.dumps({
-                          "seed": seed,
-                          "phase": "expanded_16384_45",
-                          "planning_failures": expanded2["planning_failure_count"],
-                          "recoveries": expanded2["planner_recovery_count"],
-                          "first_failure": expanded2.get("first_failure"),
-                          "wall_seconds": expanded2["diagnostic_wall_seconds"],
-                      }, sort_keys=True))
-              rows.append(record)
-
-          arena_module.ActionSearch = CanonicalActionSearch
           summary = {
+              "experiment": "ActionSearch global required-board move queue for len(required)>=2",
               "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
-              "model_color": "black",
+              "recovery_budget": {"states":4096,"depth":64,"seconds":15.0},
               "seeds": seeds,
               "rows": rows,
-              "baseline_failed_seeds": [
+              "failed_seeds": [
                   row["seed"] for row in rows
-                  if row["baseline"]["planning_failure_count"]
+                  if row["result"]["planning_failure_count"]
               ],
-              "resolved_at_8192_30": [
+              "passed_seeds": [
                   row["seed"] for row in rows
-                  if row["expanded_8192_30"] is not None
-                  and row["expanded_8192_30"]["planning_failure_count"] == 0
-              ],
-              "still_failed_at_8192_30": [
-                  row["seed"] for row in rows
-                  if row["expanded_8192_30"] is not None
-                  and row["expanded_8192_30"]["planning_failure_count"] != 0
-              ],
-              "resolved_at_16384_45": [
-                  row["seed"] for row in rows
-                  if row["expanded_16384_45"] is not None
-                  and row["expanded_16384_45"]["planning_failure_count"] == 0
-              ],
-              "still_failed_at_16384_45": [
-                  row["seed"] for row in rows
-                  if row["expanded_16384_45"] is not None
-                  and row["expanded_16384_45"]["planning_failure_count"] != 0
+                  if row["result"]["planning_failure_count"] == 0
               ],
           }
-          (out_dir / "summary.json").write_text(
+          (out_dir / "ordering-summary.json").write_text(
               json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
           )
-          print("DIAGNOSTIC_SUMMARY=" + json.dumps({
-              k: summary[k] for k in (
-                  "baseline_failed_seeds",
-                  "resolved_at_8192_30",
-                  "still_failed_at_8192_30",
-                  "resolved_at_16384_45",
-                  "still_failed_at_16384_45",
-              )
+          print("ORDERING_SUMMARY=" + json.dumps({
+              "failed_seeds": summary["failed_seeds"],
+              "passed_seeds": summary["passed_seeds"],
           }, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-residual-diagnostic-${{ github.run_id }}
+          name: easy20-ordering-diagnostic-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
