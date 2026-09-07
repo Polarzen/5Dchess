@@ -83,6 +83,10 @@ jobs:
           original_recover = arena_module._recover_incomplete_planner_action
           traces = []
 
+          def board_key(board):
+              side = getattr(board.side, "value", board.side)
+              return (board.timeline, board.turn, str(side))
+
           def optional_prepass_recover(engine, planning_error):
               action = engine._ensure_current_action()
               required = set(ActionRules.required_boards(
@@ -94,7 +98,7 @@ jobs:
               optional = tuple(board for board in movable if board not in required)
               trace = {
                   "ply": engine.move_counter,
-                  "required": [str(board) for board in sorted(required)],
+                  "required": [str(board) for board in sorted(required, key=board_key)],
                   "optional": [str(board) for board in optional],
                   "planner_reason": planning_error.reason,
                   "planner_explored_states": planning_error.explored_states,
