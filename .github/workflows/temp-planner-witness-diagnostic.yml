@@ -40,6 +40,7 @@ jobs:
         run: |
           mkdir -p _work/diagnostic
           python - <<'PY'
+          import hashlib
           import json
           import time
           from pathlib import Path
@@ -48,7 +49,6 @@ jobs:
           from src.data.archive import GameArchive
           from src.engine.action import ActionRules
           from src.engine.action_search import ActionSearch
-          from src.engine.engine import FiveDEngine
           from src.engine.royal_rules import RoyalRules
           from src.training.arena import evaluate_arena
 
@@ -59,10 +59,20 @@ jobs:
               max_move_depth=32,
               max_seconds=5.0,
           )
-          target_signature = "0649e0aa4bb20000a1db4fe41070c034c3a374a671203aacc173c6ecdf817137"
+          expected_hash = "0649e0aa4bb20000a1db4fe41070c034c3a374a671203aacc173c6ecdf817137"
           original_search = ActionPlanner.search
           captured = {"done": False}
-          evidence = {"target_signature": target_signature, "probe": None}
+          evidence = {"expected_state_sha256": expected_hash, "probe": None}
+
+          def state_hash(engine):
+              payload = json.dumps(
+                  engine_state_signature(engine),
+                  ensure_ascii=False,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  default=str,
+              )
+              return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
           def move_text(move):
               return {
@@ -78,19 +88,20 @@ jobs:
               result = original_search(self, engine)
               if captured["done"] or result.candidates:
                   return result
-              signature = engine_state_signature(engine)
-              if signature != target_signature:
-                  return result
 
               captured["done"] = True
+              failure_hash = state_hash(engine)
               archive = GameArchive.capture(engine)
               archive_path = Path("_work/diagnostic/seed42-failure-state.json")
               archive_path.write_text(json.dumps(archive, indent=2, sort_keys=True), encoding="utf-8")
               restored = GameArchive.restore(json.loads(archive_path.read_text(encoding="utf-8")))
-              restored_signature = engine_state_signature(restored)
+              restored_hash = state_hash(restored)
               action = restored._ensure_current_action()
               required = ActionRules.required_boards(action, restored.timeline_manager.timelines)
               movable = ActionRules.movable_boards(action, restored.timeline_manager.timelines)
+              royal = RoyalRules(restored.timeline_manager.timelines)
+              initial_in_check = royal.is_in_check(restored.current_turn_color)
+              initial_threats = royal.threats_against(restored.current_turn_color)
 
               counters = {"safe": 0}
               original_safe = RoyalRules.is_action_safe
@@ -110,8 +121,18 @@ jobs:
                   RoyalRules.is_action_safe = original_safe
 
               evidence["probe"] = {
-                  "restored_signature": restored_signature,
-                  "archive_roundtrip_matches": restored_signature == target_signature,
+                  "failure_state_sha256": failure_hash,
+                  "matches_expected_hash": failure_hash == expected_hash,
+                  "restored_state_sha256": restored_hash,
+                  "archive_roundtrip_matches": restored_hash == failure_hash,
+                  "initial_in_check": initial_in_check,
+                  "initial_threat_count": len(initial_threats),
+                  "initial_threats": [
+                      {"piece": threat.piece.piece_type.value,
+                       "attacker": str(threat.attacker),
+                       "king": str(threat.king)}
+                      for threat in initial_threats[:20]
+                  ],
                   "required_boards": [str(board) for board in required],
                   "movable_boards": [str(board) for board in movable],
                   "elapsed_seconds": elapsed,
@@ -150,7 +171,7 @@ jobs:
           )
           print(Path("_work/diagnostic/deep-proof.json").read_text(encoding="utf-8"))
           if not captured["done"]:
-              raise SystemExit("target seed 42 failure state was not captured")
+              raise SystemExit("seed 42 failure state was not captured")
           PY
       - name: Upload diagnostic evidence
         if: ${{ always() }}
