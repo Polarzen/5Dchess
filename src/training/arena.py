@@ -23,6 +23,7 @@ from src.ai.action_planner import (
 from src.ai.alpha_beta import AlphaBetaAI
 from src.ai.hard_ai import HardAI
 from src.ai.random_ai import RandomAI
+from src.engine.action_search import ActionSearch
 from src.engine.engine import FiveDEngine
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.training.agent import NeuralPolicyValueAgent
@@ -276,6 +277,41 @@ def _adjudicate_proven_no_action(
     )
 
 
+def _adjudicate_incomplete_planner_terminal(
+    engine: FiveDEngine,
+    planning_error: ActionPlanningError,
+) -> bool:
+    """Prove terminality after a bounded planner stopped without a candidate.
+
+    Planner exhaustion is not itself evidence of checkmate/stalemate. Arena may
+    spend a larger proof-only budget only on that exceptional path. A complete
+    no-Action proof is adjudicated; a found witness or another exhausted proof
+    leaves the original planning failure unchanged.
+    """
+    if not planning_error.incomplete:
+        return False
+
+    proof = ActionSearch(
+        max_states=4096,
+        max_depth=64,
+        max_seconds=15.0,
+    ).find_legal_completion(engine)
+    if proof.has_legal_action or proof.exhausted:
+        return False
+
+    outcome = OutcomeRules.classify_proven_no_legal_action(
+        engine,
+        engine.current_turn_color,
+        explored_states=proof.explored_states,
+    )
+    engine.game_state = (
+        GameState.CHECKMATE
+        if outcome.kind == OutcomeKind.CHECKMATE
+        else GameState.STALEMATE
+    )
+    return True
+
+
 def evaluate_arena(
     *,
     checkpoint: str | Path,
@@ -414,6 +450,13 @@ def evaluate_arena(
                     and not exc.incomplete
                 ):
                     _adjudicate_proven_no_action(engine, exc)
+                    proven_terminal_adjudications += 1
+                    break
+                if (
+                    isinstance(exc, ActionPlanningError)
+                    and exc.incomplete
+                    and _adjudicate_incomplete_planner_terminal(engine, exc)
+                ):
                     proven_terminal_adjudications += 1
                     break
                 if isinstance(exc, StaleActionPlanError):
