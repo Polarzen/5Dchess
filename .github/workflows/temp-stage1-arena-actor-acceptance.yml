@@ -1,0 +1,186 @@
+name: TEMP Stage1 Arena Actor Acceptance
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-stage1-arena-actor-acceptance.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: temp-stage1-arena-actor-acceptance
+  cancel-in-progress: false
+
+jobs:
+  arena:
+    name: Fixed-seed Easy 20 actor attribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+
+      - name: Install game and CPU training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+
+      - name: Download Stage 1 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-stage1-500-34028226472
+          path: _work/checkpoint
+          repository: ${{ github.repository }}
+          run-id: 34028226472
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate checkpoint shape
+        run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
+
+      - name: Run fixed-seed side-balanced Easy benchmark
+        run: |
+          mkdir -p _work/arena-report
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from src.ai.action_planner import ActionSearchBudget
+          from src.training.arena import evaluate_arena
+
+          checkpoint = Path("_work/checkpoint/best")
+          out_dir = Path("_work/arena-report")
+          seeds = list(range(42, 62))
+          white_seeds = seeds[0::2]
+          black_seeds = seeds[1::2]
+          budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
+
+          white = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=len(white_seeds),
+              device_name="cpu",
+              seed=42,
+              max_actions=120,
+              budget=budget,
+              max_wall_seconds=1800,
+              output="json",
+              model_color="white",
+              game_seeds=white_seeds,
+          )
+          black = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=len(black_seeds),
+              device_name="cpu",
+              seed=42,
+              max_actions=120,
+              budget=budget,
+              max_wall_seconds=1800,
+              output="json",
+              model_color="black",
+              game_seeds=black_seeds,
+          )
+
+          def total(key):
+              return int(white.get(key, 0)) + int(black.get(key, 0))
+
+          games = total("games")
+          combined = {
+              "opponent": "easy",
+              "seed_set": seeds,
+              "planner": {"states": 1024, "actions": 24, "moves": 32, "seconds": 5.0},
+              "games": games,
+              "wins": total("wins"),
+              "draws": total("draws"),
+              "losses": total("losses"),
+              "win_rate": total("wins") / max(1, games),
+              "illegal_action_count": total("illegal_action_count"),
+              "stale_failure_count": total("stale_failure_count"),
+              "planning_failure_count": total("planning_failure_count"),
+              "neural_planning_failure_count": total("neural_planning_failure_count"),
+              "baseline_planning_failure_count": total("baseline_planning_failure_count"),
+              "unexpected_failure_count": total("unexpected_failure_count"),
+              "budget_termination_count": total("budget_termination_count"),
+              "white": white,
+              "black": black,
+          }
+          assert combined["planning_failure_count"] == (
+              combined["neural_planning_failure_count"]
+              + combined["baseline_planning_failure_count"]
+          )
+          (out_dir / "easy-white.json").write_text(json.dumps(white, indent=2, sort_keys=True), encoding="utf-8")
+          (out_dir / "easy-black.json").write_text(json.dumps(black, indent=2, sort_keys=True), encoding="utf-8")
+          (out_dir / "easy-combined.json").write_text(json.dumps(combined, indent=2, sort_keys=True), encoding="utf-8")
+          print(json.dumps(combined, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish acceptance summary
+        if: ${{ always() }}
+        run: |
+          echo "# Stage 1 Arena actor-attribution acceptance" >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "- Checkpoint: Stage 1 500-game best from run \`34028226472\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Seeds: \`42..61\` (10 White / 10 Black)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Planner: \`5.0 s / 1024 states / 24 actions / 32 moves\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f _work/arena-report/easy-combined.json ]]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          r = json.loads(Path("_work/arena-report/easy-combined.json").read_text(encoding="utf-8"))
+          print(f"- Overall W/D/L: `{r['wins']}/{r['draws']}/{r['losses']}`")
+          print(f"- Planning failures: aggregate `{r['planning_failure_count']}`, neural `{r['neural_planning_failure_count']}`, baseline `{r['baseline_planning_failure_count']}`")
+          print(f"- Safety: illegal `{r['illegal_action_count']}`, stale `{r['stale_failure_count']}`, unexpected `{r['unexpected_failure_count']}`")
+          PY
+          fi
+
+      - name: Upload acceptance Artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage1-arena-actor-acceptance-${{ github.run_id }}
+          path: _work/arena-report
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Enforce actor-attribution contract
+        if: ${{ always() }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("_work/arena-report/easy-combined.json")
+          if not path.exists():
+              raise SystemExit("acceptance result missing")
+          r = json.loads(path.read_text(encoding="utf-8"))
+          if r["planning_failure_count"] != r["neural_planning_failure_count"] + r["baseline_planning_failure_count"]:
+              raise SystemExit("actor attribution sum does not match aggregate planning failures")
+          if (r["neural_planning_failure_count"], r["baseline_planning_failure_count"], r["planning_failure_count"]) != (5, 6, 11):
+              raise SystemExit(
+                  "fixed-seed attribution changed: "
+                  f"neural={r['neural_planning_failure_count']} "
+                  f"baseline={r['baseline_planning_failure_count']} "
+                  f"aggregate={r['planning_failure_count']}"
+              )
+          if r["illegal_action_count"] or r["stale_failure_count"] or r["unexpected_failure_count"]:
+              raise SystemExit("Arena correctness regression detected")
+          PY
