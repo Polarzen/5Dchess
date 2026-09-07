@@ -44,7 +44,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Probe royal-safety rescue moves on seed 53
+      - name: Isolate residual royal-safety states on seed 53
         run: |
           mkdir -p _work/residual-diagnostic
           python - <<'PY'
@@ -80,7 +80,7 @@ jobs:
           from pathlib import Path
 
           import src.training.arena as arena_module
-          from src.ai.action_planner import ActionSearchBudget, _required_move_sort_key
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget, _required_move_sort_key
           from src.engine.action import ActionRules
           from src.engine.engine import FiveDEngine
           from src.training.arena import evaluate_arena
@@ -88,10 +88,13 @@ jobs:
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
           planner_budget = ActionSearchBudget(max_states=1024, max_actions=24, max_move_depth=32, max_seconds=5.0)
+          target_sha = "249dc6269b20693f1e0fe7101c72bd8303ac1ce00417c3978ecd029e98b49774"
+          original_search = ActionPlanner.search
           original_can_submit = FiveDEngine.can_submit_action
+          active_target = False
+          in_probe = False
           unsafe_rows = []
           rescue_witness = None
-          in_probe = False
 
           def board_key(board):
               side = getattr(board.side, "value", board.side)
@@ -105,10 +108,19 @@ jobs:
                   "cross_timeline": bool(move.is_cross_timeline),
               }
 
+          def traced_search(self, engine):
+              global active_target
+              previous = active_target
+              active_target = arena_module._state_signature_sha256(engine) == target_sha
+              try:
+                  return original_search(self, engine)
+              finally:
+                  active_target = previous
+
           def traced_can_submit(self):
               global in_probe, rescue_witness
               result = original_can_submit(self)
-              if result or in_probe or len(unsafe_rows) >= 4:
+              if result or not active_target or in_probe or len(unsafe_rows) >= 8:
                   return result
               action = self._ensure_current_action()
               required = set(ActionRules.required_boards(action, self.timeline_manager.timelines))
@@ -116,6 +128,8 @@ jobs:
                   return result
 
               row = {
+                  "move_counter": self.move_counter,
+                  "timeline_count": len(self.timeline_manager.timelines),
                   "path_len": len(action.moves),
                   "path": [move_row(m) for m in action.moves],
                   "movable": [],
@@ -125,21 +139,15 @@ jobs:
               unsafe_rows.append(row)
               in_probe = True
               try:
-                  movable = sorted(
-                      ActionRules.movable_boards(action, self.timeline_manager.timelines),
-                      key=board_key,
-                  )
+                  movable = sorted(ActionRules.movable_boards(action, self.timeline_manager.timelines), key=board_key)
                   row["movable"] = [str(b) for b in movable]
                   for board in movable:
                       position = self._resolve_position(board)
                       if position is None:
                           continue
-                      moves = sorted(
-                          self.get_legal_moves(position),
-                          key=lambda m: _required_move_sort_key(m, set()),
-                      )
+                      moves = sorted(self.get_legal_moves(position), key=lambda m: _required_move_sort_key(m, set()))
                       for move in moves:
-                          if row["moves_checked"] >= 160:
+                          if row["moves_checked"] >= 200:
                               break
                           row["moves_checked"] += 1
                           child = self.clone_for_simulation()
@@ -150,17 +158,15 @@ jobs:
                               continue
                           if original_can_submit(child):
                               row["rescue"] = move_row(move)
-                              rescue_witness = {
-                                  "prefix": row["path"],
-                                  "rescue": row["rescue"],
-                              }
+                              rescue_witness = {"prefix": row["path"], "rescue": row["rescue"]}
                               break
-                      if row["rescue"] is not None or row["moves_checked"] >= 160:
+                      if row["rescue"] is not None or row["moves_checked"] >= 200:
                           break
               finally:
                   in_probe = False
               return result
 
+          ActionPlanner.search = traced_search
           FiveDEngine.can_submit_action = traced_can_submit
           arena_module._recover_incomplete_planner_action = lambda engine, err: ("unresolved", None)
           started = time.monotonic()
@@ -179,14 +185,13 @@ jobs:
           )
           summary = {
               "result": result,
+              "target_signature": target_sha,
               "unsafe_zero_required_states": unsafe_rows,
               "rescue_witness": rescue_witness,
               "wall_seconds": time.monotonic() - started,
           }
-          (out_dir / "royal-rescue-probe.json").write_text(
-              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
-          )
-          print("ROYAL_RESCUE_PROBE=" + json.dumps({
+          (out_dir / "residual-royal-rescue.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+          print("RESIDUAL_ROYAL_RESCUE=" + json.dumps({
               "first_failure": result.get("first_failure"),
               "unsafe_states": unsafe_rows,
               "rescue_witness": rescue_witness,
@@ -196,7 +201,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-royal-rescue-probe-${{ github.run_id }}
+          name: easy20-residual-royal-rescue-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
