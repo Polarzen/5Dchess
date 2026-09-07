@@ -1,4 +1,4 @@
-name: TEMP Stage1 Planner Profile
+name: TEMP Stage1 Easy Benchmark 20
 
 on:
   push:
@@ -6,9 +6,6 @@ on:
       - feat/local-ai-training-v2
     paths:
       - .github/workflows/temp-stage1-arena-easy-20.yml
-      - src/engine/royal_rules.py
-      - src/engine/action_planner.py
-      - src/training/arena.py
 
 permissions:
   contents: read
@@ -20,9 +17,9 @@ concurrency:
 
 jobs:
   arena:
-    name: Profile first Stage 1 Easy planner timeout
+    name: Fixed-seed Easy 20 quality gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,69 +52,132 @@ jobs:
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
 
-      - name: Profile deterministic first Easy game
+      - name: Run fixed-seed side-balanced Easy benchmark
         run: |
           mkdir -p _work/arena-report
-          python -m cProfile -o _work/arena-report/planner-profile.pstats -m src.training.arena \
-            --checkpoint _work/checkpoint/best \
-            --opponent easy \
-            --games 1 \
-            --planner-states 1024 \
-            --planner-seconds 5.0 \
-            --device cpu \
-            --seed 42 \
-            --max-actions 120 \
-            --max-wall-seconds 1800 \
-            --output json \
-            --result-json _work/arena-report/arena-result.json
-
-      - name: Render cumulative profile
-        if: ${{ always() }}
-        run: |
-          if [[ -f _work/arena-report/planner-profile.pstats ]]; then
-            python - <<'PY'
-          import pstats
+          python - <<'PY'
+          import json
           from pathlib import Path
 
-          out = Path("_work/arena-report/profile-cumulative.txt")
-          with out.open("w", encoding="utf-8") as handle:
-              stats = pstats.Stats("_work/arena-report/planner-profile.pstats", stream=handle)
-              stats.strip_dirs().sort_stats("cumulative").print_stats(80)
-          PY
-          fi
+          from src.ai.action_planner import ActionSearchBudget
+          from src.training.arena import evaluate_arena
 
-      - name: Publish profile summary
+          checkpoint = Path("_work/checkpoint/best")
+          out_dir = Path("_work/arena-report")
+          seeds = list(range(42, 62))
+          white_seeds = seeds[0::2]
+          black_seeds = seeds[1::2]
+          budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
+
+          white = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=len(white_seeds),
+              device_name="cpu",
+              seed=42,
+              max_actions=120,
+              budget=budget,
+              max_wall_seconds=1800,
+              output="json",
+              model_color="white",
+              game_seeds=white_seeds,
+          )
+          black = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=len(black_seeds),
+              device_name="cpu",
+              seed=42,
+              max_actions=120,
+              budget=budget,
+              max_wall_seconds=1800,
+              output="json",
+              model_color="black",
+              game_seeds=black_seeds,
+          )
+
+          def total(key):
+              return int(white.get(key, 0)) + int(black.get(key, 0))
+
+          games = total("games")
+          combined = {
+              "opponent": "easy",
+              "seed_set": seeds,
+              "planner": {
+                  "states": 1024,
+                  "actions": 24,
+                  "moves": 32,
+                  "seconds": 5.0,
+              },
+              "games": games,
+              "wins": total("wins"),
+              "draws": total("draws"),
+              "losses": total("losses"),
+              "win_rate": total("wins") / max(1, games),
+              "illegal_action_count": total("illegal_action_count"),
+              "stale_failure_count": total("stale_failure_count"),
+              "planning_failure_count": total("planning_failure_count"),
+              "unexpected_failure_count": total("unexpected_failure_count"),
+              "budget_termination_count": total("budget_termination_count"),
+              "white": white,
+              "black": black,
+          }
+          (out_dir / "easy-white.json").write_text(json.dumps(white, indent=2, sort_keys=True), encoding="utf-8")
+          (out_dir / "easy-black.json").write_text(json.dumps(black, indent=2, sort_keys=True), encoding="utf-8")
+          (out_dir / "easy-combined.json").write_text(json.dumps(combined, indent=2, sort_keys=True), encoding="utf-8")
+          print(json.dumps(combined, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish benchmark summary
         if: ${{ always() }}
         run: |
-          echo "# Stage 1 planner timeout profile" >> "$GITHUB_STEP_SUMMARY"
+          echo "# Stage 1 fixed-seed Easy benchmark" >> "$GITHUB_STEP_SUMMARY"
           echo >> "$GITHUB_STEP_SUMMARY"
-          echo "- Baseline validation: run \`34080584015\` = 12/2/6, planning failures 6" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Reproduction: Easy game 1, seed 42, 5.0 s / 1024 states" >> "$GITHUB_STEP_SUMMARY"
-          if [[ -f _work/arena-report/arena-result.json ]]; then
+          echo "- Checkpoint: Stage 1 500-game best from run \`34028226472\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Seeds: \`42..61\` (10 White / 10 Black)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Planner: \`5.0 s / 1024 states / 24 actions / 32 moves\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f _work/arena-report/easy-combined.json ]]; then
             python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
-          result = json.loads(Path("_work/arena-report/arena-result.json").read_text(encoding="utf-8"))
-          print(f"- W/D/L: `{result.get('wins')}/{result.get('draws')}/{result.get('losses')}`")
-          print(f"- Planning failures: `{result.get('planning_failure_count')}`")
-          first = result.get("first_failure") or {}
-          if first:
-              print(f"- First failure: `{first.get('planning_reason')}` after `{first.get('explored_states')}` states at action `{first.get('action_index')}`")
+          r = json.loads(Path("_work/arena-report/easy-combined.json").read_text(encoding="utf-8"))
+          print(f"- Overall W/D/L: `{r['wins']}/{r['draws']}/{r['losses']}` (win rate `{r['win_rate']:.1%}`)")
+          print(f"- White W/D/L: `{r['white']['wins']}/{r['white']['draws']}/{r['white']['losses']}`")
+          print(f"- Black W/D/L: `{r['black']['wins']}/{r['black']['draws']}/{r['black']['losses']}`")
+          print(f"- Safety: illegal `{r['illegal_action_count']}`, stale `{r['stale_failure_count']}`, planning `{r['planning_failure_count']}`, unexpected `{r['unexpected_failure_count']}`, budget terminations `{r['budget_termination_count']}`")
           PY
           fi
-          if [[ -f _work/arena-report/profile-cumulative.txt ]]; then
-            echo >> "$GITHUB_STEP_SUMMARY"
-            echo "## Top cumulative profile" >> "$GITHUB_STEP_SUMMARY"
-            echo '```text' >> "$GITHUB_STEP_SUMMARY"
-            head -n 45 _work/arena-report/profile-cumulative.txt >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
 
-      - name: Upload planner profile Artifact
+      - name: Upload benchmark Artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: stage1-planner-profile-${{ github.run_id }}
+          name: stage1-easy-benchmark-${{ github.run_id }}
           path: _work/arena-report
           retention-days: 30
           if-no-files-found: warn
+
+      - name: Enforce Arena safety gate
+        if: ${{ always() }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("_work/arena-report/easy-combined.json")
+          if not path.exists():
+              raise SystemExit("benchmark result missing")
+          r = json.loads(path.read_text(encoding="utf-8"))
+          failures = (
+              r["illegal_action_count"]
+              + r["stale_failure_count"]
+              + r["planning_failure_count"]
+              + r["unexpected_failure_count"]
+          )
+          if failures:
+              raise SystemExit(f"Arena safety gate failed with {failures} failures")
+          PY
