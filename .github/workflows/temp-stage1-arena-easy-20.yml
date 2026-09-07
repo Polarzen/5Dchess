@@ -1,4 +1,4 @@
-name: TEMP Stage1 Easy Arena 20
+name: TEMP Stage1 Planner Profile
 
 on:
   push:
@@ -17,9 +17,9 @@ concurrency:
 
 jobs:
   arena:
-    name: Stage 1 Easy Arena 20-game 5s / 1024-state planner diagnostic
+    name: Profile first Stage 1 Easy planner timeout
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -52,59 +52,69 @@ jobs:
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
 
-      - name: Run Easy Arena 20-game 5s / 1024-state planner diagnostic
+      - name: Profile deterministic first Easy game
         run: |
           mkdir -p _work/arena-report
-          python -m src.training.arena \
+          python -m cProfile -o _work/arena-report/planner-profile.pstats -m src.training.arena \
             --checkpoint _work/checkpoint/best \
             --opponent easy \
-            --games 20 \
+            --games 1 \
             --planner-states 1024 \
             --planner-seconds 5.0 \
             --device cpu \
             --seed 42 \
             --max-actions 120 \
-            --max-wall-seconds 9000 \
+            --max-wall-seconds 1800 \
             --output json \
             --result-json _work/arena-report/arena-result.json
 
-      - name: Publish Arena summary
+      - name: Render cumulative profile
         if: ${{ always() }}
         run: |
+          if [[ -f _work/arena-report/planner-profile.pstats ]]; then
+            python - <<'PY'
+          import pstats
+          from pathlib import Path
+
+          out = Path("_work/arena-report/profile-cumulative.txt")
+          with out.open("w", encoding="utf-8") as handle:
+              stats = pstats.Stats("_work/arena-report/planner-profile.pstats", stream=handle)
+              stats.strip_dirs().sort_stats("cumulative").print_stats(80)
+          PY
+          fi
+
+      - name: Publish profile summary
+        if: ${{ always() }}
+        run: |
+          echo "# Stage 1 planner timeout profile" >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "- Baseline validation: run \`34080584015\` = 12/2/6, planning failures 6" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Reproduction: Easy game 1, seed 42, 5.0 s / 1024 states" >> "$GITHUB_STEP_SUMMARY"
           if [[ -f _work/arena-report/arena-result.json ]]; then
             python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
-
           result = json.loads(Path("_work/arena-report/arena-result.json").read_text(encoding="utf-8"))
-          print("# Stage 1 Easy Arena 20-game 5s / 1024-state planner diagnostic")
-          print()
-          print("- Source run: `34028226472`")
-          print("- Source Artifact: `local-ai-checkpoint-stage1-500-34028226472`")
-          print("- Planner budget: `5.0 s / 1024 states`")
-          print(f"- Opponent: `{result.get('opponent')}`")
-          print(f"- Games played: `{result.get('games_requested', result.get('games'))}`")
           print(f"- W/D/L: `{result.get('wins')}/{result.get('draws')}/{result.get('losses')}`")
-          print(f"- Illegal: `{result.get('illegal_action_count')}`")
-          print(f"- Stale failures: `{result.get('stale_failure_count')}`")
           print(f"- Planning failures: `{result.get('planning_failure_count')}`")
-          print(f"- Unexpected failures: `{result.get('unexpected_failure_count')}`")
-          print(f"- Budget terminations: `{result.get('budget_termination_count')}`")
-          first_failure = result.get("first_failure")
-          if first_failure:
-              print(f"- First failure: `{first_failure.get('failure_stage')}: {first_failure.get('message')}`")
+          first = result.get("first_failure") or {}
+          if first:
+              print(f"- First failure: `{first.get('planning_reason')}` after `{first.get('explored_states')}` states at action `{first.get('action_index')}`")
           PY
-          else
-            echo "# Stage 1 Easy Arena 20-game 5s / 1024-state planner diagnostic" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -f _work/arena-report/profile-cumulative.txt ]]; then
             echo >> "$GITHUB_STEP_SUMMARY"
-            echo "Arena result JSON was not produced; inspect the Arena step logs." >> "$GITHUB_STEP_SUMMARY"
+            echo "## Top cumulative profile" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            head -n 45 _work/arena-report/profile-cumulative.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload Arena validation Artifact
+      - name: Upload planner profile Artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: stage1-arena-easy-20-${{ github.run_id }}
+          name: stage1-planner-profile-${{ github.run_id }}
           path: _work/arena-report
           retention-days: 30
           if-no-files-found: warn
