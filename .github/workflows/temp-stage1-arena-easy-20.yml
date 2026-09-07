@@ -6,6 +6,9 @@ on:
       - feat/local-ai-training-v2
     paths:
       - .github/workflows/temp-stage1-arena-easy-20.yml
+      - src/engine/royal_rules.py
+      - src/engine/action_planner.py
+      - src/training/arena.py
 
 permissions:
   contents: read
