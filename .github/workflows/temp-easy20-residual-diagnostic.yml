@@ -63,7 +63,7 @@ jobs:
                   ),
               )
           )
-  '''
+          '''
           new_order = '''        optional_first = (
               len(required) == 2
               and any(board not in required for board in movable)
@@ -79,16 +79,16 @@ jobs:
                   ),
               )
           )
-  '''
+          '''
           if text.count(old_order) != 1:
               raise SystemExit(f"ordered_boards anchor count={text.count(old_order)}")
           text = text.replace(old_order, new_order, 1)
           old_special = '''        if len(required) == 2:
               required_moves: list[Move] = []
-  '''
+          '''
           new_special = '''        if len(required) == 2 and not optional_first:
               required_moves: list[Move] = []
-  '''
+          '''
           if text.count(old_special) != 1:
               raise SystemExit(f"len2 anchor count={text.count(old_special)}")
           text = text.replace(old_special, new_special, 1)
