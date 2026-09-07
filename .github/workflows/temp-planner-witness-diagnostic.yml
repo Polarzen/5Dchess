@@ -14,7 +14,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,7 +36,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: 34028226472
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Diagnose fixed failure states
+      - name: Capture and deep-probe seed 42 failure
         run: |
           mkdir -p _work/diagnostic
           python - <<'PY'
@@ -44,9 +44,12 @@ jobs:
           import time
           from pathlib import Path
 
-          from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget, engine_state_signature
+          from src.data.archive import GameArchive
           from src.engine.action import ActionRules
           from src.engine.action_search import ActionSearch
+          from src.engine.engine import FiveDEngine
+          from src.engine.royal_rules import RoyalRules
           from src.training.arena import evaluate_arena
 
           checkpoint = Path("_work/checkpoint/best").resolve()
@@ -56,12 +59,10 @@ jobs:
               max_move_depth=32,
               max_seconds=5.0,
           )
+          target_signature = "0649e0aa4bb20000a1db4fe41070c034c3a374a671203aacc173c6ecdf817137"
           original_search = ActionPlanner.search
-          diagnostics = []
-          active_case = {"seed": None, "model_color": None}
-
-          def board_text(board):
-              return f"L{board.timeline}:T{board.turn}:{board.side.value}"
+          captured = {"done": False}
+          evidence = {"target_signature": target_signature, "probe": None}
 
           def move_text(move):
               return {
@@ -73,117 +74,89 @@ jobs:
                   "cross_timeline": bool(move.is_cross_timeline),
               }
 
-          def run_engine_probe(engine, max_states, max_seconds):
-              started = time.monotonic()
-              result = ActionSearch(
-                  max_states=max_states,
-                  max_depth=32,
-                  max_seconds=max_seconds,
-              ).find_legal_completion(engine)
-              return {
-                  "kind": "ActionSearch",
-                  "max_states": max_states,
-                  "max_seconds": max_seconds,
-                  "elapsed_seconds": time.monotonic() - started,
-                  "has_legal_action": result.has_legal_action,
-                  "explored_states": result.explored_states,
-                  "termination_reason": result.termination_reason,
-                  "witness_length": len(result.witness),
-                  "witness": [move_text(move) for move in result.witness],
-              }
-
-          def run_planner_probe(engine, max_states, max_seconds):
-              planner = ActionPlanner(ActionSearchBudget(
-                  max_states=max_states,
-                  max_actions=1,
-                  max_move_depth=32,
-                  max_seconds=max_seconds,
-              ))
-              started = time.monotonic()
-              result = original_search(planner, engine)
-              return {
-                  "kind": "ActionPlanner-first",
-                  "max_states": max_states,
-                  "max_seconds": max_seconds,
-                  "elapsed_seconds": time.monotonic() - started,
-                  "has_legal_action": bool(result.candidates),
-                  "explored_states": result.explored_states,
-                  "termination_reason": result.termination_reason,
-                  "failed_state_cache_hits": getattr(result, "failed_state_cache_hits", 0),
-                  "witness_length": len(result.candidates[0]) if result.candidates else 0,
-              }
-
-          def diagnostic_search(self, engine):
+          def capture_and_probe(self, engine):
               result = original_search(self, engine)
-              if result.candidates:
+              if captured["done"] or result.candidates:
                   return result
-              snapshot = engine.clone_for_simulation()
-              snapshot.timeline_manager.refresh_activity()
-              action = snapshot._ensure_current_action()
-              required = set(ActionRules.required_boards(action, snapshot.timeline_manager.timelines))
-              movable = set(ActionRules.movable_boards(action, snapshot.timeline_manager.timelines))
-              legal_counts = {}
-              for board in sorted(movable, key=lambda b: (b.timeline, b.turn, b.side.value)):
-                  position = snapshot._resolve_position(board)
-                  legal_counts[board_text(board)] = len(snapshot.get_legal_moves(position)) if position is not None else None
-              entry = {
-                  "seed": active_case["seed"],
-                  "model_color": active_case["model_color"],
-                  "player": engine.current_turn_color.value,
-                  "original": {
-                      "explored_states": result.explored_states,
-                      "termination_reason": result.termination_reason,
-                      "failed_state_cache_hits": getattr(result, "failed_state_cache_hits", 0),
-                  },
-                  "required_boards": [board_text(b) for b in sorted(required, key=lambda b: (b.timeline, b.turn, b.side.value))],
-                  "movable_boards": [board_text(b) for b in sorted(movable, key=lambda b: (b.timeline, b.turn, b.side.value))],
-                  "legal_move_counts": legal_counts,
-                  "probes": [],
+              signature = engine_state_signature(engine)
+              if signature != target_signature:
+                  return result
+
+              captured["done"] = True
+              archive = GameArchive.capture(engine)
+              archive_path = Path("_work/diagnostic/seed42-failure-state.json")
+              archive_path.write_text(json.dumps(archive, indent=2, sort_keys=True), encoding="utf-8")
+              restored = GameArchive.restore(json.loads(archive_path.read_text(encoding="utf-8")))
+              restored_signature = engine_state_signature(restored)
+              action = restored._ensure_current_action()
+              required = ActionRules.required_boards(action, restored.timeline_manager.timelines)
+              movable = ActionRules.movable_boards(action, restored.timeline_manager.timelines)
+
+              counters = {"safe": 0}
+              original_safe = RoyalRules.is_action_safe
+              def counted_safe(rules, color):
+                  counters["safe"] += 1
+                  return original_safe(rules, color)
+              RoyalRules.is_action_safe = counted_safe
+              try:
+                  started = time.monotonic()
+                  deep = ActionSearch(
+                      max_states=None,
+                      max_depth=64,
+                      max_seconds=120.0,
+                  ).find_legal_completion(restored)
+                  elapsed = time.monotonic() - started
+              finally:
+                  RoyalRules.is_action_safe = original_safe
+
+              evidence["probe"] = {
+                  "restored_signature": restored_signature,
+                  "archive_roundtrip_matches": restored_signature == target_signature,
+                  "required_boards": [str(board) for board in required],
+                  "movable_boards": [str(board) for board in movable],
+                  "elapsed_seconds": elapsed,
+                  "explored_states": deep.explored_states,
+                  "termination_reason": deep.termination_reason,
+                  "has_legal_action": deep.has_legal_action,
+                  "witness_length": len(deep.witness),
+                  "witness": [move_text(move) for move in deep.witness],
+                  "royal_safety_calls": counters["safe"],
               }
-              for states, seconds in ((1024, 5.0), (4096, 15.0), (16384, 30.0)):
-                  entry["probes"].append(run_engine_probe(engine, states, seconds))
-                  entry["probes"].append(run_planner_probe(engine, states, seconds))
-                  if entry["probes"][-1]["has_legal_action"] and entry["probes"][-2]["has_legal_action"]:
-                      break
-              diagnostics.append(entry)
+              Path("_work/diagnostic/deep-proof.json").write_text(
+                  json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+              )
               return result
 
-          ActionPlanner.search = diagnostic_search
-
-          reports = []
-          for seed, model_color in ((42, "white"), (43, "black")):
-              active_case["seed"] = seed
-              active_case["model_color"] = model_color
-              report = evaluate_arena(
-                  checkpoint=checkpoint,
-                  opponent="easy",
-                  games=1,
-                  device_name="cpu",
-                  seed=seed,
-                  max_actions=120,
-                  budget=normal_budget,
-                  max_wall_seconds=1800,
-                  output="json",
-                  model_color=model_color,
-                  game_seeds=[seed],
-              )
-              reports.append({
-                  "seed": seed,
-                  "model_color": model_color,
-                  "planning_failure_count": report["planning_failure_count"],
-                  "first_failure": report.get("first_failure"),
-              })
-
-          payload = {"reports": reports, "diagnostics": diagnostics}
-          path = Path("_work/diagnostic/witness-diagnostic.json")
-          path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-          print(path.read_text(encoding="utf-8"))
+          ActionPlanner.search = capture_and_probe
+          report = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=1,
+              device_name="cpu",
+              seed=42,
+              max_actions=120,
+              budget=normal_budget,
+              max_wall_seconds=1800,
+              output="json",
+              model_color="white",
+              game_seeds=[42],
+          )
+          evidence["arena"] = {
+              "planning_failure_count": report["planning_failure_count"],
+              "first_failure": report.get("first_failure"),
+          }
+          Path("_work/diagnostic/deep-proof.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(Path("_work/diagnostic/deep-proof.json").read_text(encoding="utf-8"))
+          if not captured["done"]:
+              raise SystemExit("target seed 42 failure state was not captured")
           PY
       - name: Upload diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: planner-witness-diagnostic-${{ github.run_id }}
+          name: planner-seed42-deep-proof-${{ github.run_id }}
           path: _work/diagnostic
           retention-days: 7
           if-no-files-found: error
