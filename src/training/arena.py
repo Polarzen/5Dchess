@@ -12,10 +12,12 @@ import traceback
 from typing import Any, Mapping, Sequence
 
 from src.ai.action_planner import (
+    AIActionPlan,
     ActionApplicationError,
     ActionPlanningError,
     ActionSearchBudget,
     InvalidActionPlanError,
+    MoveSpec,
     StaleActionPlanError,
     apply_action_plan,
     engine_state_signature,
@@ -312,6 +314,66 @@ def _adjudicate_incomplete_planner_terminal(
     return True
 
 
+def _recover_incomplete_planner_action(
+    engine: FiveDEngine,
+    planning_error: ActionPlanningError,
+) -> tuple[str, AIActionPlan | None]:
+    """Recover Arena liveness after the strict Planner wall budget expires.
+
+    The Planner's original result remains a genuine timeout. Arena then runs
+    the existing larger ActionSearch proof budget on this exceptional path. If
+    that search finds a canonical legal witness, the witness is replayed through
+    ``apply_action_plan`` and explicitly counted as a recovery. A complete
+    no-Action proof is adjudicated as terminal. Another inconclusive proof keeps
+    the original planning failure semantics.
+    """
+    if not planning_error.incomplete:
+        return "unresolved", None
+
+    proof = ActionSearch(
+        max_states=4096,
+        max_depth=64,
+        max_seconds=15.0,
+    ).find_legal_completion(engine)
+
+    if proof.has_legal_action:
+        plan = AIActionPlan(
+            color=engine.current_turn_color,
+            moves=tuple(MoveSpec.from_move(move) for move in proof.witness),
+            start_signature=engine_state_signature(engine),
+            metadata={
+                "candidate_count": 1,
+                "selected_index": 0,
+                "explored_states": proof.explored_states,
+                "search_complete": not proof.exhausted,
+                "arena_recovery": True,
+                "recovery_from_reason": planning_error.reason,
+                "recovery_search_termination_reason": proof.termination_reason,
+                "planner_explored_states": planning_error.explored_states,
+            },
+            warning=(
+                "Arena recovery Action after bounded planner "
+                f"{planning_error.reason}"
+            ),
+        )
+        return "witness", plan
+
+    if proof.exhausted:
+        return "unresolved", None
+
+    outcome = OutcomeRules.classify_proven_no_legal_action(
+        engine,
+        engine.current_turn_color,
+        explored_states=proof.explored_states,
+    )
+    engine.game_state = (
+        GameState.CHECKMATE
+        if outcome.kind == OutcomeKind.CHECKMATE
+        else GameState.STALEMATE
+    )
+    return "terminal", None
+
+
 def evaluate_arena(
     *,
     checkpoint: str | Path,
@@ -371,6 +433,7 @@ def evaluate_arena(
     illegal = stale_failures = budget_terminations = 0
     planning_failures = unexpected_failures = 0
     neural_planning_failures = baseline_planning_failures = 0
+    planner_recoveries = neural_planner_recoveries = baseline_planner_recoveries = 0
     proven_terminal_adjudications = 0
     first_failure: dict[str, Any] | None = None
     action_counts: list[int] = []
@@ -452,13 +515,35 @@ def evaluate_arena(
                     _adjudicate_proven_no_action(engine, exc)
                     proven_terminal_adjudications += 1
                     break
-                if (
-                    isinstance(exc, ActionPlanningError)
-                    and exc.incomplete
-                    and _adjudicate_incomplete_planner_terminal(engine, exc)
-                ):
-                    proven_terminal_adjudications += 1
-                    break
+                recovery_traceback_text = None
+                if isinstance(exc, ActionPlanningError) and exc.incomplete:
+                    recovery_kind, recovery_plan = _recover_incomplete_planner_action(
+                        engine, exc
+                    )
+                    if recovery_kind == "terminal":
+                        proven_terminal_adjudications += 1
+                        break
+                    if recovery_kind == "witness" and recovery_plan is not None:
+                        plan = recovery_plan
+                        failure_stage = "recovery_application"
+                        try:
+                            apply_action_plan(engine, plan)
+                        except Exception as recovery_exc:
+                            exc = recovery_exc
+                            recovery_traceback_text = traceback.format_exc()
+                        else:
+                            completed_actions += 1
+                            planner_recoveries += 1
+                            if neural_turn:
+                                neural_planner_recoveries += 1
+                            else:
+                                baseline_planner_recoveries += 1
+                            all_candidate_counts.append(1)
+                            all_partial_candidate_searches += 1
+                            if neural_turn:
+                                neural_candidate_counts.append(1)
+                                neural_partial_candidate_searches += 1
+                            continue
                 if isinstance(exc, StaleActionPlanError):
                     stale_failures += 1
                 elif isinstance(exc, (InvalidActionPlanError, ActionApplicationError)):
@@ -481,7 +566,9 @@ def evaluate_arena(
                     plan=plan,
                     failure_stage=failure_stage,
                     exc=exc,
-                    traceback_text=traceback.format_exc(),
+                    traceback_text=(
+                        recovery_traceback_text or traceback.format_exc()
+                    ),
                 )
                 failed = True
                 break
@@ -514,6 +601,8 @@ def evaluate_arena(
     total = games_played
     if planning_failures != neural_planning_failures + baseline_planning_failures:
         raise RuntimeError("Arena planning failure attribution invariant violated")
+    if planner_recoveries != neural_planner_recoveries + baseline_planner_recoveries:
+        raise RuntimeError("Arena planner recovery attribution invariant violated")
     all_stats = _candidate_stats(all_candidate_counts)
     neural_stats = _candidate_stats(neural_candidate_counts)
     result = {
@@ -532,6 +621,9 @@ def evaluate_arena(
         "planning_failure_count": planning_failures,
         "neural_planning_failure_count": neural_planning_failures,
         "baseline_planning_failure_count": baseline_planning_failures,
+        "planner_recovery_count": planner_recoveries,
+        "neural_planner_recovery_count": neural_planner_recoveries,
+        "baseline_planner_recovery_count": baseline_planner_recoveries,
         "unexpected_failure_count": unexpected_failures,
         "proven_terminal_adjudication_count": proven_terminal_adjudications,
         "first_failure": first_failure,
