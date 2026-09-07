@@ -567,15 +567,52 @@ class ActionPlanner:
                     continue
                 required_moves.extend(state.get_legal_moves(position))
 
-            for move in sorted(
+            ordered_required_moves = sorted(
                 required_moves,
                 key=lambda candidate: _required_move_sort_key(candidate, required),
-            ):
+            )
+
+            # A progress=2 Move can advance both required Present boards at once.
+            # Probe only those few candidates through the canonical submission
+            # predicate before descending. A royal-unsafe progress=2 Move can
+            # otherwise open a huge optional-move subtree and consume the whole
+            # budget before a later one-Move legal Action is even inspected.
+            #
+            # This is ordering only: every Move remains in the search, and a
+            # prebuilt child is reused below instead of executing the Move twice.
+            prepared_required_moves = []
+            for move in ordered_required_moves:
                 if tracker.check(depth):
                     return found_completion
-                child = state.clone_for_simulation()
-                if not child.execute_action_move(move):
-                    continue
+                child = None
+                direct_completion = False
+                if _required_board_progress(move, required) == 2:
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                    child_required = set(ActionRules.required_boards(
+                        child._ensure_current_action(),
+                        child.timeline_manager.timelines,
+                    ))
+                    if not child_required:
+                        if tracker.check_time():
+                            return found_completion
+                        direct_completion = child.can_submit_action()
+                        if tracker.check_time():
+                            return found_completion
+                prepared_required_moves.append((direct_completion, move, child))
+
+            # Python's sort is stable, so non-direct candidates retain the exact
+            # deterministic order produced by _required_move_sort_key.
+            prepared_required_moves.sort(key=lambda item: not item[0])
+
+            for _, move, child in prepared_required_moves:
+                if tracker.check(depth):
+                    return found_completion
+                if child is None:
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
                 if self._dfs(
                     child,
                     path + (MoveSpec.from_move(move),),
