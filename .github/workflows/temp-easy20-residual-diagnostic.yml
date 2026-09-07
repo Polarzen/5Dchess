@@ -18,7 +18,7 @@ concurrency:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,58 +44,159 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Apply runner-only early failed-state lookup
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path("src/ai/action_planner.py")
-          text = p.read_text(encoding="utf-8")
-          old_head = "        found_completion = False\n\n        # A non-empty required set proves that The Present still belongs to the\n"
-          new_head = "        found_completion = False\n\n        # Check the failure-only transposition cache before royal safety.\n        key = ActionSearch._state_key(state)\n        if tracker.check_time():\n            return False\n        if key in failed_states:\n            tracker.failed_state_cache_hits += 1\n            return False\n\n        # A non-empty required set proves that The Present still belongs to the\n"
-          old_late = "        # Reuse the engine ActionSearch equivalence relation, whose regression\n        # tests prove that Position.move_number and commuting Action Move order\n        # do not affect future rule semantics.  This is deliberately a failed-\n        # state cache rather than a general visited set: successful states remain\n        # searchable so ordered candidate Actions and evaluator semantics are\n        # unchanged.  The cache is scoped to this one plan() call.\n        key = ActionSearch._state_key(state)\n        if tracker.check_time():\n            return found_completion\n        if key in failed_states:\n            tracker.failed_state_cache_hits += 1\n            return found_completion\n\n        tracker.explored_states += 1\n"
-          new_late = "        # The failure-only transposition key was checked above before the\n        # potentially expensive canonical submission predicate.\n        tracker.explored_states += 1\n"
-          if text.count(old_head) != 1 or text.count(old_late) != 1:
-              raise SystemExit(f"planner anchors head={text.count(old_head)} late={text.count(old_late)}")
-          p.write_text(text.replace(old_head, new_head, 1).replace(old_late, new_late, 1), encoding="utf-8")
-          PY
-          python -m py_compile src/ai/action_planner.py
-      - name: Run focused planner regressions
-        run: |
-          python -m pytest -q \
-            tests/test_ai_action_planning.py \
-            tests/test_action_planner_direct_completion.py \
-            tests/test_action_planner_ordering.py \
-            tests/test_action_planner_transposition.py \
-            tests/test_royal_rules.py
-      - name: Run residual seeds with unchanged production budgets
+      - name: Profile fixed seed53 planner timeout
         run: |
           mkdir -p _work/residual-diagnostic
           python - <<'PY'
           import json
           import time
           from pathlib import Path
-          from src.ai.action_planner import ActionSearchBudget
+
+          import src.training.arena as arena_module
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+          from src.engine.action import ActionRules
+          from src.engine.action_search import ActionSearch
+          from src.engine.engine import FiveDEngine
+          from src.engine.royal_rules import RoyalRules
           from src.training.arena import evaluate_arena
+
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
-          seeds = [51, 53, 55]
-          budget = ActionSearchBudget(max_states=1024, max_actions=24, max_move_depth=32, max_seconds=5.0)
-          rows = []
-          for seed in seeds:
-              started = time.monotonic()
-              result = evaluate_arena(checkpoint=checkpoint, opponent="easy", games=1, device_name="cpu", seed=42, max_actions=120, budget=budget, max_wall_seconds=900, output="json", model_color="black", game_seeds=[seed])
-              row = {"seed": seed, "result": result, "wall_seconds": time.monotonic() - started}
-              rows.append(row)
-              print("EARLY_CACHE_RESULT=" + json.dumps({"seed": seed, "planning_failures": result["planning_failure_count"], "recoveries": result["planner_recovery_count"], "terminal_proofs": result["proven_terminal_adjudication_count"], "first_failure": result.get("first_failure"), "wall_seconds": row["wall_seconds"]}, sort_keys=True))
-          summary = {"experiment": "check failed-state transposition before can_submit royal-safety scan", "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0}, "seeds": seeds, "failed_seeds": [row["seed"] for row in rows if row["result"]["planning_failure_count"]], "passed_seeds": [row["seed"] for row in rows if not row["result"]["planning_failure_count"]], "rows": rows}
-          (out_dir / "early-failed-state-cache.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-          print("EARLY_CACHE_SUMMARY=" + json.dumps({"failed_seeds": summary["failed_seeds"], "passed_seeds": summary["passed_seeds"]}, sort_keys=True))
+          budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
+
+          metric_names = (
+              "can_submit_action",
+              "is_action_safe",
+              "clone_for_simulation",
+              "get_legal_moves",
+              "execute_action_move",
+              "required_boards",
+              "movable_boards",
+              "state_key",
+          )
+          active = None
+          failure_profiles = []
+
+          def new_metrics():
+              return {name: {"calls": 0, "seconds": 0.0} for name in metric_names}
+
+          def timed(name, fn):
+              def wrapper(*args, **kwargs):
+                  started = time.perf_counter()
+                  try:
+                      return fn(*args, **kwargs)
+                  finally:
+                      if active is not None:
+                          item = active[name]
+                          item["calls"] += 1
+                          item["seconds"] += time.perf_counter() - started
+              return wrapper
+
+          FiveDEngine.can_submit_action = timed(
+              "can_submit_action", FiveDEngine.can_submit_action
+          )
+          FiveDEngine.clone_for_simulation = timed(
+              "clone_for_simulation", FiveDEngine.clone_for_simulation
+          )
+          FiveDEngine.get_legal_moves = timed(
+              "get_legal_moves", FiveDEngine.get_legal_moves
+          )
+          FiveDEngine.execute_action_move = timed(
+              "execute_action_move", FiveDEngine.execute_action_move
+          )
+          RoyalRules.is_action_safe = timed(
+              "is_action_safe", RoyalRules.is_action_safe
+          )
+          ActionRules.required_boards = staticmethod(timed(
+              "required_boards", ActionRules.required_boards
+          ))
+          ActionRules.movable_boards = staticmethod(timed(
+              "movable_boards", ActionRules.movable_boards
+          ))
+          ActionSearch._state_key = staticmethod(timed(
+              "state_key", ActionSearch._state_key
+          ))
+
+          original_search = ActionPlanner.search
+
+          def profiled_search(self, engine):
+              global active
+              previous = active
+              metrics = new_metrics()
+              active = metrics
+              started = time.perf_counter()
+              try:
+                  result = original_search(self, engine)
+              finally:
+                  elapsed = time.perf_counter() - started
+                  active = previous
+              if not result.candidates and result.termination_reason is not None:
+                  action = engine._ensure_current_action()
+                  required = ActionRules.required_boards(
+                      action, engine.timeline_manager.timelines
+                  )
+                  movable = ActionRules.movable_boards(
+                      action, engine.timeline_manager.timelines
+                  )
+                  profile = {
+                      "player": engine.current_turn_color.value,
+                      "ply": engine.move_counter,
+                      "timeline_count": len(engine.timeline_manager.timelines),
+                      "state_signature_sha256": arena_module._state_signature_sha256(engine),
+                      "required_count": len(required),
+                      "movable_count": len(movable),
+                      "termination_reason": result.termination_reason,
+                      "explored_states": result.explored_states,
+                      "failed_state_cache_hits": result.failed_state_cache_hits,
+                      "elapsed_seconds": elapsed,
+                      "metrics": metrics,
+                  }
+                  failure_profiles.append(profile)
+                  print("PLANNER_PROFILE=" + json.dumps(profile, sort_keys=True))
+              return result
+
+          ActionPlanner.search = profiled_search
+
+          started = time.monotonic()
+          result = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=1,
+              device_name="cpu",
+              seed=42,
+              max_actions=120,
+              budget=budget,
+              max_wall_seconds=900,
+              output="json",
+              model_color="black",
+              game_seeds=[53],
+          )
+          summary = {
+              "experiment": "seed53 per-plan planner hotspot counters",
+              "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
+              "result": result,
+              "failure_profiles": failure_profiles,
+              "wall_seconds": time.monotonic() - started,
+          }
+          (out_dir / "seed53-planner-profile.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print("PROFILE_SUMMARY=" + json.dumps({
+              "planning_failures": result["planning_failure_count"],
+              "profile_count": len(failure_profiles),
+              "first_failure": result.get("first_failure"),
+          }, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-early-failed-state-cache-${{ github.run_id }}
+          name: seed53-planner-profile-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
