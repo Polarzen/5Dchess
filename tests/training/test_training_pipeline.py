@@ -24,6 +24,7 @@ from src.engine.engine import FiveDEngine
 from src.engine.move_generator import Move
 from src.engine.piece import Piece
 from src.engine.timeline import Timeline
+import src.training.arena as arena_module
 from src.training.arena import build_parser as build_arena_parser, evaluate_arena
 from src.training.agent import NeuralPolicyValueAgent
 from src.training.checkpoint import (
@@ -497,6 +498,11 @@ def test_arena_incomplete_planning_failure_is_budget_termination(tmp_path, monke
         raise ActionPlanningError("time_budget", incomplete=True)
 
     monkeypatch.setattr(NeuralPolicyValueAgent, "plan_action", fail_to_plan)
+    monkeypatch.setattr(
+        arena_module,
+        "_recover_incomplete_planner_action",
+        lambda engine, exc: ("unresolved", None),
+    )
     result = evaluate_arena(
         checkpoint=checkpoint,
         opponent="easy",
