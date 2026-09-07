@@ -8,8 +8,10 @@ from src.ai.action_planner import (
     _required_move_sort_key,
 )
 from src.engine import ActionRules, FiveDEngine, Piece, Position
+from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
+from src.engine.timeline import Timeline
 from src.utils.constants import ChessColor, PieceType
 
 
@@ -60,6 +62,43 @@ def _small_complete_search_engine() -> FiveDEngine:
     )
     position.set_piece(0, 6, Piece(PieceType.ROOK, ChessColor.WHITE))
     main.add_position(position)
+    manager.refresh_activity()
+    engine.current_turn_color = ChessColor.WHITE
+    engine.action_history = []
+    engine.current_action = ActionRules.begin(
+        ChessColor.WHITE,
+        manager.timelines,
+    )
+    return engine
+
+
+def _commuting_two_board_engine() -> FiveDEngine:
+    engine = FiveDEngine()
+    manager = engine.timeline_manager
+    manager.timelines.clear()
+
+    def make_position(timeline_id: int, rook_x: int) -> Position:
+        board = [["" for _ in range(8)] for _ in range(8)]
+        board[7][7] = "K"
+        board[0][7] = "k"
+        position = Position(
+            board=board,
+            turn=ChessColor.WHITE,
+            timeline_id=timeline_id,
+            time_point=0,
+            unmoved_pawns=set(),
+        )
+        position.set_piece(rook_x, 6, Piece(PieceType.ROOK, ChessColor.WHITE))
+        return position
+
+    main = Timeline(timeline_id=0)
+    main.add_position(make_position(0, 0))
+    lane = Timeline(timeline_id=1, owner=ChessColor.WHITE)
+    lane.add_position(make_position(1, 1))
+    manager.timelines = {0: main, 1: lane}
+    manager._next_positive_id = 2
+    manager._next_negative_id = -1
+    manager.active_timeline_id = 0
     manager.refresh_activity()
     engine.current_turn_color = ChessColor.WHITE
     engine.action_history = []
@@ -146,3 +185,31 @@ def test_ordering_change_preserves_complete_candidate_set(monkeypatch):
     after_set = {_candidate_signature(candidate) for candidate in after.candidates}
     assert before_set
     assert before_set == after_set
+
+
+def test_commuting_partial_move_orders_share_failed_state_signature():
+    engine = _commuting_two_board_engine()
+    first_position = engine.timeline_manager.get_timeline(0).get_position(0)
+    second_position = engine.timeline_manager.get_timeline(1).get_position(0)
+    first_move = next(
+        move
+        for move in engine.get_legal_moves(first_position)
+        if not move.is_branching and not move.is_cross_timeline
+    )
+    second_move = next(
+        move
+        for move in engine.get_legal_moves(second_position)
+        if not move.is_branching and not move.is_cross_timeline
+    )
+
+    first_then_second = engine.clone_for_simulation()
+    assert first_then_second.execute_action_move(first_move)
+    assert first_then_second.execute_action_move(second_move)
+
+    second_then_first = engine.clone_for_simulation()
+    assert second_then_first.execute_action_move(second_move)
+    assert second_then_first.execute_action_move(first_move)
+
+    assert [move.source.board.timeline for move in first_then_second.current_action.moves] == [0, 1]
+    assert [move.source.board.timeline for move in second_then_first.current_action.moves] == [1, 0]
+    assert ActionSearch._state_key(first_then_second) == ActionSearch._state_key(second_then_first)
