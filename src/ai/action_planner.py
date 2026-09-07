@@ -17,6 +17,7 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
+from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
 from src.utils.constants import ChessColor, GameState, PieceType
@@ -281,6 +282,7 @@ class ActionSearchResult:
     candidates: tuple[tuple[MoveSpec, ...], ...]
     explored_states: int
     termination_reason: str | None = None
+    failed_state_cache_hits: int = 0
 
     @property
     def has_legal_action(self) -> bool:
@@ -297,6 +299,7 @@ class _BudgetTracker:
         self.started_at = time.monotonic()
         self.explored_states = 0
         self.explored_actions = 0
+        self.failed_state_cache_hits = 0
         self.termination_reason: str | None = None
 
     def check_time(self) -> bool:
@@ -415,11 +418,13 @@ class ActionPlanner:
         tracker = _BudgetTracker(self.budget)
         self._tracker = tracker
         candidates: list[tuple[MoveSpec, ...]] = []
-        self._dfs(state, (), 0, tracker, candidates)
+        failed_states: set[tuple] = set()
+        self._dfs(state, (), 0, tracker, candidates, failed_states)
         return ActionSearchResult(
             tuple(candidates),
             tracker.explored_states,
             tracker.termination_reason,
+            tracker.failed_state_cache_hits,
         )
 
     # Friendly aliases used by older callers and by the AI implementations.
@@ -452,6 +457,7 @@ class ActionPlanner:
             "explored_states": result.explored_states,
             "candidate_count": len(result.candidates),
             "search_complete": not result.exhausted,
+            "failed_state_cache_hits": result.failed_state_cache_hits,
         })
         return AIActionPlan(
             color=engine.current_turn_color,
@@ -469,20 +475,22 @@ class ActionPlanner:
         depth: int,
         tracker: _BudgetTracker,
         candidates: list[tuple[MoveSpec, ...]],
-    ) -> None:
+        failed_states: set[tuple],
+    ) -> bool:
         # Time is the only budget that must gate even completion checks.  This
         # prevents entering a potentially expensive canonical submit query after
         # the wall deadline has already elapsed.  Depth/state/action limits are
         # still checked after completion so a witness exactly on those bounds is
         # accepted as before.
         if tracker.check_time():
-            return
+            return False
 
         action = state._ensure_current_action()
         required = set(ActionRules.required_boards(
             action,
             state.timeline_manager.timelines,
         ))
+        found_completion = False
 
         # A non-empty required set proves that The Present still belongs to the
         # acting color, so ActionRules.can_submit() must be false.  Once no board
@@ -492,18 +500,33 @@ class ActionPlanner:
         # inconclusive rather than silently accepted late.
         if not required and state.can_submit_action():
             if tracker.check_time():
-                return
+                return False
             candidates.append(path)
             tracker.explored_actions += 1
+            found_completion = True
             if (
                 self.budget.max_actions is not None
                 and tracker.explored_actions >= self.budget.max_actions
             ):
                 tracker.termination_reason = "action_budget"
-                return
+                return True
 
         if tracker.check(depth):
-            return
+            return found_completion
+
+        # Reuse the engine ActionSearch equivalence relation, whose regression
+        # tests prove that Position.move_number and commuting Action Move order
+        # do not affect future rule semantics.  This is deliberately a failed-
+        # state cache rather than a general visited set: successful states remain
+        # searchable so ordered candidate Actions and evaluator semantics are
+        # unchanged.  The cache is scoped to this one plan() call.
+        key = ActionSearch._state_key(state)
+        if tracker.check_time():
+            return found_completion
+        if key in failed_states:
+            tracker.failed_state_cache_hits += 1
+            return found_completion
+
         tracker.explored_states += 1
 
         movable = ActionRules.movable_boards(
@@ -511,7 +534,9 @@ class ActionPlanner:
             state.timeline_manager.timelines,
         )
         if not movable:
-            return
+            if not found_completion and tracker.termination_reason is None:
+                failed_states.add(key)
+            return found_completion
 
         ordered_boards = tuple(
             sorted(
@@ -547,23 +572,25 @@ class ActionPlanner:
                 key=lambda candidate: _required_move_sort_key(candidate, required),
             ):
                 if tracker.check(depth):
-                    return
+                    return found_completion
                 child = state.clone_for_simulation()
                 if not child.execute_action_move(move):
                     continue
-                self._dfs(
+                if self._dfs(
                     child,
                     path + (MoveSpec.from_move(move),),
                     depth + 1,
                     tracker,
                     candidates,
-                )
+                    failed_states,
+                ):
+                    found_completion = True
 
             ordered_boards = tuple(optional_boards)
 
         for board in ordered_boards:
             if tracker.check(depth):
-                return
+                return found_completion
             position = state._resolve_position(board)
             if position is None:
                 continue
@@ -576,17 +603,29 @@ class ActionPlanner:
             )
             for move in legal_moves:
                 if tracker.check(depth):
-                    return
+                    return found_completion
                 child = state.clone_for_simulation()
                 if not child.execute_action_move(move):
                     continue
-                self._dfs(
+                if self._dfs(
                     child,
                     path + (MoveSpec.from_move(move),),
                     depth + 1,
                     tracker,
                     candidates,
-                )
+                    failed_states,
+                ):
+                    found_completion = True
+
+        # Only cache a state after every reachable descendant was explored and
+        # none produced a legal completion.  Any budget interruption leaves the
+        # state unresolved and therefore uncached.
+        if (
+            not found_completion
+            and tracker.termination_reason is None
+        ):
+            failed_states.add(key)
+        return found_completion
 
 
 def enumerate_action_candidates(
