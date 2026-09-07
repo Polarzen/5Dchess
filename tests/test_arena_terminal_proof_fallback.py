@@ -1,5 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
+pytest.importorskip("torch")
+
 from src.ai.action_planner import ActionPlanningError
 from src.engine.action_search import ActionSearch
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
