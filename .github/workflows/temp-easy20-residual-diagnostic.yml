@@ -44,12 +44,11 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Probe L3 canonical two-move witnesses on seed 53
+      - name: Probe royal-safety rescue moves on seed 53
         run: |
           mkdir -p _work/residual-diagnostic
           python - <<'PY'
           from pathlib import Path
-
           p = Path("src/ai/action_planner.py")
           text = p.read_text(encoding="utf-8")
           anchor = "        ordered_boards = tuple(\n"
@@ -64,22 +63,15 @@ jobs:
               raise SystemExit(f"ordered_boards anchor count={text.count(anchor)}")
           text = text.replace(anchor, insert, 1)
           board_key = "                    board not in required,\n"
-          board_key_new = (
-              "                    board in required if optional_first "
-              "else board not in required,\n"
-          )
+          replacement = "                    board in required if optional_first else board not in required,\n"
           if text.count(board_key) != 1:
-              raise SystemExit(f"board-key anchor count={text.count(board_key)}")
-          text = text.replace(board_key, board_key_new, 1)
+              raise SystemExit(f"board key count={text.count(board_key)}")
+          text = text.replace(board_key, replacement, 1)
           special = "        if len(required) == 2:\n            required_moves: list[Move] = []\n"
-          special_new = (
-              "        if len(required) == 2 and not optional_first:\n"
-              "            required_moves: list[Move] = []\n"
-          )
+          replacement = "        if len(required) == 2 and not optional_first:\n            required_moves: list[Move] = []\n"
           if text.count(special) != 1:
-              raise SystemExit(f"len2 anchor count={text.count(special)}")
-          text = text.replace(special, special_new, 1)
-          p.write_text(text, encoding="utf-8")
+              raise SystemExit(f"len2 count={text.count(special)}")
+          p.write_text(text.replace(special, replacement, 1), encoding="utf-8")
           PY
           python -m py_compile src/ai/action_planner.py
           python - <<'PY'
@@ -90,12 +82,16 @@ jobs:
           import src.training.arena as arena_module
           from src.ai.action_planner import ActionSearchBudget, _required_move_sort_key
           from src.engine.action import ActionRules
+          from src.engine.engine import FiveDEngine
           from src.training.arena import evaluate_arena
 
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
           planner_budget = ActionSearchBudget(max_states=1024, max_actions=24, max_move_depth=32, max_seconds=5.0)
-          traces = []
+          original_can_submit = FiveDEngine.can_submit_action
+          unsafe_rows = []
+          rescue_witness = None
+          in_probe = False
 
           def board_key(board):
               side = getattr(board.side, "value", board.side)
@@ -109,75 +105,65 @@ jobs:
                   "cross_timeline": bool(move.is_cross_timeline),
               }
 
-          def traced_recover(engine, planning_error):
-              action = engine._ensure_current_action()
-              required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
-              movable = tuple(ActionRules.movable_boards(action, engine.timeline_manager.timelines))
-              optional = sorted((b for b in movable if b not in required), key=board_key)
-              l3_boards = [b for b in optional if b.timeline == 3]
-              probes = []
-              witness = None
-              started = time.monotonic()
+          def traced_can_submit(self):
+              global in_probe, rescue_witness
+              result = original_can_submit(self)
+              if result or in_probe or len(unsafe_rows) >= 4:
+                  return result
+              action = self._ensure_current_action()
+              required = set(ActionRules.required_boards(action, self.timeline_manager.timelines))
+              if required:
+                  return result
 
-              for board in l3_boards:
-                  position = engine._resolve_position(board)
-                  if position is None:
-                      continue
-                  first_moves = sorted(engine.get_legal_moves(position), key=lambda m: _required_move_sort_key(m, required))
-                  for first in first_moves:
-                      child = engine.clone_for_simulation()
-                      if not child.execute_action_move(first):
+              row = {
+                  "path_len": len(action.moves),
+                  "path": [move_row(m) for m in action.moves],
+                  "movable": [],
+                  "moves_checked": 0,
+                  "rescue": None,
+              }
+              unsafe_rows.append(row)
+              in_probe = True
+              try:
+                  movable = sorted(
+                      ActionRules.movable_boards(action, self.timeline_manager.timelines),
+                      key=board_key,
+                  )
+                  row["movable"] = [str(b) for b in movable]
+                  for board in movable:
+                      position = self._resolve_position(board)
+                      if position is None:
                           continue
-                      child_action = child._ensure_current_action()
-                      child_required = set(ActionRules.required_boards(child_action, child.timeline_manager.timelines))
-                      if len(child_required) >= len(required):
-                          continue
-                      row = {
-                          "first": move_row(first),
-                          "child_required": [str(b) for b in sorted(child_required, key=board_key)],
-                          "second_moves_checked": 0,
-                          "submit_checks": 0,
-                          "found": False,
-                      }
-                      probes.append(row)
-                      if len(child_required) != 1:
-                          continue
-                      remaining = next(iter(child_required))
-                      remaining_position = child._resolve_position(remaining)
-                      if remaining_position is None:
-                          continue
-                      second_moves = sorted(child.get_legal_moves(remaining_position), key=lambda m: _required_move_sort_key(m, child_required))
-                      for second in second_moves:
-                          row["second_moves_checked"] += 1
-                          grandchild = child.clone_for_simulation()
-                          if not grandchild.execute_action_move(second):
-                              continue
-                          grand_action = grandchild._ensure_current_action()
-                          if ActionRules.required_boards(grand_action, grandchild.timeline_manager.timelines):
-                              continue
-                          row["submit_checks"] += 1
-                          if grandchild.can_submit_action():
-                              row["found"] = True
-                              row["second"] = move_row(second)
-                              witness = {"first": move_row(first), "second": move_row(second)}
+                      moves = sorted(
+                          self.get_legal_moves(position),
+                          key=lambda m: _required_move_sort_key(m, set()),
+                      )
+                      for move in moves:
+                          if row["moves_checked"] >= 160:
                               break
-                      if witness is not None:
+                          row["moves_checked"] += 1
+                          child = self.clone_for_simulation()
+                          if not child.execute_action_move(move):
+                              continue
+                          child_action = child._ensure_current_action()
+                          if ActionRules.required_boards(child_action, child.timeline_manager.timelines):
+                              continue
+                          if original_can_submit(child):
+                              row["rescue"] = move_row(move)
+                              rescue_witness = {
+                                  "prefix": row["path"],
+                                  "rescue": row["rescue"],
+                              }
+                              break
+                      if row["rescue"] is not None or row["moves_checked"] >= 160:
                           break
-                  if witness is not None:
-                      break
+              finally:
+                  in_probe = False
+              return result
 
-              traces.append({
-                  "ply": engine.move_counter,
-                  "required": [str(b) for b in sorted(required, key=board_key)],
-                  "optional": [str(b) for b in optional],
-                  "l3_boards": [str(b) for b in l3_boards],
-                  "probe_elapsed_seconds": time.monotonic() - started,
-                  "probes": probes,
-                  "two_move_witness": witness,
-              })
-              return "unresolved", None
-
-          arena_module._recover_incomplete_planner_action = traced_recover
+          FiveDEngine.can_submit_action = traced_can_submit
+          arena_module._recover_incomplete_planner_action = lambda engine, err: ("unresolved", None)
+          started = time.monotonic()
           result = evaluate_arena(
               checkpoint=checkpoint,
               opponent="easy",
@@ -191,15 +177,26 @@ jobs:
               model_color="black",
               game_seeds=[53],
           )
-          summary = {"result": result, "traces": traces}
-          (out_dir / "l3-two-move-probe.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-          print("L3_TWO_MOVE_PROBE=" + json.dumps({"first_failure": result.get("first_failure"), "traces": traces}, sort_keys=True))
+          summary = {
+              "result": result,
+              "unsafe_zero_required_states": unsafe_rows,
+              "rescue_witness": rescue_witness,
+              "wall_seconds": time.monotonic() - started,
+          }
+          (out_dir / "royal-rescue-probe.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print("ROYAL_RESCUE_PROBE=" + json.dumps({
+              "first_failure": result.get("first_failure"),
+              "unsafe_states": unsafe_rows,
+              "rescue_witness": rescue_witness,
+          }, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-l3-two-move-probe-${{ github.run_id }}
+          name: easy20-royal-rescue-probe-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
