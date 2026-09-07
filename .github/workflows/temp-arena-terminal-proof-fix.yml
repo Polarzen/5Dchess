@@ -1,0 +1,63 @@
+name: TEMP Arena Terminal Proof Fix
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-arena-terminal-proof-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/local-ai-training-v2
+      - name: Patch Arena terminal proof fallback
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/training/arena.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_import = 'from src.engine.engine import FiveDEngine\nfrom src.engine.outcome_rules import OutcomeKind, OutcomeRules\n'
+          new_import = 'from src.engine.action_search import ActionSearch\nfrom src.engine.engine import FiveDEngine\nfrom src.engine.outcome_rules import OutcomeKind, OutcomeRules\n'
+          if old_import not in text:
+              raise SystemExit('arena import anchor not found')
+          text = text.replace(old_import, new_import, 1)
+
+          old_anchor = '''    engine.game_state = (\n        GameState.CHECKMATE\n        if outcome.kind == OutcomeKind.CHECKMATE\n        else GameState.STALEMATE\n    )\n\n\ndef evaluate_arena(\n'''
+          new_anchor = '''    engine.game_state = (\n        GameState.CHECKMATE\n        if outcome.kind == OutcomeKind.CHECKMATE\n        else GameState.STALEMATE\n    )\n\n\ndef _adjudicate_incomplete_planner_terminal(\n    engine: FiveDEngine,\n    planning_error: ActionPlanningError,\n) -> bool:\n    \"\"\"Prove terminality after a bounded planner stopped without a candidate.\n\n    Planner exhaustion is not itself evidence of checkmate/stalemate.  Arena may\n    spend a larger proof-only budget only on that exceptional path.  A complete\n    no-Action proof is adjudicated; a found witness or another exhausted proof\n    leaves the original planning failure unchanged.\n    \"\"\"\n    if not planning_error.incomplete:\n        return False\n\n    proof = ActionSearch(\n        max_states=4096,\n        max_depth=64,\n        max_seconds=15.0,\n    ).find_legal_completion(engine)\n    if proof.has_legal_action or proof.exhausted:\n        return False\n\n    outcome = OutcomeRules.classify_proven_no_legal_action(\n        engine,\n        engine.current_turn_color,\n        explored_states=proof.explored_states,\n    )\n    engine.game_state = (\n        GameState.CHECKMATE\n        if outcome.kind == OutcomeKind.CHECKMATE\n        else GameState.STALEMATE\n    )\n    return True\n\n\ndef evaluate_arena(\n'''
+          if old_anchor not in text:
+              raise SystemExit('arena helper anchor not found')
+          text = text.replace(old_anchor, new_anchor, 1)
+
+          old_except = '''                if (\n                    isinstance(exc, ActionPlanningError)\n                    and exc.reason == \"no_legal_action\"\n                    and not exc.incomplete\n                ):\n                    _adjudicate_proven_no_action(engine, exc)\n                    proven_terminal_adjudications += 1\n                    break\n                if isinstance(exc, StaleActionPlanError):\n'''
+          new_except = '''                if (\n                    isinstance(exc, ActionPlanningError)\n                    and exc.reason == \"no_legal_action\"\n                    and not exc.incomplete\n                ):\n                    _adjudicate_proven_no_action(engine, exc)\n                    proven_terminal_adjudications += 1\n                    break\n                if (\n                    isinstance(exc, ActionPlanningError)\n                    and exc.incomplete\n                    and _adjudicate_incomplete_planner_terminal(engine, exc)\n                ):\n                    proven_terminal_adjudications += 1\n                    break\n                if isinstance(exc, StaleActionPlanError):\n'''
+          if old_except not in text:
+              raise SystemExit('arena exception anchor not found')
+          text = text.replace(old_except, new_except, 1)
+          path.write_text(text, encoding='utf-8')
+
+          test = Path('tests/test_arena_terminal_proof_fallback.py')
+          test.write_text('''from types import SimpleNamespace\n\nfrom src.ai.action_planner import ActionPlanningError\nfrom src.engine.action_search import ActionSearch\nfrom src.engine.outcome_rules import OutcomeKind, OutcomeRules\nfrom src.training.arena import _adjudicate_incomplete_planner_terminal\nfrom src.utils.constants import ChessColor, GameState\n\n\nclass _Engine:\n    def __init__(self):\n        self.current_turn_color = ChessColor.WHITE\n        self.game_state = GameState.PLAYING\n\n\ndef _budget_error():\n    return ActionPlanningError(\n        \"state_budget\", incomplete=True, explored_states=1024\n    )\n\n\ndef test_incomplete_planner_error_adjudicates_only_after_complete_no_action_proof(monkeypatch):\n    engine = _Engine()\n    monkeypatch.setattr(\n        ActionSearch,\n        \"find_legal_completion\",\n        lambda self, candidate: SimpleNamespace(\n            has_legal_action=False, exhausted=False, explored_states=3955\n        ),\n    )\n    monkeypatch.setattr(\n        OutcomeRules,\n        \"classify_proven_no_legal_action\",\n        lambda engine, color, explored_states=0: SimpleNamespace(\n            kind=OutcomeKind.STALEMATE\n        ),\n    )\n\n    assert _adjudicate_incomplete_planner_terminal(engine, _budget_error()) is True\n    assert engine.game_state == GameState.STALEMATE\n\n\ndef test_incomplete_terminal_proof_does_not_fabricate_terminal_state(monkeypatch):\n    engine = _Engine()\n    monkeypatch.setattr(\n        ActionSearch,\n        \"find_legal_completion\",\n        lambda self, candidate: SimpleNamespace(\n            has_legal_action=False, exhausted=True, explored_states=4096\n        ),\n    )\n\n    assert _adjudicate_incomplete_planner_terminal(engine, _budget_error()) is False\n    assert engine.game_state == GameState.PLAYING\n\n\ndef test_found_witness_keeps_original_planning_failure_semantics(monkeypatch):\n    engine = _Engine()\n    monkeypatch.setattr(\n        ActionSearch,\n        \"find_legal_completion\",\n        lambda self, candidate: SimpleNamespace(\n            has_legal_action=True, exhausted=False, explored_states=1200\n        ),\n    )\n\n    assert _adjudicate_incomplete_planner_terminal(engine, _budget_error()) is False\n    assert engine.game_state == GameState.PLAYING\n''', encoding='utf-8')
+          PY
+      - name: Run focused tests
+        run: |
+          python -m pip install pytest "mysql-connector-python>=8.0.0"
+          pytest -q tests/test_arena_terminal_proof_fallback.py tests/test_action_planner_direct_completion.py
+          python -m compileall -q src tests
+      - name: Commit production fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/training/arena.py tests/test_arena_terminal_proof_fallback.py
+          git diff --cached --check
+          git commit -m "fix(arena): prove terminal state after planner exhaustion"
+          git push origin HEAD:feat/local-ai-training-v2
