@@ -48,54 +48,15 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-
           p = Path("src/ai/action_planner.py")
           text = p.read_text(encoding="utf-8")
-          old_head = '''        found_completion = False
-
-        # A non-empty required set proves that The Present still belongs to the
-'''
-          new_head = '''        found_completion = False
-
-        # A state already proven unable to reach any completion is safe to skip
-        # before the expensive royal-safety submission predicate.  The cache is
-        # failure-only, so a submit-capable equivalent can never be present here.
-        key = ActionSearch._state_key(state)
-        if tracker.check_time():
-            return False
-        if key in failed_states:
-            tracker.failed_state_cache_hits += 1
-            return False
-
-        # A non-empty required set proves that The Present still belongs to the
-'''
-          old_late = '''        # Reuse the engine ActionSearch equivalence relation, whose regression
-        # tests prove that Position.move_number and commuting Action Move order
-        # do not affect future rule semantics.  This is deliberately a failed-
-        # state cache rather than a general visited set: successful states remain
-        # searchable so ordered candidate Actions and evaluator semantics are
-        # unchanged.  The cache is scoped to this one plan() call.
-        key = ActionSearch._state_key(state)
-        if tracker.check_time():
-            return found_completion
-        if key in failed_states:
-            tracker.failed_state_cache_hits += 1
-            return found_completion
-
-        tracker.explored_states += 1
-'''
-          new_late = '''        # Reuse the engine ActionSearch equivalence relation, whose regression
-        # tests prove that Position.move_number and commuting Action Move order
-        # do not affect future rule semantics.  This remains a failure-only
-        # per-plan transposition cache; successful states are never suppressed.
-        tracker.explored_states += 1
-'''
+          old_head = "        found_completion = False\n\n        # A non-empty required set proves that The Present still belongs to the\n"
+          new_head = "        found_completion = False\n\n        # Check the failure-only transposition cache before royal safety.\n        key = ActionSearch._state_key(state)\n        if tracker.check_time():\n            return False\n        if key in failed_states:\n            tracker.failed_state_cache_hits += 1\n            return False\n\n        # A non-empty required set proves that The Present still belongs to the\n"
+          old_late = "        # Reuse the engine ActionSearch equivalence relation, whose regression\n        # tests prove that Position.move_number and commuting Action Move order\n        # do not affect future rule semantics.  This is deliberately a failed-\n        # state cache rather than a general visited set: successful states remain\n        # searchable so ordered candidate Actions and evaluator semantics are\n        # unchanged.  The cache is scoped to this one plan() call.\n        key = ActionSearch._state_key(state)\n        if tracker.check_time():\n            return found_completion\n        if key in failed_states:\n            tracker.failed_state_cache_hits += 1\n            return found_completion\n\n        tracker.explored_states += 1\n"
+          new_late = "        # The failure-only transposition key was checked above before the\n        # potentially expensive canonical submission predicate.\n        tracker.explored_states += 1\n"
           if text.count(old_head) != 1 or text.count(old_late) != 1:
-              raise SystemExit(
-                  f"planner anchors head={text.count(old_head)} late={text.count(old_late)}"
-              )
-          text = text.replace(old_head, new_head, 1).replace(old_late, new_late, 1)
-          p.write_text(text, encoding="utf-8")
+              raise SystemExit(f"planner anchors head={text.count(old_head)} late={text.count(old_late)}")
+          p.write_text(text.replace(old_head, new_head, 1).replace(old_late, new_late, 1), encoding="utf-8")
           PY
           python -m py_compile src/ai/action_planner.py
       - name: Run focused planner regressions
@@ -113,64 +74,22 @@ jobs:
           import json
           import time
           from pathlib import Path
-
           from src.ai.action_planner import ActionSearchBudget
           from src.training.arena import evaluate_arena
-
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
           seeds = [51, 53, 55]
-          budget = ActionSearchBudget(
-              max_states=1024,
-              max_actions=24,
-              max_move_depth=32,
-              max_seconds=5.0,
-          )
+          budget = ActionSearchBudget(max_states=1024, max_actions=24, max_move_depth=32, max_seconds=5.0)
           rows = []
           for seed in seeds:
               started = time.monotonic()
-              result = evaluate_arena(
-                  checkpoint=checkpoint,
-                  opponent="easy",
-                  games=1,
-                  device_name="cpu",
-                  seed=42,
-                  max_actions=120,
-                  budget=budget,
-                  max_wall_seconds=900,
-                  output="json",
-                  model_color="black",
-                  game_seeds=[seed],
-              )
-              row = {
-                  "seed": seed,
-                  "result": result,
-                  "wall_seconds": time.monotonic() - started,
-              }
+              result = evaluate_arena(checkpoint=checkpoint, opponent="easy", games=1, device_name="cpu", seed=42, max_actions=120, budget=budget, max_wall_seconds=900, output="json", model_color="black", game_seeds=[seed])
+              row = {"seed": seed, "result": result, "wall_seconds": time.monotonic() - started}
               rows.append(row)
-              print("EARLY_CACHE_RESULT=" + json.dumps({
-                  "seed": seed,
-                  "planning_failures": result["planning_failure_count"],
-                  "recoveries": result["planner_recovery_count"],
-                  "terminal_proofs": result["proven_terminal_adjudication_count"],
-                  "first_failure": result.get("first_failure"),
-                  "wall_seconds": row["wall_seconds"],
-              }, sort_keys=True))
-          summary = {
-              "experiment": "check failed-state transposition before can_submit royal-safety scan",
-              "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
-              "seeds": seeds,
-              "failed_seeds": [row["seed"] for row in rows if row["result"]["planning_failure_count"]],
-              "passed_seeds": [row["seed"] for row in rows if not row["result"]["planning_failure_count"]],
-              "rows": rows,
-          }
-          (out_dir / "early-failed-state-cache.json").write_text(
-              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
-          )
-          print("EARLY_CACHE_SUMMARY=" + json.dumps({
-              "failed_seeds": summary["failed_seeds"],
-              "passed_seeds": summary["passed_seeds"],
-          }, sort_keys=True))
+              print("EARLY_CACHE_RESULT=" + json.dumps({"seed": seed, "planning_failures": result["planning_failure_count"], "recoveries": result["planner_recovery_count"], "terminal_proofs": result["proven_terminal_adjudication_count"], "first_failure": result.get("first_failure"), "wall_seconds": row["wall_seconds"]}, sort_keys=True))
+          summary = {"experiment": "check failed-state transposition before can_submit royal-safety scan", "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0}, "seeds": seeds, "failed_seeds": [row["seed"] for row in rows if row["result"]["planning_failure_count"]], "passed_seeds": [row["seed"] for row in rows if not row["result"]["planning_failure_count"]], "rows": rows}
+          (out_dir / "early-failed-state-cache.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+          print("EARLY_CACHE_SUMMARY=" + json.dumps({"failed_seeds": summary["failed_seeds"], "passed_seeds": summary["passed_seeds"]}, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
