@@ -8,25 +8,83 @@ on:
       - .github/workflows/temp-planner-witness-diagnostic.yml
 
 permissions:
-  contents: write
+  contents: read
+  actions: read
 
 jobs:
-  patch-and-test:
+  validate-seed42:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Apply staged patch
-        run: python .github/scripts/temp_apply_planner_direct_completion.py
-      - name: Install test dependency
-        run: python -m pip install "pytest>=7.4.0"
-      - name: Run targeted tests
-        run: python -m pytest -q tests/test_action_planner_direct_completion.py tests/test_action_planner_ordering.py
-      - name: Commit production fix
+      - name: Install diagnostic dependency
+        run: python -m pip install "mysql-connector-python>=8.0.0"
+      - name: Download captured seed 42 state
+        uses: actions/download-artifact@v4
+        with:
+          name: planner-seed42-deep-proof-34114771960
+          path: _work/input
+          repository: ${{ github.repository }}
+          run-id: 34114771960
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate original planner budget
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/ai/action_planner.py tests/test_action_planner_direct_completion.py
-          git diff --cached --check
-          git commit -m "fix(planner): prioritize direct Action completions"
-          git push origin HEAD:feat/local-ai-training-v2
+          python - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+          from src.data.archive import GameArchive
+
+          engine = GameArchive.restore(json.loads(
+              Path("_work/input/seed42-failure-state.json").read_text(encoding="utf-8")
+          ))
+          if hasattr(engine, "_replay_origin"):
+              delattr(engine, "_replay_origin")
+
+          budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
+          started = time.monotonic()
+          result = ActionPlanner(budget).search(engine)
+          elapsed = time.monotonic() - started
+
+          if not result.candidates:
+              raise SystemExit(
+                  f"seed42 still has no planner candidate: termination={result.termination_reason} "
+                  f"states={result.explored_states} elapsed={elapsed:.3f}s"
+              )
+
+          first = result.candidates[0]
+          if len(first) != 1:
+              raise SystemExit(f"unexpected first witness length: {len(first)}")
+          spec = first[0]
+          actual = (
+              spec.source.board.timeline,
+              spec.source.board.turn,
+              spec.source.board.side.value,
+              spec.source.x,
+              spec.source.y,
+              spec.destination.board.timeline,
+              spec.destination.board.turn,
+              spec.destination.board.side.value,
+              spec.destination.x,
+              spec.destination.y,
+          )
+          expected = (0, 25, "white", 1, 3, -1, 25, "white", 1, 4)
+          if actual != expected:
+              raise SystemExit(f"first witness changed: {actual!r}")
+
+          print(json.dumps({
+              "accepted": True,
+              "elapsed_seconds": elapsed,
+              "explored_states": result.explored_states,
+              "candidate_count": len(result.candidates),
+              "termination_reason": result.termination_reason,
+              "first_witness": actual,
+          }, indent=2))
+          PY
