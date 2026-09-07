@@ -44,69 +44,67 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Apply runner-only irreversible-threat prune
+      - name: Apply runner-only early failed-state lookup
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          planner = Path("src/ai/action_planner.py")
-          text = planner.read_text(encoding="utf-8")
-          start = text.index("        if not required and state.can_submit_action():\n")
-          end = text.index("        if tracker.check(depth):\n", start)
-          replacement = "\n".join([
-              "        if not required:",
-              "            submit_capable = state.can_submit_action()",
-              "            if tracker.check_time():",
-              "                return False",
-              "            if submit_capable:",
-              "                candidates.append(path)",
-              "                tracker.explored_actions += 1",
-              "                found_completion = True",
-              "                if (",
-              "                    self.budget.max_actions is not None",
-              "                    and tracker.explored_actions >= self.budget.max_actions",
-              "                ):",
-              "                    tracker.termination_reason = \"action_budget\"",
-              "                    return True",
-              "            else:",
-              "                from src.engine.timeline_rules import TimelineRules",
-              "                present = TimelineRules.present(state.timeline_manager.timelines)",
-              "                if present is not None and present.side != action.color:",
-              "                    return False",
-              "",
-          ])
-          planner.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+          p = Path("src/ai/action_planner.py")
+          text = p.read_text(encoding="utf-8")
+          old_head = '''        found_completion = False
 
-          search = Path("src/engine/action_search.py")
-          text = search.read_text(encoding="utf-8")
-          start = text.index("        if (\n            not required\n            and ActionRules.can_submit(action, state.timeline_manager.timelines)\n        ):\n")
-          end = text.index("        if self._budget_exhausted(depth):\n", start)
-          replacement = "\n".join([
-              "        if not required:",
-              "            submit_capable = ActionRules.can_submit(",
-              "                action,",
-              "                state.timeline_manager.timelines,",
-              "            )",
-              "            if submit_capable:",
-              "                return tuple(action.moves)",
-              "            from src.engine.timeline_rules import TimelineRules",
-              "            present = TimelineRules.present(state.timeline_manager.timelines)",
-              "            if present is not None and present.side != action.color:",
-              "                return None",
-              "",
-          ])
-          search.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+        # A non-empty required set proves that The Present still belongs to the
+'''
+          new_head = '''        found_completion = False
+
+        # A state already proven unable to reach any completion is safe to skip
+        # before the expensive royal-safety submission predicate.  The cache is
+        # failure-only, so a submit-capable equivalent can never be present here.
+        key = ActionSearch._state_key(state)
+        if tracker.check_time():
+            return False
+        if key in failed_states:
+            tracker.failed_state_cache_hits += 1
+            return False
+
+        # A non-empty required set proves that The Present still belongs to the
+'''
+          old_late = '''        # Reuse the engine ActionSearch equivalence relation, whose regression
+        # tests prove that Position.move_number and commuting Action Move order
+        # do not affect future rule semantics.  This is deliberately a failed-
+        # state cache rather than a general visited set: successful states remain
+        # searchable so ordered candidate Actions and evaluator semantics are
+        # unchanged.  The cache is scoped to this one plan() call.
+        key = ActionSearch._state_key(state)
+        if tracker.check_time():
+            return found_completion
+        if key in failed_states:
+            tracker.failed_state_cache_hits += 1
+            return found_completion
+
+        tracker.explored_states += 1
+'''
+          new_late = '''        # Reuse the engine ActionSearch equivalence relation, whose regression
+        # tests prove that Position.move_number and commuting Action Move order
+        # do not affect future rule semantics.  This remains a failure-only
+        # per-plan transposition cache; successful states are never suppressed.
+        tracker.explored_states += 1
+'''
+          if text.count(old_head) != 1 or text.count(old_late) != 1:
+              raise SystemExit(
+                  f"planner anchors head={text.count(old_head)} late={text.count(old_late)}"
+              )
+          text = text.replace(old_head, new_head, 1).replace(old_late, new_late, 1)
+          p.write_text(text, encoding="utf-8")
           PY
-          python -m py_compile src/ai/action_planner.py src/engine/action_search.py
-      - name: Run focused rule and planner regressions
+          python -m py_compile src/ai/action_planner.py
+      - name: Run focused planner regressions
         run: |
           python -m pytest -q \
             tests/test_ai_action_planning.py \
             tests/test_action_planner_direct_completion.py \
             tests/test_action_planner_ordering.py \
             tests/test_action_planner_transposition.py \
-            tests/test_action_search_submit_shortcut.py \
-            tests/test_checkmate_stalemate.py \
             tests/test_royal_rules.py
       - name: Run residual seeds with unchanged production budgets
         run: |
@@ -144,30 +142,32 @@ jobs:
                   model_color="black",
                   game_seeds=[seed],
               )
-              rows.append({
+              row = {
                   "seed": seed,
                   "result": result,
                   "wall_seconds": time.monotonic() - started,
-              })
-              print("PRUNE_RESULT=" + json.dumps({
+              }
+              rows.append(row)
+              print("EARLY_CACHE_RESULT=" + json.dumps({
                   "seed": seed,
                   "planning_failures": result["planning_failure_count"],
                   "recoveries": result["planner_recovery_count"],
                   "terminal_proofs": result["proven_terminal_adjudication_count"],
                   "first_failure": result.get("first_failure"),
+                  "wall_seconds": row["wall_seconds"],
               }, sort_keys=True))
           summary = {
-              "experiment": "prune irreversible direct royal threat after Present progress completes",
+              "experiment": "check failed-state transposition before can_submit royal-safety scan",
               "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
               "seeds": seeds,
               "failed_seeds": [row["seed"] for row in rows if row["result"]["planning_failure_count"]],
               "passed_seeds": [row["seed"] for row in rows if not row["result"]["planning_failure_count"]],
               "rows": rows,
           }
-          (out_dir / "irreversible-threat-prune.json").write_text(
+          (out_dir / "early-failed-state-cache.json").write_text(
               json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
           )
-          print("PRUNE_SUMMARY=" + json.dumps({
+          print("EARLY_CACHE_SUMMARY=" + json.dumps({
               "failed_seeds": summary["failed_seeds"],
               "passed_seeds": summary["passed_seeds"],
           }, sort_keys=True))
@@ -176,7 +176,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-irreversible-threat-prune-${{ github.run_id }}
+          name: easy20-early-failed-state-cache-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
