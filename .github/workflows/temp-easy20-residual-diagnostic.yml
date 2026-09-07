@@ -18,7 +18,7 @@ concurrency:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,164 +44,176 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Isolate residual royal-safety states on seed 53
+      - name: Apply runner-only irreversible-threat prune
         run: |
-          mkdir -p _work/residual-diagnostic
           python - <<'PY'
           from pathlib import Path
-          p = Path("src/ai/action_planner.py")
-          text = p.read_text(encoding="utf-8")
-          anchor = "        ordered_boards = tuple(\n"
-          insert = (
-              "        optional_first = (\n"
-              "            len(required) == 2\n"
-              "            and any(board not in required for board in movable)\n"
-              "        )\n"
-              "        ordered_boards = tuple(\n"
+
+          planner = Path("src/ai/action_planner.py")
+          text = planner.read_text(encoding="utf-8")
+          old_import = "from src.engine.move_generator import Move\n"
+          if old_import not in text:
+              raise SystemExit("planner import anchor missing")
+          text = text.replace(
+              old_import,
+              old_import + "from src.engine.timeline_rules import TimelineRules\n",
+              1,
           )
-          if text.count(anchor) != 1:
-              raise SystemExit(f"ordered_boards anchor count={text.count(anchor)}")
-          text = text.replace(anchor, insert, 1)
-          board_key = "                    board not in required,\n"
-          replacement = "                    board in required if optional_first else board not in required,\n"
-          if text.count(board_key) != 1:
-              raise SystemExit(f"board key count={text.count(board_key)}")
-          text = text.replace(board_key, replacement, 1)
-          special = "        if len(required) == 2:\n            required_moves: list[Move] = []\n"
-          replacement = "        if len(required) == 2 and not optional_first:\n            required_moves: list[Move] = []\n"
-          if text.count(special) != 1:
-              raise SystemExit(f"len2 count={text.count(special)}")
-          p.write_text(text.replace(special, replacement, 1), encoding="utf-8")
+          old = '''        if not required and state.can_submit_action():
+            if tracker.check_time():
+                return False
+            candidates.append(path)
+            tracker.explored_actions += 1
+            found_completion = True
+            if (
+                self.budget.max_actions is not None
+                and tracker.explored_actions >= self.budget.max_actions
+            ):
+                tracker.termination_reason = "action_budget"
+                return True
+
+        if tracker.check(depth):
+'''
+          new = '''        if not required:
+            submit_capable = state.can_submit_action()
+            if tracker.check_time():
+                return False
+            if submit_capable:
+                candidates.append(path)
+                tracker.explored_actions += 1
+                found_completion = True
+                if (
+                    self.budget.max_actions is not None
+                    and tracker.explored_actions >= self.budget.max_actions
+                ):
+                    tracker.termination_reason = "action_budget"
+                    return True
+            else:
+                present = TimelineRules.present(state.timeline_manager.timelines)
+                if present is not None and present.side != action.color:
+                    return False
+
+        if tracker.check(depth):
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"planner completion anchor count={text.count(old)}")
+          planner.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          search = Path("src/engine/action_search.py")
+          text = search.read_text(encoding="utf-8")
+          old_import = "from src.engine.move_generator import Move\n"
+          if old_import not in text:
+              raise SystemExit("ActionSearch import anchor missing")
+          text = text.replace(
+              old_import,
+              old_import + "from src.engine.timeline_rules import TimelineRules\n",
+              1,
+          )
+          old = '''        if (
+            not required
+            and ActionRules.can_submit(action, state.timeline_manager.timelines)
+        ):
+            return tuple(action.moves)
+
+        if self._budget_exhausted(depth):
+'''
+          new = '''        if not required:
+            submit_capable = ActionRules.can_submit(
+                action,
+                state.timeline_manager.timelines,
+            )
+            if submit_capable:
+                return tuple(action.moves)
+            present = TimelineRules.present(state.timeline_manager.timelines)
+            if present is not None and present.side != action.color:
+                return None
+
+        if self._budget_exhausted(depth):
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"ActionSearch completion anchor count={text.count(old)}")
+          search.write_text(text.replace(old, new, 1), encoding="utf-8")
           PY
-          python -m py_compile src/ai/action_planner.py
+          python -m py_compile src/ai/action_planner.py src/engine/action_search.py
+      - name: Run focused rule and planner regressions
+        run: |
+          python -m pytest -q \
+            tests/test_ai_action_planning.py \
+            tests/test_action_planner_direct_completion.py \
+            tests/test_action_planner_ordering.py \
+            tests/test_action_planner_transposition.py \
+            tests/test_action_search_submit_shortcut.py \
+            tests/test_checkmate_stalemate.py \
+            tests/test_royal_rules.py
+      - name: Run residual seeds with unchanged production budgets
+        run: |
+          mkdir -p _work/residual-diagnostic
           python - <<'PY'
           import json
           import time
           from pathlib import Path
 
-          import src.training.arena as arena_module
-          from src.ai.action_planner import ActionPlanner, ActionSearchBudget, _required_move_sort_key
-          from src.engine.action import ActionRules
-          from src.engine.engine import FiveDEngine
+          from src.ai.action_planner import ActionSearchBudget
           from src.training.arena import evaluate_arena
 
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
-          planner_budget = ActionSearchBudget(max_states=1024, max_actions=24, max_move_depth=32, max_seconds=5.0)
-          target_sha = "249dc6269b20693f1e0fe7101c72bd8303ac1ce00417c3978ecd029e98b49774"
-          original_search = ActionPlanner.search
-          original_can_submit = FiveDEngine.can_submit_action
-          active_target = False
-          in_probe = False
-          unsafe_rows = []
-          rescue_witness = None
-
-          def board_key(board):
-              side = getattr(board.side, "value", board.side)
-              return (board.timeline, board.turn, str(side))
-
-          def move_row(move):
-              return {
-                  "source": str(move.source),
-                  "destination": str(move.destination),
-                  "branching": bool(move.is_branching),
-                  "cross_timeline": bool(move.is_cross_timeline),
-              }
-
-          def traced_search(self, engine):
-              global active_target
-              previous = active_target
-              active_target = arena_module._state_signature_sha256(engine) == target_sha
-              try:
-                  return original_search(self, engine)
-              finally:
-                  active_target = previous
-
-          def traced_can_submit(self):
-              global in_probe, rescue_witness
-              result = original_can_submit(self)
-              if result or not active_target or in_probe or len(unsafe_rows) >= 8:
-                  return result
-              action = self._ensure_current_action()
-              required = set(ActionRules.required_boards(action, self.timeline_manager.timelines))
-              if required:
-                  return result
-
-              row = {
-                  "move_counter": self.move_counter,
-                  "timeline_count": len(self.timeline_manager.timelines),
-                  "path_len": len(action.moves),
-                  "path": [move_row(m) for m in action.moves],
-                  "movable": [],
-                  "moves_checked": 0,
-                  "rescue": None,
-              }
-              unsafe_rows.append(row)
-              in_probe = True
-              try:
-                  movable = sorted(ActionRules.movable_boards(action, self.timeline_manager.timelines), key=board_key)
-                  row["movable"] = [str(b) for b in movable]
-                  for board in movable:
-                      position = self._resolve_position(board)
-                      if position is None:
-                          continue
-                      moves = sorted(self.get_legal_moves(position), key=lambda m: _required_move_sort_key(m, set()))
-                      for move in moves:
-                          if row["moves_checked"] >= 200:
-                              break
-                          row["moves_checked"] += 1
-                          child = self.clone_for_simulation()
-                          if not child.execute_action_move(move):
-                              continue
-                          child_action = child._ensure_current_action()
-                          if ActionRules.required_boards(child_action, child.timeline_manager.timelines):
-                              continue
-                          if original_can_submit(child):
-                              row["rescue"] = move_row(move)
-                              rescue_witness = {"prefix": row["path"], "rescue": row["rescue"]}
-                              break
-                      if row["rescue"] is not None or row["moves_checked"] >= 200:
-                          break
-              finally:
-                  in_probe = False
-              return result
-
-          ActionPlanner.search = traced_search
-          FiveDEngine.can_submit_action = traced_can_submit
-          arena_module._recover_incomplete_planner_action = lambda engine, err: ("unresolved", None)
-          started = time.monotonic()
-          result = evaluate_arena(
-              checkpoint=checkpoint,
-              opponent="easy",
-              games=1,
-              device_name="cpu",
-              seed=42,
-              max_actions=120,
-              budget=planner_budget,
-              max_wall_seconds=900,
-              output="json",
-              model_color="black",
-              game_seeds=[53],
+          seeds = [51, 53, 55]
+          budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
           )
+          rows = []
+          for seed in seeds:
+              started = time.monotonic()
+              result = evaluate_arena(
+                  checkpoint=checkpoint,
+                  opponent="easy",
+                  games=1,
+                  device_name="cpu",
+                  seed=42,
+                  max_actions=120,
+                  budget=budget,
+                  max_wall_seconds=900,
+                  output="json",
+                  model_color="black",
+                  game_seeds=[seed],
+              )
+              rows.append({
+                  "seed": seed,
+                  "result": result,
+                  "wall_seconds": time.monotonic() - started,
+              })
+              print("PRUNE_RESULT=" + json.dumps({
+                  "seed": seed,
+                  "planning_failures": result["planning_failure_count"],
+                  "recoveries": result["planner_recovery_count"],
+                  "terminal_proofs": result["proven_terminal_adjudication_count"],
+                  "first_failure": result.get("first_failure"),
+              }, sort_keys=True))
           summary = {
-              "result": result,
-              "target_signature": target_sha,
-              "unsafe_zero_required_states": unsafe_rows,
-              "rescue_witness": rescue_witness,
-              "wall_seconds": time.monotonic() - started,
+              "experiment": "prune irreversible direct royal threat after Present progress completes",
+              "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
+              "seeds": seeds,
+              "failed_seeds": [row["seed"] for row in rows if row["result"]["planning_failure_count"]],
+              "passed_seeds": [row["seed"] for row in rows if not row["result"]["planning_failure_count"]],
+              "rows": rows,
           }
-          (out_dir / "residual-royal-rescue.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-          print("RESIDUAL_ROYAL_RESCUE=" + json.dumps({
-              "first_failure": result.get("first_failure"),
-              "unsafe_states": unsafe_rows,
-              "rescue_witness": rescue_witness,
+          (out_dir / "irreversible-threat-prune.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print("PRUNE_SUMMARY=" + json.dumps({
+              "failed_seeds": summary["failed_seeds"],
+              "passed_seeds": summary["passed_seeds"],
           }, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-residual-royal-rescue-${{ github.run_id }}
+          name: easy20-irreversible-threat-prune-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
