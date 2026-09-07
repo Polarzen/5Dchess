@@ -18,6 +18,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feat/local-ai-training-v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Patch legacy timeout test
         run: |
           python - <<'PY'
@@ -44,7 +47,7 @@ jobs:
           python -m pip install "safetensors>=0.4.5" "numpy>=1.24" pytest
       - name: Run focused tests
         run: |
-          pytest -q tests/training/test_training_pipeline.py::test_arena_incomplete_planning_failure_is_budget_termination tests/test_arena_planner_recovery.py
+          python -m pytest -q tests/training/test_training_pipeline.py::test_arena_incomplete_planning_failure_is_budget_termination tests/test_arena_planner_recovery.py
           git diff --check
       - name: Commit test alignment
         run: |
