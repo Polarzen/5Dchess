@@ -44,7 +44,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Test optional-first planner ordering on seed 53
+      - name: Trace optional-first residual state on seed 53
         run: |
           mkdir -p _work/residual-diagnostic
           python - <<'PY'
@@ -52,7 +52,6 @@ jobs:
 
           p = Path("src/ai/action_planner.py")
           text = p.read_text(encoding="utf-8")
-
           anchor = "        ordered_boards = tuple(\n"
           insert = (
               "        optional_first = (\n"
@@ -64,7 +63,6 @@ jobs:
           if text.count(anchor) != 1:
               raise SystemExit(f"ordered_boards anchor count={text.count(anchor)}")
           text = text.replace(anchor, insert, 1)
-
           board_key = "                    board not in required,\n"
           board_key_new = (
               "                    board in required if optional_first "
@@ -73,7 +71,6 @@ jobs:
           if text.count(board_key) != 1:
               raise SystemExit(f"board-key anchor count={text.count(board_key)}")
           text = text.replace(board_key, board_key_new, 1)
-
           special = "        if len(required) == 2:\n            required_moves: list[Move] = []\n"
           special_new = (
               "        if len(required) == 2 and not optional_first:\n"
@@ -90,7 +87,9 @@ jobs:
           import time
           from pathlib import Path
 
-          from src.ai.action_planner import ActionSearchBudget
+          import src.training.arena as arena_module
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget, _required_move_sort_key
+          from src.engine.action import ActionRules
           from src.training.arena import evaluate_arena
 
           checkpoint = Path("_work/checkpoint/best")
@@ -101,6 +100,80 @@ jobs:
               max_move_depth=32,
               max_seconds=5.0,
           )
+          probe_budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=1,
+              max_move_depth=64,
+              max_seconds=1.0,
+          )
+          original_recover = arena_module._recover_incomplete_planner_action
+          traces = []
+
+          def board_key(board):
+              side = getattr(board.side, "value", board.side)
+              return (board.timeline, board.turn, str(side))
+
+          def traced_recover(engine, planning_error):
+              action = engine._ensure_current_action()
+              required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
+              movable = tuple(ActionRules.movable_boards(action, engine.timeline_manager.timelines))
+              board_rows = []
+              probe_rows = []
+              probe_count = 0
+              for board in sorted(movable, key=board_key):
+                  position = engine._resolve_position(board)
+                  moves = [] if position is None else list(engine.get_legal_moves(position))
+                  moves = sorted(moves, key=lambda move: _required_move_sort_key(move, required))
+                  board_rows.append({
+                      "board": str(board),
+                      "required": board in required,
+                      "legal_count": len(moves),
+                      "branching_count": sum(bool(m.is_branching) for m in moves),
+                      "cross_timeline_count": sum(bool(m.is_cross_timeline) for m in moves),
+                      "capture_count": sum(m.captured is not None for m in moves),
+                  })
+                  for move in moves:
+                      if probe_count >= 16:
+                          break
+                      probe_count += 1
+                      child = engine.clone_for_simulation()
+                      if not child.execute_action_move(move):
+                          continue
+                      started = time.monotonic()
+                      probe = ActionPlanner(probe_budget).search(child)
+                      probe_rows.append({
+                          "board": str(board),
+                          "board_required": board in required,
+                          "source": str(move.source),
+                          "destination": str(move.destination),
+                          "branching": bool(move.is_branching),
+                          "cross_timeline": bool(move.is_cross_timeline),
+                          "candidate_count": len(probe.candidates),
+                          "explored_states": probe.explored_states,
+                          "termination_reason": probe.termination_reason,
+                          "elapsed_seconds": time.monotonic() - started,
+                      })
+                  if probe_count >= 16:
+                      break
+              started = time.monotonic()
+              kind, plan = original_recover(engine, planning_error)
+              traces.append({
+                  "ply": engine.move_counter,
+                  "player": engine.current_turn_color.name,
+                  "timeline_count": len(engine.timeline_manager.timelines),
+                  "required": [str(board) for board in sorted(required, key=board_key)],
+                  "movable": [str(board) for board in sorted(movable, key=board_key)],
+                  "boards": board_rows,
+                  "probes": probe_rows,
+                  "planner_reason": planning_error.reason,
+                  "planner_explored_states": planning_error.explored_states,
+                  "recovery_kind": kind,
+                  "recovery_elapsed_seconds": time.monotonic() - started,
+                  "recovery_move_count": len(plan.moves) if plan is not None else None,
+              })
+              return kind, plan
+
+          arena_module._recover_incomplete_planner_action = traced_recover
           started = time.monotonic()
           result = evaluate_arena(
               checkpoint=checkpoint,
@@ -116,28 +189,27 @@ jobs:
               game_seeds=[53],
           )
           summary = {
-              "experiment": "when len(required)==2 and optional boards exist, search optional boards before required boards",
+              "experiment": "optional-first residual state trace plus bounded first-move probes",
               "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
+              "probe_budget": {"states":1024,"actions":1,"moves":64,"seconds":1.0},
               "result": result,
+              "traces": traces,
               "wall_seconds": time.monotonic() - started,
           }
-          (out_dir / "optional-first-summary.json").write_text(
+          (out_dir / "optional-first-trace.json").write_text(
               json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
           )
-          print("OPTIONAL_FIRST_SUMMARY=" + json.dumps({
+          print("OPTIONAL_FIRST_TRACE=" + json.dumps({
               "planning_failures": result["planning_failure_count"],
-              "recoveries": result["planner_recovery_count"],
-              "neural_failures": result["neural_planning_failure_count"],
-              "baseline_failures": result["baseline_planning_failure_count"],
               "first_failure": result.get("first_failure"),
-              "wall_seconds": summary["wall_seconds"],
+              "traces": traces,
           }, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-optional-first-diagnostic-${{ github.run_id }}
+          name: easy20-optional-first-trace-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
