@@ -334,6 +334,7 @@ def evaluate_arena(
     wins = draws = losses = 0
     illegal = stale_failures = budget_terminations = 0
     planning_failures = unexpected_failures = 0
+    neural_planning_failures = baseline_planning_failures = 0
     proven_terminal_adjudications = 0
     first_failure: dict[str, Any] | None = None
     action_counts: list[int] = []
@@ -421,6 +422,10 @@ def evaluate_arena(
                     illegal += 1
                 elif isinstance(exc, ActionPlanningError):
                     planning_failures += 1
+                    if neural_turn:
+                        neural_planning_failures += 1
+                    else:
+                        baseline_planning_failures += 1
                     if exc.incomplete:
                         budget_terminations += 1
                 else:
@@ -464,6 +469,8 @@ def evaluate_arena(
             )
 
     total = games_played
+    if planning_failures != neural_planning_failures + baseline_planning_failures:
+        raise RuntimeError("Arena planning failure attribution invariant violated")
     all_stats = _candidate_stats(all_candidate_counts)
     neural_stats = _candidate_stats(neural_candidate_counts)
     result = {
@@ -480,6 +487,8 @@ def evaluate_arena(
         "stale_failure_count": stale_failures,
         "budget_termination_count": budget_terminations,
         "planning_failure_count": planning_failures,
+        "neural_planning_failure_count": neural_planning_failures,
+        "baseline_planning_failure_count": baseline_planning_failures,
         "unexpected_failure_count": unexpected_failures,
         "proven_terminal_adjudication_count": proven_terminal_adjudications,
         "first_failure": first_failure,
