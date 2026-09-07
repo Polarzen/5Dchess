@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterator, Mapping, TYPE_CHECKING
 
 from src.engine.coordinates import BoardCoord, Square5D
@@ -58,31 +59,25 @@ class RoyalRules:
         return self._king_squares_in(self.timelines, color)
 
     @staticmethod
-    def _attack_geometry_matches(
-        piece: Piece,
-        source: Square5D,
-        target: Square5D,
+    @lru_cache(maxsize=262_144)
+    def _attack_delta_matches(
+        piece_type: PieceType,
+        color: ChessColor,
+        dx: int,
+        dy: int,
+        dt: int,
+        dl: int,
     ) -> bool:
-        """Fast exact capture geometry without allocating a Vector4D per pair.
+        """Pure 4D capture geometry keyed by reusable relative displacement.
 
-        Royal safety evaluates a very large attacker × historical-King product.
-        Constructing ``Vector4D`` objects and repeatedly materializing their
-        derived tuples dominates safe-position scans.  These integer predicates
-        are algebraically equivalent to ``PieceMovementRules`` / pawn capture
-        geometry and leave slider path validation to ``PathRules`` below.
+        Planner DFS visits many cloned states that repeat the same piece type and
+        source→King displacement.  Caching only this occupancy-independent part
+        avoids recomputing millions of identical integer predicates while path
+        blocking remains validated against the current multiverse below.
         """
-        if source.side != target.side:
-            return False
-
-        dx = target.x - source.x
-        dy = target.y - source.y
-        dt = target.turn - source.turn
-        dl = target.timeline - source.timeline
-        piece_type = piece.piece_type
-
         if piece_type == PieceType.PAWN:
-            spatial_forward = -1 if piece.color == ChessColor.WHITE else 1
-            timeline_forward = -1 if piece.color == ChessColor.WHITE else 1
+            spatial_forward = -1 if color == ChessColor.WHITE else 1
+            timeline_forward = -1 if color == ChessColor.WHITE else 1
             return (
                 (
                     abs(dx) == 1
@@ -129,6 +124,32 @@ class RoyalRules:
                 and magnitude_sum == 3
             )
         return False
+
+    @staticmethod
+    def _attack_geometry_matches(
+        piece: Piece,
+        source: Square5D,
+        target: Square5D,
+    ) -> bool:
+        """Fast exact capture geometry without allocating a Vector4D per pair.
+
+        Royal safety evaluates a very large attacker × historical-King product.
+        Constructing ``Vector4D`` objects and repeatedly materializing their
+        derived tuples dominates safe-position scans.  These integer predicates
+        are algebraically equivalent to ``PieceMovementRules`` / pawn capture
+        geometry and leave slider path validation to ``PathRules`` below.
+        """
+        if source.side != target.side:
+            return False
+
+        return RoyalRules._attack_delta_matches(
+            piece.piece_type,
+            piece.color,
+            target.x - source.x,
+            target.y - source.y,
+            target.turn - source.turn,
+            target.timeline - source.timeline,
+        )
 
     @staticmethod
     def _attacks_prevalidated_square_with_view(
