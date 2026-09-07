@@ -18,7 +18,7 @@ concurrency:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,7 +44,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Test ActionPlanner witness-only recovery on residual seeds
+      - name: Probe optional-board prepass on seed 53
         run: |
           mkdir -p _work/residual-diagnostic
           python - <<'PY'
@@ -58,6 +58,7 @@ jobs:
               ActionPlanner,
               ActionSearchBudget,
               MoveSpec,
+              _required_move_sort_key,
               engine_state_signature,
           )
           from src.engine.action import ActionRules
@@ -65,161 +66,145 @@ jobs:
 
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
-          seeds = [51, 53, 55]
+          seed = 53
           planner_budget = ActionSearchBudget(
               max_states=1024,
               max_actions=24,
               max_move_depth=32,
               max_seconds=5.0,
           )
-          recovery_budget = ActionSearchBudget(
-              max_states=4096,
+          child_budget = ActionSearchBudget(
+              max_states=1024,
               max_actions=1,
               max_move_depth=64,
-              max_seconds=15.0,
+              max_seconds=1.5,
           )
 
           original_recover = arena_module._recover_incomplete_planner_action
-          active_trace = None
+          traces = []
 
-          def planner_recover(engine, planning_error):
-              global active_trace
+          def optional_prepass_recover(engine, planning_error):
               action = engine._ensure_current_action()
-              required = tuple(ActionRules.required_boards(
+              required = set(ActionRules.required_boards(
                   action, engine.timeline_manager.timelines
               ))
               movable = tuple(ActionRules.movable_boards(
                   action, engine.timeline_manager.timelines
               ))
+              optional = tuple(board for board in movable if board not in required)
+              trace = {
+                  "ply": engine.move_counter,
+                  "required": [str(board) for board in sorted(required)],
+                  "optional": [str(board) for board in optional],
+                  "planner_reason": planning_error.reason,
+                  "planner_explored_states": planning_error.explored_states,
+                  "attempts": [],
+              }
               started = time.monotonic()
 
-              if not planning_error.incomplete:
-                  kind, plan = original_recover(engine, planning_error)
-                  result = None
-              else:
-                  result = ActionPlanner(recovery_budget).search(engine)
-                  if result.candidates:
-                      selected = result.candidates[0]
-                      plan = AIActionPlan(
-                          color=engine.current_turn_color,
-                          moves=tuple(selected),
-                          start_signature=engine_state_signature(engine),
-                          metadata={
-                              "candidate_count": 1,
-                              "selected_index": 0,
-                              "explored_states": result.explored_states,
-                              "search_complete": not result.exhausted,
-                              "arena_recovery": True,
-                              "arena_recovery_engine": "ActionPlanner",
-                              "recovery_from_reason": planning_error.reason,
-                              "recovery_search_termination_reason": result.termination_reason,
-                              "planner_explored_states": planning_error.explored_states,
-                              "failed_state_cache_hits": result.failed_state_cache_hits,
-                          },
-                          warning=(
-                              "Arena ActionPlanner witness recovery after bounded planner "
-                              f"{planning_error.reason}"
-                          ),
-                      )
-                      kind = "witness"
-                  elif result.exhausted:
-                      kind, plan = "unresolved", None
-                  else:
-                      kind, plan = original_recover(engine, planning_error)
+              if planning_error.incomplete and optional:
+                  optional_moves = []
+                  for board in optional:
+                      position = engine._resolve_position(board)
+                      if position is None:
+                          continue
+                      optional_moves.extend(engine.get_legal_moves(position))
+                  optional_moves = sorted(
+                      optional_moves,
+                      key=lambda move: _required_move_sort_key(move, required),
+                  )[:24]
 
-              elapsed = time.monotonic() - started
-              if active_trace is not None:
-                  active_trace.append({
-                      "player": engine.current_turn_color.name,
-                      "ply": engine.move_counter,
-                      "timeline_count": len(engine.timeline_manager.timelines),
-                      "required_count": len(required),
-                      "required": [str(board) for board in required],
-                      "movable_count": len(movable),
-                      "movable": [str(board) for board in movable],
-                      "planner_reason": planning_error.reason,
-                      "planner_explored_states": planning_error.explored_states,
-                      "recovery_kind": kind,
-                      "recovery_elapsed_seconds": elapsed,
-                      "recovery_move_count": len(plan.moves) if plan is not None else None,
-                      "recovery_metadata": dict(plan.metadata) if plan is not None else None,
-                      "witness_search_explored_states": (
-                          result.explored_states if result is not None else None
-                      ),
-                      "witness_search_termination_reason": (
-                          result.termination_reason if result is not None else None
-                      ),
-                      "witness_search_cache_hits": (
-                          result.failed_state_cache_hits if result is not None else None
-                      ),
-                  })
+                  for move in optional_moves:
+                      child = engine.clone_for_simulation()
+                      if not child.execute_action_move(move):
+                          continue
+                      probe_started = time.monotonic()
+                      result = ActionPlanner(child_budget).search(child)
+                      attempt = {
+                          "source": str(move.source),
+                          "destination": str(move.destination),
+                          "branching": bool(move.is_branching),
+                          "cross_timeline": bool(move.is_cross_timeline),
+                          "explored_states": result.explored_states,
+                          "termination_reason": result.termination_reason,
+                          "candidate_count": len(result.candidates),
+                          "elapsed_seconds": time.monotonic() - probe_started,
+                      }
+                      trace["attempts"].append(attempt)
+                      if result.candidates:
+                          selected = (MoveSpec.from_move(move),) + tuple(result.candidates[0])
+                          plan = AIActionPlan(
+                              color=engine.current_turn_color,
+                              moves=selected,
+                              start_signature=engine_state_signature(engine),
+                              metadata={
+                                  "candidate_count": 1,
+                                  "selected_index": 0,
+                                  "explored_states": result.explored_states,
+                                  "search_complete": not result.exhausted,
+                                  "arena_recovery": True,
+                                  "arena_recovery_engine": "optional_prepass+ActionPlanner",
+                                  "recovery_from_reason": planning_error.reason,
+                                  "recovery_search_termination_reason": result.termination_reason,
+                                  "planner_explored_states": planning_error.explored_states,
+                                  "optional_prepass_attempts": len(trace["attempts"]),
+                              },
+                              warning=(
+                                  "Arena optional-board prepass recovery after bounded planner "
+                                  f"{planning_error.reason}"
+                              ),
+                          )
+                          trace["kind"] = "witness"
+                          trace["elapsed_seconds"] = time.monotonic() - started
+                          trace["move_count"] = len(selected)
+                          traces.append(trace)
+                          return "witness", plan
+
+              kind, plan = original_recover(engine, planning_error)
+              trace["kind"] = kind
+              trace["elapsed_seconds"] = time.monotonic() - started
+              trace["move_count"] = len(plan.moves) if plan is not None else None
+              traces.append(trace)
               return kind, plan
 
-          arena_module._recover_incomplete_planner_action = planner_recover
-
-          rows = []
-          for seed in seeds:
-              trace = []
-              active_trace = trace
-              started = time.monotonic()
-              result = evaluate_arena(
-                  checkpoint=checkpoint,
-                  opponent="easy",
-                  games=1,
-                  device_name="cpu",
-                  seed=42,
-                  max_actions=120,
-                  budget=planner_budget,
-                  max_wall_seconds=900,
-                  output="json",
-                  model_color="black",
-                  game_seeds=[seed],
-              )
-              wall = time.monotonic() - started
-              row = {
-                  "seed": seed,
-                  "result": result,
-                  "recovery_trace": trace,
-                  "wall_seconds": wall,
-              }
-              rows.append(row)
-              print("PLANNER_RECOVERY_RESULT=" + json.dumps({
-                  "seed": seed,
-                  "planning_failures": result["planning_failure_count"],
-                  "recoveries": result["planner_recovery_count"],
-                  "first_failure": result.get("first_failure"),
-                  "recovery_trace": trace,
-                  "wall_seconds": wall,
-              }, sort_keys=True))
-
+          arena_module._recover_incomplete_planner_action = optional_prepass_recover
+          started = time.monotonic()
+          result = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=1,
+              device_name="cpu",
+              seed=42,
+              max_actions=120,
+              budget=planner_budget,
+              max_wall_seconds=900,
+              output="json",
+              model_color="black",
+              game_seeds=[seed],
+          )
           summary = {
-              "experiment": "ActionPlanner witness-only recovery",
+              "experiment": "one optional-board Move before canonical ActionPlanner completion",
+              "seed": seed,
               "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
-              "recovery_budget": {"states":4096,"actions":1,"moves":64,"seconds":15.0},
-              "seeds": seeds,
-              "rows": rows,
-              "failed_seeds": [
-                  row["seed"] for row in rows
-                  if row["result"]["planning_failure_count"]
-              ],
-              "passed_seeds": [
-                  row["seed"] for row in rows
-                  if row["result"]["planning_failure_count"] == 0
-              ],
+              "child_budget": {"states":1024,"actions":1,"moves":64,"seconds":1.5},
+              "result": result,
+              "traces": traces,
+              "wall_seconds": time.monotonic() - started,
           }
-          (out_dir / "planner-recovery-summary.json").write_text(
+          (out_dir / "optional-prepass-summary.json").write_text(
               json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
           )
-          print("PLANNER_RECOVERY_SUMMARY=" + json.dumps({
-              "failed_seeds": summary["failed_seeds"],
-              "passed_seeds": summary["passed_seeds"],
+          print("OPTIONAL_PREPASS_SUMMARY=" + json.dumps({
+              "planning_failures": result["planning_failure_count"],
+              "recoveries": result["planner_recovery_count"],
+              "traces": traces,
           }, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-planner-recovery-diagnostic-${{ github.run_id }}
+          name: easy20-optional-prepass-diagnostic-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
