@@ -1,0 +1,196 @@
+name: TEMP Easy20 Residual Diagnostic
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-easy20-residual-diagnostic.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: temp-easy20-residual-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-training.txt
+      - name: Install game and CPU training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+      - name: Download Stage 1 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-stage1-500-34028226472
+          path: _work/checkpoint
+          repository: ${{ github.repository }}
+          run-id: 34028226472
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate checkpoint shape
+        run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
+      - name: Diagnose residual black-model seeds and recovery budgets
+        run: |
+          mkdir -p _work/residual-diagnostic
+          python - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+
+          import src.training.arena as arena_module
+          from src.ai.action_planner import ActionSearchBudget
+          from src.engine.action_search import ActionSearch as CanonicalActionSearch
+          from src.training.arena import evaluate_arena
+
+          checkpoint = Path("_work/checkpoint/best")
+          out_dir = Path("_work/residual-diagnostic")
+          seeds = [43,45,47,49,51,53,55,57,59,61]
+          planner_budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
+
+          def run_seed(seed: int, recovery_states: int, recovery_seconds: float):
+              if recovery_states == 4096 and recovery_seconds == 15.0:
+                  arena_module.ActionSearch = CanonicalActionSearch
+              else:
+                  def expanded_action_search(*args, **kwargs):
+                      return CanonicalActionSearch(
+                          max_states=recovery_states,
+                          max_depth=64,
+                          max_seconds=recovery_seconds,
+                      )
+                  arena_module.ActionSearch = expanded_action_search
+              started = time.monotonic()
+              result = evaluate_arena(
+                  checkpoint=checkpoint,
+                  opponent="easy",
+                  games=1,
+                  device_name="cpu",
+                  seed=42,
+                  max_actions=120,
+                  budget=planner_budget,
+                  max_wall_seconds=900,
+                  output="json",
+                  model_color="black",
+                  game_seeds=[seed],
+              )
+              result["diagnostic_recovery_budget"] = {
+                  "states": recovery_states,
+                  "seconds": recovery_seconds,
+              }
+              result["diagnostic_wall_seconds"] = time.monotonic() - started
+              return result
+
+          rows = []
+          for seed in seeds:
+              baseline = run_seed(seed, 4096, 15.0)
+              record = {
+                  "seed": seed,
+                  "baseline": baseline,
+                  "expanded_8192_30": None,
+                  "expanded_16384_45": None,
+              }
+              print(json.dumps({
+                  "seed": seed,
+                  "phase": "baseline",
+                  "planning_failures": baseline["planning_failure_count"],
+                  "recoveries": baseline["planner_recovery_count"],
+                  "first_failure": baseline.get("first_failure"),
+                  "wall_seconds": baseline["diagnostic_wall_seconds"],
+              }, sort_keys=True))
+
+              if baseline["planning_failure_count"]:
+                  expanded = run_seed(seed, 8192, 30.0)
+                  record["expanded_8192_30"] = expanded
+                  print(json.dumps({
+                      "seed": seed,
+                      "phase": "expanded_8192_30",
+                      "planning_failures": expanded["planning_failure_count"],
+                      "recoveries": expanded["planner_recovery_count"],
+                      "first_failure": expanded.get("first_failure"),
+                      "wall_seconds": expanded["diagnostic_wall_seconds"],
+                  }, sort_keys=True))
+
+                  if expanded["planning_failure_count"]:
+                      expanded2 = run_seed(seed, 16384, 45.0)
+                      record["expanded_16384_45"] = expanded2
+                      print(json.dumps({
+                          "seed": seed,
+                          "phase": "expanded_16384_45",
+                          "planning_failures": expanded2["planning_failure_count"],
+                          "recoveries": expanded2["planner_recovery_count"],
+                          "first_failure": expanded2.get("first_failure"),
+                          "wall_seconds": expanded2["diagnostic_wall_seconds"],
+                      }, sort_keys=True))
+              rows.append(record)
+
+          arena_module.ActionSearch = CanonicalActionSearch
+          summary = {
+              "planner_budget": {"states":1024,"actions":24,"moves":32,"seconds":5.0},
+              "model_color": "black",
+              "seeds": seeds,
+              "rows": rows,
+              "baseline_failed_seeds": [
+                  row["seed"] for row in rows
+                  if row["baseline"]["planning_failure_count"]
+              ],
+              "resolved_at_8192_30": [
+                  row["seed"] for row in rows
+                  if row["expanded_8192_30"] is not None
+                  and row["expanded_8192_30"]["planning_failure_count"] == 0
+              ],
+              "still_failed_at_8192_30": [
+                  row["seed"] for row in rows
+                  if row["expanded_8192_30"] is not None
+                  and row["expanded_8192_30"]["planning_failure_count"] != 0
+              ],
+              "resolved_at_16384_45": [
+                  row["seed"] for row in rows
+                  if row["expanded_16384_45"] is not None
+                  and row["expanded_16384_45"]["planning_failure_count"] == 0
+              ],
+              "still_failed_at_16384_45": [
+                  row["seed"] for row in rows
+                  if row["expanded_16384_45"] is not None
+                  and row["expanded_16384_45"]["planning_failure_count"] != 0
+              ],
+          }
+          (out_dir / "summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print("DIAGNOSTIC_SUMMARY=" + json.dumps({
+              k: summary[k] for k in (
+                  "baseline_failed_seeds",
+                  "resolved_at_8192_30",
+                  "still_failed_at_8192_30",
+                  "resolved_at_16384_45",
+                  "still_failed_at_16384_45",
+              )
+          }, sort_keys=True))
+          PY
+      - name: Upload diagnostic artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy20-residual-diagnostic-${{ github.run_id }}
+          path: _work/residual-diagnostic
+          retention-days: 7
+          if-no-files-found: warn
