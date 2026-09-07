@@ -50,8 +50,9 @@ jobs:
           PY
       - name: Run focused tests
         run: |
-          python -m pip install pytest "mysql-connector-python>=8.0.0"
+          python -m pip install -r requirements.txt
           python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24" pytest
           pytest -q tests/test_arena_terminal_proof_fallback.py tests/test_action_planner_direct_completion.py
           python -m compileall -q src tests
       - name: Commit production fix
