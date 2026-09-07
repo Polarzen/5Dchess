@@ -44,7 +44,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
-      - name: Probe canonical two-move witnesses on seed 53
+      - name: Probe L3 canonical two-move witnesses on seed 53
         run: |
           mkdir -p _work/residual-diagnostic
           python - <<'PY'
@@ -95,7 +95,6 @@ jobs:
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/residual-diagnostic")
           planner_budget = ActionSearchBudget(max_states=1024, max_actions=24, max_move_depth=32, max_seconds=5.0)
-          original_recover = arena_module._recover_incomplete_planner_action
           traces = []
 
           def board_key(board):
@@ -115,21 +114,17 @@ jobs:
               required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
               movable = tuple(ActionRules.movable_boards(action, engine.timeline_manager.timelines))
               optional = sorted((b for b in movable if b not in required), key=board_key)
+              l3_boards = [b for b in optional if b.timeline == 3]
               probes = []
               witness = None
-              started_probe = time.monotonic()
+              started = time.monotonic()
 
-              # Examine only optional moves that immediately reduce the required
-              # board count. For each such child, enumerate the remaining required
-              # board's canonical legal moves and call the canonical submit rule.
-              for board in optional:
+              for board in l3_boards:
                   position = engine._resolve_position(board)
                   if position is None:
                       continue
-                  moves = sorted(engine.get_legal_moves(position), key=lambda m: _required_move_sort_key(m, required))
-                  for first in moves:
-                      if len(probes) >= 8 or time.monotonic() - started_probe >= 12.0:
-                          break
+                  first_moves = sorted(engine.get_legal_moves(position), key=lambda m: _required_move_sort_key(m, required))
+                  for first in first_moves:
                       child = engine.clone_for_simulation()
                       if not child.execute_action_move(first):
                           continue
@@ -153,50 +148,36 @@ jobs:
                           continue
                       second_moves = sorted(child.get_legal_moves(remaining_position), key=lambda m: _required_move_sort_key(m, child_required))
                       for second in second_moves:
-                          if time.monotonic() - started_probe >= 12.0:
-                              break
                           row["second_moves_checked"] += 1
                           grandchild = child.clone_for_simulation()
                           if not grandchild.execute_action_move(second):
                               continue
                           grand_action = grandchild._ensure_current_action()
-                          grand_required = set(ActionRules.required_boards(grand_action, grandchild.timeline_manager.timelines))
-                          if grand_required:
+                          if ActionRules.required_boards(grand_action, grandchild.timeline_manager.timelines):
                               continue
                           row["submit_checks"] += 1
-                          submit_started = time.monotonic()
-                          can_submit = grandchild.can_submit_action()
-                          submit_elapsed = time.monotonic() - submit_started
-                          row.setdefault("submit_elapsed_seconds", []).append(submit_elapsed)
-                          if can_submit:
+                          if grandchild.can_submit_action():
                               row["found"] = True
                               row["second"] = move_row(second)
                               witness = {"first": move_row(first), "second": move_row(second)}
                               break
                       if witness is not None:
                           break
-                  if witness is not None or time.monotonic() - started_probe >= 12.0:
+                  if witness is not None:
                       break
 
-              recovery_started = time.monotonic()
-              kind, plan = original_recover(engine, planning_error)
               traces.append({
                   "ply": engine.move_counter,
-                  "player": engine.current_turn_color.name,
-                  "timeline_count": len(engine.timeline_manager.timelines),
                   "required": [str(b) for b in sorted(required, key=board_key)],
-                  "movable": [str(b) for b in sorted(movable, key=board_key)],
                   "optional": [str(b) for b in optional],
-                  "probe_elapsed_seconds": time.monotonic() - started_probe,
+                  "l3_boards": [str(b) for b in l3_boards],
+                  "probe_elapsed_seconds": time.monotonic() - started,
                   "probes": probes,
                   "two_move_witness": witness,
-                  "recovery_kind": kind,
-                  "recovery_elapsed_seconds": time.monotonic() - recovery_started,
               })
-              return kind, plan
+              return "unresolved", None
 
           arena_module._recover_incomplete_planner_action = traced_recover
-          started = time.monotonic()
           result = evaluate_arena(
               checkpoint=checkpoint,
               opponent="easy",
@@ -210,20 +191,15 @@ jobs:
               model_color="black",
               game_seeds=[53],
           )
-          summary = {
-              "experiment": "canonical two-move witness probe from optional residual moves",
-              "result": result,
-              "traces": traces,
-              "wall_seconds": time.monotonic() - started,
-          }
-          (out_dir / "two-move-probe.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-          print("TWO_MOVE_PROBE=" + json.dumps({"first_failure": result.get("first_failure"), "traces": traces}, sort_keys=True))
+          summary = {"result": result, "traces": traces}
+          (out_dir / "l3-two-move-probe.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+          print("L3_TWO_MOVE_PROBE=" + json.dumps({"first_failure": result.get("first_failure"), "traces": traces}, sort_keys=True))
           PY
       - name: Upload diagnostic artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: easy20-two-move-probe-${{ github.run_id }}
+          name: easy20-l3-two-move-probe-${{ github.run_id }}
           path: _work/residual-diagnostic
           retention-days: 7
           if-no-files-found: warn
