@@ -94,7 +94,7 @@ jobs:
               if active_trace is not None:
                   active_trace.append({
                       "player": engine.current_turn_color.name,
-                      "ply": engine.move_number,
+                      "ply": engine.move_counter,
                       "timeline_count": len(engine.timeline_manager.timelines),
                       "required_count": len(required),
                       "required": [str(board) for board in required],
