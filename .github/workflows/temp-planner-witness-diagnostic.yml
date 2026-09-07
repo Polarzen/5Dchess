@@ -1,5 +1,6 @@
 name: TEMP Planner Witness Diagnostic
 
+# One-shot validation for the current Arena terminal-proof fallback.
 on:
   push:
     branches:
