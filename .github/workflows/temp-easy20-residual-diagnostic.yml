@@ -52,48 +52,39 @@ jobs:
 
           p = Path("src/ai/action_planner.py")
           text = p.read_text(encoding="utf-8")
-          old_order = '''        ordered_boards = tuple(
-              sorted(
-                  movable,
-                  key=lambda board: (
-                      board not in required,
-                      board.timeline,
-                      board.turn,
-                      _enum_value(board.side),
-                  ),
-              )
+
+          anchor = "        ordered_boards = tuple(\n"
+          insert = (
+              "        optional_first = (\n"
+              "            len(required) == 2\n"
+              "            and any(board not in required for board in movable)\n"
+              "        )\n"
+              "        ordered_boards = tuple(\n"
           )
-          '''
-          new_order = '''        optional_first = (
-              len(required) == 2
-              and any(board not in required for board in movable)
+          if text.count(anchor) != 1:
+              raise SystemExit(f"ordered_boards anchor count={text.count(anchor)}")
+          text = text.replace(anchor, insert, 1)
+
+          board_key = "                    board not in required,\n"
+          board_key_new = (
+              "                    board in required if optional_first "
+              "else board not in required,\n"
           )
-          ordered_boards = tuple(
-              sorted(
-                  movable,
-                  key=lambda board: (
-                      board in required if optional_first else board not in required,
-                      board.timeline,
-                      board.turn,
-                      _enum_value(board.side),
-                  ),
-              )
+          if text.count(board_key) != 1:
+              raise SystemExit(f"board-key anchor count={text.count(board_key)}")
+          text = text.replace(board_key, board_key_new, 1)
+
+          special = "        if len(required) == 2:\n            required_moves: list[Move] = []\n"
+          special_new = (
+              "        if len(required) == 2 and not optional_first:\n"
+              "            required_moves: list[Move] = []\n"
           )
-          '''
-          if text.count(old_order) != 1:
-              raise SystemExit(f"ordered_boards anchor count={text.count(old_order)}")
-          text = text.replace(old_order, new_order, 1)
-          old_special = '''        if len(required) == 2:
-              required_moves: list[Move] = []
-          '''
-          new_special = '''        if len(required) == 2 and not optional_first:
-              required_moves: list[Move] = []
-          '''
-          if text.count(old_special) != 1:
-              raise SystemExit(f"len2 anchor count={text.count(old_special)}")
-          text = text.replace(old_special, new_special, 1)
+          if text.count(special) != 1:
+              raise SystemExit(f"len2 anchor count={text.count(special)}")
+          text = text.replace(special, special_new, 1)
           p.write_text(text, encoding="utf-8")
           PY
+          python -m py_compile src/ai/action_planner.py
           python - <<'PY'
           import json
           import time
