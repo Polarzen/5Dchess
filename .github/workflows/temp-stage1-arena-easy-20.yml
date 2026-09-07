@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   arena:
-    name: Stage 1 Easy Arena 20-game gate
+    name: Stage 1 Easy Arena 20-game 5s planner diagnostic
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -52,14 +52,14 @@ jobs:
       - name: Validate checkpoint shape
         run: python -m src.training.cloud check-resume --checkpoint _work/checkpoint/best --preset small
 
-      - name: Run Easy Arena 20-game gate
+      - name: Run Easy Arena 20-game 5s planner diagnostic
         run: |
           mkdir -p _work/arena-report
           python -m src.training.arena \
             --checkpoint _work/checkpoint/best \
             --opponent easy \
             --games 20 \
-            --planner-seconds 0.5 \
+            --planner-seconds 5.0 \
             --device cpu \
             --seed 42 \
             --max-actions 120 \
@@ -76,20 +76,25 @@ jobs:
           from pathlib import Path
 
           result = json.loads(Path("_work/arena-report/arena-result.json").read_text(encoding="utf-8"))
-          print("# Stage 1 Easy Arena 20-game gate")
+          print("# Stage 1 Easy Arena 20-game 5s planner diagnostic")
           print()
           print("- Source run: `34028226472`")
           print("- Source Artifact: `local-ai-checkpoint-stage1-500-34028226472`")
+          print("- Planner budget: `5.0 s`")
           print(f"- Opponent: `{result.get('opponent')}`")
-          print(f"- Games played: `{result.get('games_played', result.get('games'))}`")
+          print(f"- Games played: `{result.get('games_requested', result.get('games'))}`")
           print(f"- W/D/L: `{result.get('wins')}/{result.get('draws')}/{result.get('losses')}`")
-          print(f"- Illegal: `{result.get('illegal')}`")
-          print(f"- Stale failures: `{result.get('stale_failures')}`")
-          print(f"- Planning failures: `{result.get('planning_failures')}`")
-          print(f"- Budget terminations: `{result.get('budget_terminations')}`")
+          print(f"- Illegal: `{result.get('illegal_action_count')}`")
+          print(f"- Stale failures: `{result.get('stale_failure_count')}`")
+          print(f"- Planning failures: `{result.get('planning_failure_count')}`")
+          print(f"- Unexpected failures: `{result.get('unexpected_failure_count')}`")
+          print(f"- Budget terminations: `{result.get('budget_termination_count')}`")
+          first_failure = result.get("first_failure")
+          if first_failure:
+              print(f"- First failure: `{first_failure.get('failure_stage')}: {first_failure.get('message')}`")
           PY
           else
-            echo "# Stage 1 Easy Arena 20-game gate" >> "$GITHUB_STEP_SUMMARY"
+            echo "# Stage 1 Easy Arena 20-game 5s planner diagnostic" >> "$GITHUB_STEP_SUMMARY"
             echo >> "$GITHUB_STEP_SUMMARY"
             echo "Arena result JSON was not produced; inspect the Arena step logs." >> "$GITHUB_STEP_SUMMARY"
           fi
