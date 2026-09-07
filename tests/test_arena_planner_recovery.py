@@ -1,5 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
+pytest.importorskip("torch")
+
 import src.training.arena as arena_module
 from src.ai.action_planner import AIActionPlan, ActionPlanningError
 from src.engine.action_search import ActionSearch
