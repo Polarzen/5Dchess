@@ -51,88 +51,51 @@ jobs:
 
           planner = Path("src/ai/action_planner.py")
           text = planner.read_text(encoding="utf-8")
-          old_import = "from src.engine.move_generator import Move\n"
-          if old_import not in text:
-              raise SystemExit("planner import anchor missing")
-          text = text.replace(
-              old_import,
-              old_import + "from src.engine.timeline_rules import TimelineRules\n",
-              1,
-          )
-          old = '''        if not required and state.can_submit_action():
-            if tracker.check_time():
-                return False
-            candidates.append(path)
-            tracker.explored_actions += 1
-            found_completion = True
-            if (
-                self.budget.max_actions is not None
-                and tracker.explored_actions >= self.budget.max_actions
-            ):
-                tracker.termination_reason = "action_budget"
-                return True
-
-        if tracker.check(depth):
-'''
-          new = '''        if not required:
-            submit_capable = state.can_submit_action()
-            if tracker.check_time():
-                return False
-            if submit_capable:
-                candidates.append(path)
-                tracker.explored_actions += 1
-                found_completion = True
-                if (
-                    self.budget.max_actions is not None
-                    and tracker.explored_actions >= self.budget.max_actions
-                ):
-                    tracker.termination_reason = "action_budget"
-                    return True
-            else:
-                present = TimelineRules.present(state.timeline_manager.timelines)
-                if present is not None and present.side != action.color:
-                    return False
-
-        if tracker.check(depth):
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f"planner completion anchor count={text.count(old)}")
-          planner.write_text(text.replace(old, new, 1), encoding="utf-8")
+          start = text.index("        if not required and state.can_submit_action():\n")
+          end = text.index("        if tracker.check(depth):\n", start)
+          replacement = "\n".join([
+              "        if not required:",
+              "            submit_capable = state.can_submit_action()",
+              "            if tracker.check_time():",
+              "                return False",
+              "            if submit_capable:",
+              "                candidates.append(path)",
+              "                tracker.explored_actions += 1",
+              "                found_completion = True",
+              "                if (",
+              "                    self.budget.max_actions is not None",
+              "                    and tracker.explored_actions >= self.budget.max_actions",
+              "                ):",
+              "                    tracker.termination_reason = \"action_budget\"",
+              "                    return True",
+              "            else:",
+              "                from src.engine.timeline_rules import TimelineRules",
+              "                present = TimelineRules.present(state.timeline_manager.timelines)",
+              "                if present is not None and present.side != action.color:",
+              "                    return False",
+              "",
+          ])
+          planner.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
 
           search = Path("src/engine/action_search.py")
           text = search.read_text(encoding="utf-8")
-          old_import = "from src.engine.move_generator import Move\n"
-          if old_import not in text:
-              raise SystemExit("ActionSearch import anchor missing")
-          text = text.replace(
-              old_import,
-              old_import + "from src.engine.timeline_rules import TimelineRules\n",
-              1,
-          )
-          old = '''        if (
-            not required
-            and ActionRules.can_submit(action, state.timeline_manager.timelines)
-        ):
-            return tuple(action.moves)
-
-        if self._budget_exhausted(depth):
-'''
-          new = '''        if not required:
-            submit_capable = ActionRules.can_submit(
-                action,
-                state.timeline_manager.timelines,
-            )
-            if submit_capable:
-                return tuple(action.moves)
-            present = TimelineRules.present(state.timeline_manager.timelines)
-            if present is not None and present.side != action.color:
-                return None
-
-        if self._budget_exhausted(depth):
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f"ActionSearch completion anchor count={text.count(old)}")
-          search.write_text(text.replace(old, new, 1), encoding="utf-8")
+          start = text.index("        if (\n            not required\n            and ActionRules.can_submit(action, state.timeline_manager.timelines)\n        ):\n")
+          end = text.index("        if self._budget_exhausted(depth):\n", start)
+          replacement = "\n".join([
+              "        if not required:",
+              "            submit_capable = ActionRules.can_submit(",
+              "                action,",
+              "                state.timeline_manager.timelines,",
+              "            )",
+              "            if submit_capable:",
+              "                return tuple(action.moves)",
+              "            from src.engine.timeline_rules import TimelineRules",
+              "            present = TimelineRules.present(state.timeline_manager.timelines)",
+              "            if present is not None and present.side != action.color:",
+              "                return None",
+              "",
+          ])
+          search.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
           PY
           python -m py_compile src/ai/action_planner.py src/engine/action_search.py
       - name: Run focused rule and planner regressions
