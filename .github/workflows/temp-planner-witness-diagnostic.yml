@@ -14,170 +14,123 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements-training.txt
-      - name: Install CPU dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
-          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
-      - name: Download Stage 1 checkpoint
+      - name: Download captured seed 42 state
         uses: actions/download-artifact@v4
         with:
-          name: local-ai-checkpoint-stage1-500-34028226472
-          path: _work/checkpoint
+          name: planner-seed42-deep-proof-34114771960
+          path: _work/input
           repository: ${{ github.repository }}
-          run-id: 34028226472
+          run-id: 34114771960
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Capture and deep-probe seed 42 failure
+      - name: Rank root direct-completion moves
         run: |
           mkdir -p _work/diagnostic
           python - <<'PY'
-          import hashlib
           import json
           import time
           from pathlib import Path
 
-          from src.ai.action_planner import ActionPlanner, ActionSearchBudget, engine_state_signature
+          from src.ai.action_planner import (
+              _required_board_progress,
+              _required_move_sort_key,
+          )
           from src.data.archive import GameArchive
           from src.engine.action import ActionRules
-          from src.engine.action_search import ActionSearch
-          from src.engine.royal_rules import RoyalRules
-          from src.training.arena import evaluate_arena
 
-          checkpoint = Path("_work/checkpoint/best").resolve()
-          normal_budget = ActionSearchBudget(
-              max_states=1024,
-              max_actions=24,
-              max_move_depth=32,
-              max_seconds=5.0,
-          )
-          expected_hash = "0649e0aa4bb20000a1db4fe41070c034c3a374a671203aacc173c6ecdf817137"
-          original_search = ActionPlanner.search
-          captured = {"done": False}
-          evidence = {"expected_state_sha256": expected_hash, "probe": None}
+          archive_path = Path("_work/input/seed42-failure-state.json")
+          engine = GameArchive.restore(json.loads(archive_path.read_text(encoding="utf-8")))
+          action = engine._ensure_current_action()
+          required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
 
-          def state_hash(engine):
-              payload = json.dumps(
-                  engine_state_signature(engine),
-                  ensure_ascii=False,
-                  sort_keys=True,
-                  separators=(",", ":"),
-                  default=str,
-              )
-              return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+          moves = []
+          for board in sorted(required, key=lambda b: (b.timeline, b.turn, b.side.value)):
+              position = engine._resolve_position(board)
+              if position is not None:
+                  moves.extend(engine.get_legal_moves(position))
+
+          ordered = sorted(moves, key=lambda move: _required_move_sort_key(move, required))
 
           def move_text(move):
               return {
                   "source": [move.source.board.timeline, move.source.board.turn, move.source.board.side.value, move.source.x, move.source.y],
                   "destination": [move.destination.board.timeline, move.destination.board.turn, move.destination.board.side.value, move.destination.x, move.destination.y],
                   "piece": move.piece.piece_type.value,
-                  "promotion": move.promotion.value if move.promotion else None,
+                  "captured": move.captured.piece_type.value if move.captured else None,
                   "branching": bool(move.is_branching),
                   "cross_timeline": bool(move.is_cross_timeline),
+                  "progress": _required_board_progress(move, required),
               }
 
-          def capture_and_probe(self, engine):
-              result = original_search(self, engine)
-              if captured["done"] or result.candidates:
-                  return result
+          witness_source = (0, 25, "white", 1, 3)
+          witness_destination = (-1, 25, "white", 1, 4)
+          rows = []
+          witness_rank = None
+          direct_submit_ranks = []
+          progress2_count = 0
+          total_probe_seconds = 0.0
 
-              captured["done"] = True
-              failure_hash = state_hash(engine)
-              archive = GameArchive.capture(engine)
-              archive_path = Path("_work/diagnostic/seed42-failure-state.json")
-              archive_path.write_text(json.dumps(archive, indent=2, sort_keys=True), encoding="utf-8")
-              restored = GameArchive.restore(json.loads(archive_path.read_text(encoding="utf-8")))
-              restored_hash = state_hash(restored)
-              action = restored._ensure_current_action()
-              required = ActionRules.required_boards(action, restored.timeline_manager.timelines)
-              movable = ActionRules.movable_boards(action, restored.timeline_manager.timelines)
-              royal = RoyalRules(restored.timeline_manager.timelines)
-              initial_in_check = royal.is_in_check(restored.current_turn_color)
-              initial_threats = royal.threats_against(restored.current_turn_color)
-
-              counters = {"safe": 0}
-              original_safe = RoyalRules.is_action_safe
-              def counted_safe(rules, color):
-                  counters["safe"] += 1
-                  return original_safe(rules, color)
-              RoyalRules.is_action_safe = counted_safe
-              try:
-                  started = time.monotonic()
-                  deep = ActionSearch(
-                      max_states=None,
-                      max_depth=64,
-                      max_seconds=120.0,
-                  ).find_legal_completion(restored)
-                  elapsed = time.monotonic() - started
-              finally:
-                  RoyalRules.is_action_safe = original_safe
-
-              evidence["probe"] = {
-                  "failure_state_sha256": failure_hash,
-                  "matches_expected_hash": failure_hash == expected_hash,
-                  "restored_state_sha256": restored_hash,
-                  "archive_roundtrip_matches": restored_hash == failure_hash,
-                  "initial_in_check": initial_in_check,
-                  "initial_threat_count": len(initial_threats),
-                  "initial_threats": [
-                      {"piece": threat.piece.piece_type.value,
-                       "attacker": str(threat.attacker),
-                       "king": str(threat.king)}
-                      for threat in initial_threats[:20]
-                  ],
-                  "required_boards": [str(board) for board in required],
-                  "movable_boards": [str(board) for board in movable],
-                  "elapsed_seconds": elapsed,
-                  "explored_states": deep.explored_states,
-                  "termination_reason": deep.termination_reason,
-                  "has_legal_action": deep.has_legal_action,
-                  "witness_length": len(deep.witness),
-                  "witness": [move_text(move) for move in deep.witness],
-                  "royal_safety_calls": counters["safe"],
-              }
-              Path("_work/diagnostic/deep-proof.json").write_text(
-                  json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+          for rank, move in enumerate(ordered, start=1):
+              text = move_text(move)
+              is_witness = (
+                  tuple(text["source"]) == witness_source
+                  and tuple(text["destination"]) == witness_destination
               )
-              return result
+              if is_witness:
+                  witness_rank = rank
 
-          ActionPlanner.search = capture_and_probe
-          report = evaluate_arena(
-              checkpoint=checkpoint,
-              opponent="easy",
-              games=1,
-              device_name="cpu",
-              seed=42,
-              max_actions=120,
-              budget=normal_budget,
-              max_wall_seconds=1800,
-              output="json",
-              model_color="white",
-              game_seeds=[42],
-          )
-          evidence["arena"] = {
-              "planning_failure_count": report["planning_failure_count"],
-              "first_failure": report.get("first_failure"),
+              direct_submit = False
+              probe_seconds = None
+              required_after = None
+              if text["progress"] == 2:
+                  progress2_count += 1
+                  child = engine.clone_for_simulation()
+                  assert child.execute_action_move(move)
+                  after = set(ActionRules.required_boards(
+                      child._ensure_current_action(),
+                      child.timeline_manager.timelines,
+                  ))
+                  required_after = len(after)
+                  started = time.monotonic()
+                  direct_submit = not after and child.can_submit_action()
+                  probe_seconds = time.monotonic() - started
+                  total_probe_seconds += probe_seconds
+                  if direct_submit:
+                      direct_submit_ranks.append(rank)
+
+              if rank <= 40 or text["progress"] == 2 or is_witness:
+                  rows.append({
+                      "rank": rank,
+                      "is_witness": is_witness,
+                      "direct_submit": direct_submit,
+                      "required_after": required_after,
+                      "submit_probe_seconds": probe_seconds,
+                      **text,
+                  })
+
+          evidence = {
+              "required_boards": [str(board) for board in sorted(required, key=lambda b: (b.timeline, b.turn, b.side.value))],
+              "root_required_move_count": len(ordered),
+              "progress2_count": progress2_count,
+              "witness_rank": witness_rank,
+              "direct_submit_count": len(direct_submit_ranks),
+              "direct_submit_ranks": direct_submit_ranks,
+              "total_direct_submit_probe_seconds": total_probe_seconds,
+              "rows": rows,
           }
-          Path("_work/diagnostic/deep-proof.json").write_text(
-              json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
-          )
-          print(Path("_work/diagnostic/deep-proof.json").read_text(encoding="utf-8"))
-          if not captured["done"]:
-              raise SystemExit("seed 42 failure state was not captured")
+          out = Path("_work/diagnostic/root-ranking.json")
+          out.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
+          print(out.read_text(encoding="utf-8"))
+          if witness_rank is None:
+              raise SystemExit("known seed 42 witness was not present in root required moves")
           PY
       - name: Upload diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: planner-seed42-deep-proof-${{ github.run_id }}
+          name: planner-seed42-root-ranking-${{ github.run_id }}
           path: _work/diagnostic
           retention-days: 7
           if-no-files-found: error
