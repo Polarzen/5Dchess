@@ -7,6 +7,7 @@ multiverse instead of pretending that one selected 8x8 board is the game.
 from __future__ import annotations
 
 from contextlib import nullcontext
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,12 @@ from src.data.pgn_parser import FiveDPGN
 from src.modes import PvEMode, PvPMode, ReplayMode
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
+from src.web.port_utils import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    select_port,
+    validate_port,
+)
 
 
 app = Flask(
@@ -32,6 +39,25 @@ app = Flask(
     template_folder=str(Path(__file__).parent / "templates"),
     static_folder=str(Path(__file__).parent / "static"),
 )
+
+P2P_READINESS_PATH = "/__p2p/readiness"
+_launch_readiness_id: str | None = None
+
+
+@app.get(P2P_READINESS_PATH)
+def p2p_readiness():
+    """Return the opt-in launcher identity without touching game state."""
+    if _launch_readiness_id is None:
+        response = jsonify({"ready": False})
+        response.status_code = 404
+    else:
+        response = jsonify({
+            "launch_id": _launch_readiness_id,
+            "pid": os.getpid(),
+        })
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 # Single-session local UI.  Multi-user/server deployment is intentionally out
 # of scope for this project; the browser and engine live in one local process.
@@ -724,9 +750,61 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def run_server(host: str = "127.0.0.1", port: int = 5000, debug: bool = True):
-    logger.info(f"5D Chess Web 服务器启动: http://{host}:{port}")
-    app.run(host=host, port=port, debug=debug)
+def run_server(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    debug: bool = True,
+    *,
+    strict_port: bool = False,
+    launch_id: str | None = None,
+):
+    """Select and start the local Web server.
+
+    Normal Web callers treat ``port`` as the preferred start of a bounded
+    ascending search.  P2P's launcher passes an already selected port with
+    ``strict_port=True`` so the tunnel target and server bind cannot silently
+    diverge.
+    """
+    if strict_port:
+        if port is None:
+            raise ValueError("strict_port requires an explicit port")
+        # This port has already been handed off by the launcher.  Validate it
+        # without probing so a final bind race is reported by Flask itself.
+        selected_port = validate_port(port)
+    else:
+        preferred_port = DEFAULT_PORT if port is None else port
+        selected_port = select_port(
+            host,
+            preferred_port,
+            log=lambda message: logger.info(message),
+        )
+
+    global _launch_readiness_id
+    _launch_readiness_id = launch_id
+    actual_url = f"http://{host}:{selected_port}"
+    logger.info(f"5D Chess Web 服务器启动: {actual_url}")
+    try:
+        app.run(
+            host=host,
+            port=selected_port,
+            debug=debug,
+            use_reloader=False,
+        )
+    except OSError as exc:
+        _launch_readiness_id = None
+        raise RuntimeError(
+            f"无法启动 Web 地址 {actual_url}；"
+            "所选端口可能已在探测后被其他进程占用，请检查端口并重试 "
+            "（存在启动竞争条件）。"
+        ) from exc
+    except SystemExit as exc:
+        if exc.code is None or exc.code == 0:
+            raise
+        _launch_readiness_id = None
+        raise RuntimeError(
+            f"无法启动 Web 地址 {actual_url}；Flask 以状态 {exc.code} 退出，"
+            "所选端口可能在探测后发生启动竞争，请检查端口并重试。"
+        ) from exc
 
 
 if __name__ == "__main__":
