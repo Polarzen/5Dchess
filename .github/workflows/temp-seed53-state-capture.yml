@@ -140,7 +140,7 @@ jobs:
                               if not safe:
                                   threats = RoyalRules(
                                       child.timeline_manager.timelines
-                                  ).action_threats(child.current_turn_color)
+                                  ).direct_threats_against(child.current_turn_color)
                                   child_item["threat_count"] = len(threats)
                                   child_item["threats"] = [
                                       {
