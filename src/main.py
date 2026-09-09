@@ -16,11 +16,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 from src.utils.logger import logger
 
+DEFAULT_WEB_HOST = "127.0.0.1"
+MAX_PORT = 65535
+
+
+def _parse_port(value: str) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not 1 <= port <= MAX_PORT:
+        raise argparse.ArgumentTypeError(
+            f"port must be an integer from 1 to {MAX_PORT}"
+        )
+    return port
+
 
 def main():
     parser = argparse.ArgumentParser(description="5D Chess - 五维国际象棋")
     parser.add_argument("--cli", action="store_true", help="命令行模式")
     parser.add_argument("--web", action="store_true", help="Web模式 (Flask)")
+    parser.add_argument(
+        "--port",
+        type=_parse_port,
+        help="Web首选端口；从该端口向上搜索最多50个端口（默认5050）",
+    )
     parser.add_argument("--replay", type=str, help="加载棋谱文件回放")
     parser.add_argument("--pvp", action="store_true", help="直接启动PvP模式")
     parser.add_argument("--pve", type=str, choices=["easy", "medium", "hard"],
@@ -29,19 +49,29 @@ def main():
     args = parser.parse_args()
 
     if args.test:
+        if args.port is not None:
+            logger.warning("--port 仅适用于 Web 模式，已忽略")
         run_tests()
     elif args.cli:
+        if args.port is not None:
+            logger.warning("--port 仅适用于 Web 模式，已忽略")
         run_cli(args)
     elif args.web:
-        run_web()
+        run_web(port=args.port)
     elif args.replay:
+        if args.port is not None:
+            logger.warning("--port 仅适用于 Web 模式，已忽略")
         run_replay_from_file(args.replay)
     elif args.pvp:
+        if args.port is not None:
+            logger.warning("--port 仅适用于 Web 模式，已忽略")
         run_gui("pvp")
     elif args.pve:
+        if args.port is not None:
+            logger.warning("--port 仅适用于 Web 模式，已忽略")
         run_gui("pve", difficulty=args.pve)
     else:
-        run_web()
+        run_web(port=args.port)
 
 
 def run_gui(mode: str = None, difficulty: str = "medium"):
@@ -52,7 +82,7 @@ def run_gui(mode: str = None, difficulty: str = "medium"):
     app.run()
 
 
-def run_web(host: str = "127.0.0.1", port: int = 5000):
+def run_web(host: str = DEFAULT_WEB_HOST, port: int | None = None):
     """启动Web模式"""
     from src.web import run_server
     run_server(host=host, port=port)

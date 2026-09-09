@@ -2,7 +2,6 @@
 5D Chess - 棋盘表示
 """
 from __future__ import annotations
-from copy import deepcopy
 from dataclasses import dataclass, field
 from src.utils.constants import (
     ChessColor, PieceType, INITIAL_BOARD, BOARD_SIZE, COL_NAMES, ROW_NAMES
@@ -125,8 +124,23 @@ class Position:
         return result
 
     def copy(self) -> "Position":
-        """深拷贝"""
-        return deepcopy(self)
+        """Copy one board state without generic object-graph traversal.
+
+        Every mutable Position field is duplicated explicitly. Enum/int values
+        and the en-passant coordinate tuple are immutable and may be shared.
+        This preserves deepcopy semantics while avoiding Python's recursive
+        dataclass reconstruction in MoveValidator and timeline transitions.
+        """
+        return Position(
+            board=[row[:] for row in self.board],
+            turn=self.turn,
+            timeline_id=self.timeline_id,
+            time_point=self.time_point,
+            move_number=self.move_number,
+            castling_rights=self.castling_rights.copy(),
+            en_passant_target=self.en_passant_target,
+            unmoved_pawns=set(self.unmoved_pawns),
+        )
 
     def to_fen(self) -> str:
         """导出为标准FEN（不含时间信息）"""

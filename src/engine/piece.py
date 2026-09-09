@@ -46,14 +46,25 @@ BLACK_BISHOP = Piece(PieceType.BISHOP, ChessColor.BLACK)
 BLACK_KNIGHT = Piece(PieceType.KNIGHT, ChessColor.BLACK)
 BLACK_PAWN = Piece(PieceType.PAWN, ChessColor.BLACK)
 
+# Board cells are immutable one-character piece codes. Returning the canonical
+# immutable Piece instances avoids allocating a fresh dataclass object for every
+# board lookup in move generation, validation and royal-safety scans.
+_PIECE_BY_CHAR: dict[str, Piece] = {
+    "K": WHITE_KING,
+    "Q": WHITE_QUEEN,
+    "R": WHITE_ROOK,
+    "B": WHITE_BISHOP,
+    "N": WHITE_KNIGHT,
+    "P": WHITE_PAWN,
+    "k": BLACK_KING,
+    "q": BLACK_QUEEN,
+    "r": BLACK_ROOK,
+    "b": BLACK_BISHOP,
+    "n": BLACK_KNIGHT,
+    "p": BLACK_PAWN,
+}
+
 
 def piece_from_char(ch: str) -> Piece | None:
-    """从字符解析棋子"""
-    if not ch:
-        return None
-    color = ChessColor.WHITE if ch.isupper() else ChessColor.BLACK
-    try:
-        ptype = PieceType(ch.upper())
-        return Piece(ptype, color)
-    except ValueError:
-        return None
+    """从字符解析棋子，复用不可变的预定义实例。"""
+    return _PIECE_BY_CHAR.get(ch)

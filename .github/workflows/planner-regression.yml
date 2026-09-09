@@ -1,0 +1,250 @@
+name: Planner Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - src/ai/action_planner.py
+      - src/engine/action_search.py
+      - src/engine/action.py
+      - src/engine/royal_rules.py
+      - src/training/arena.py
+      - tests/test_action_planner_*.py
+      - .github/workflows/planner-regression.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: planner-regression-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fixed-failures:
+    name: Fixed failure seeds 42, 43, 51, 53, 55
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout pre-dedup baseline
+        uses: actions/checkout@v4
+        with:
+          ref: afa4075d7202f820b297475c1003a76064ca2bdb
+          path: before
+
+      - name: Checkout current branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: after
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: after/requirements-training.txt
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r after/requirements.txt
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4"
+          python -m pip install "safetensors>=0.4.5" "numpy>=1.24"
+
+      - name: Download Stage 1 checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: local-ai-checkpoint-stage1-500-34028226472
+          path: _work/checkpoint
+          repository: ${{ github.repository }}
+          run-id: 34028226472
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate checkpoint
+        working-directory: after
+        run: python -m src.training.cloud check-resume --checkpoint ../_work/checkpoint/best --preset small
+
+      - name: Run before/after fixed-seed regressions
+        shell: bash
+        run: |
+          cat > _work/run_planner_case.py <<'PY'
+          import json
+          import sys
+          import time
+          from pathlib import Path
+
+          repo = Path(sys.argv[1]).resolve()
+          out = Path(sys.argv[2]).resolve()
+          sys.path.insert(0, str(repo))
+
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+          from src.engine.engine import FiveDEngine
+          from src.engine.royal_rules import RoyalRules
+          from src.training.arena import evaluate_arena
+
+          checkpoint = (Path.cwd() / "_work/checkpoint/best").resolve()
+          budget = ActionSearchBudget(
+              max_states=1024,
+              max_actions=24,
+              max_move_depth=32,
+              max_seconds=5.0,
+          )
+
+          counters = {"can_submit": 0, "is_action_safe": 0}
+          records = []
+          original_search = ActionPlanner.search
+          original_can_submit = FiveDEngine.can_submit_action
+          original_is_action_safe = RoyalRules.is_action_safe
+
+          def counted_can_submit(self, *args, **kwargs):
+              counters["can_submit"] += 1
+              return original_can_submit(self, *args, **kwargs)
+
+          def counted_is_action_safe(self, *args, **kwargs):
+              counters["is_action_safe"] += 1
+              return original_is_action_safe(self, *args, **kwargs)
+
+          def counted_search(self, engine):
+              can_before = counters["can_submit"]
+              safe_before = counters["is_action_safe"]
+              started = time.monotonic()
+              result = original_search(self, engine)
+              records.append({
+                  "player": engine.current_turn_color.value,
+                  "elapsed_seconds": time.monotonic() - started,
+                  "explored_states": result.explored_states,
+                  "candidate_count": len(result.candidates),
+                  "termination_reason": result.termination_reason,
+                  "failed_state_cache_hits": getattr(result, "failed_state_cache_hits", 0),
+                  "can_submit_calls": counters["can_submit"] - can_before,
+                  "is_action_safe_calls": counters["is_action_safe"] - safe_before,
+              })
+              return result
+
+          FiveDEngine.can_submit_action = counted_can_submit
+          RoyalRules.is_action_safe = counted_is_action_safe
+          ActionPlanner.search = counted_search
+
+          def run_case(seed, model_color):
+              records.clear()
+              counters["can_submit"] = 0
+              counters["is_action_safe"] = 0
+              started = time.monotonic()
+              arena = evaluate_arena(
+                  checkpoint=checkpoint,
+                  opponent="easy",
+                  games=1,
+                  device_name="cpu",
+                  seed=seed,
+                  max_actions=120,
+                  budget=budget,
+                  max_wall_seconds=1800,
+                  output="json",
+                  model_color=model_color,
+                  game_seeds=[seed],
+              )
+              elapsed = time.monotonic() - started
+              failure = arena.get("first_failure")
+              failure_record = None
+              if failure is not None:
+                  action_index = int(failure["action_index"])
+                  if 0 <= action_index < len(records):
+                      failure_record = records[action_index]
+              return {
+                  "seed": seed,
+                  "model_color": model_color,
+                  "arena": arena,
+                  "wall_seconds": elapsed,
+                  "planner_calls": len(records),
+                  "planner_records": list(records),
+                  "failure_planner_record": failure_record,
+                  "total_can_submit_calls": counters["can_submit"],
+                  "total_is_action_safe_calls": counters["is_action_safe"],
+              }
+
+          result = {
+              "revision": repo.name,
+              "cases": [
+                  run_case(42, "white"),
+                  run_case(43, "black"),
+                  run_case(51, "black"),
+                  run_case(53, "black"),
+                  run_case(55, "black"),
+              ],
+          }
+          out.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+          PY
+
+          python _work/run_planner_case.py before _work/before.json
+          python _work/run_planner_case.py after _work/after.json
+
+      - name: Publish comparison and enforce known-failure gate
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          before = json.loads(Path("_work/before.json").read_text(encoding="utf-8"))
+          after = json.loads(Path("_work/after.json").read_text(encoding="utf-8"))
+          lines = ["# Deterministic Planner regression", "", "Baseline: `afa4075d` (pre failed-state dedup)", ""]
+          unresolved = []
+          for old, new in zip(before["cases"], after["cases"]):
+              seed = old["seed"]
+              old_arena = old["arena"]
+              new_arena = new["arena"]
+              old_fail = old.get("failure_planner_record") or {}
+              new_fail = new.get("failure_planner_record") or {}
+              lines.extend([
+                  f"## Seed {seed} ({old['model_color']})",
+                  "",
+                  f"- planning failures: `{old_arena['planning_failure_count']} -> {new_arena['planning_failure_count']}`",
+                  f"- planner recoveries: `{old_arena.get('planner_recovery_count', 0)} -> {new_arena.get('planner_recovery_count', 0)}`",
+                  f"- failure reason: `{(old_arena.get('first_failure') or {}).get('planning_reason')} -> {(new_arena.get('first_failure') or {}).get('planning_reason')}`",
+                  f"- failure explored states: `{old_fail.get('explored_states')} -> {new_fail.get('explored_states')}`",
+                  f"- failure planner elapsed: `{old_fail.get('elapsed_seconds')} -> {new_fail.get('elapsed_seconds')}`",
+                  f"- failure can_submit calls: `{old_fail.get('can_submit_calls')} -> {new_fail.get('can_submit_calls')}`",
+                  f"- failure is_action_safe calls: `{old_fail.get('is_action_safe_calls')} -> {new_fail.get('is_action_safe_calls')}`",
+                  f"- failed-state cache hits: `{old_fail.get('failed_state_cache_hits', 0)} -> {new_fail.get('failed_state_cache_hits', 0)}`",
+                  f"- game wall seconds: `{old['wall_seconds']} -> {new['wall_seconds']}`",
+                  "",
+              ])
+              for label, report in (("baseline", old_arena), ("candidate", new_arena)):
+                  if (
+                      report["planning_failure_count"]
+                      != report.get("neural_planning_failure_count", 0)
+                      + report.get("baseline_planning_failure_count", 0)
+                  ):
+                      raise SystemExit(f"seed {seed}: {label} planner failure accounting mismatch")
+                  if (
+                      report.get("planner_recovery_count", 0)
+                      != report.get("neural_planner_recovery_count", 0)
+                      + report.get("baseline_planner_recovery_count", 0)
+                  ):
+                      raise SystemExit(f"seed {seed}: {label} planner recovery accounting mismatch")
+                  if report["illegal_action_count"] or report["stale_failure_count"] or report["unexpected_failure_count"]:
+                      raise SystemExit(f"seed {seed}: {label} Arena correctness regression")
+              if seed in {51, 53, 55} and new_arena["planning_failure_count"]:
+                  unresolved.append(seed)
+
+          Path("_work/comparison.md").write_text("\n".join(lines), encoding="utf-8")
+          with open(Path().resolve() / "_work/comparison.md", encoding="utf-8") as handle:
+              print(handle.read())
+          if unresolved:
+              raise SystemExit(f"known planner failures remain unresolved for seeds: {unresolved}")
+          PY
+          cat _work/comparison.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload regression evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: planner-regression-${{ github.run_id }}
+          path: |
+            _work/before.json
+            _work/after.json
+            _work/comparison.md
+          retention-days: 30
+          if-no-files-found: error

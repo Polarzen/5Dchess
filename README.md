@@ -4,7 +4,9 @@
 
 > **当前状态：核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2 已完成。**
 >
-> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training` 分支中。
+> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training-v2` 实验分支中。
+>
+> **当前 `feat/local-ai-training-v2` 仅为实验训练分支，未合并 `main`。Windows 本地训练步骤见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。**
 
 ---
 
@@ -181,8 +183,15 @@ python src/main.py
 默认地址：
 
 ```text
-http://127.0.0.1:5000
+http://127.0.0.1:5050
 ```
+
+Web 默认使用 `127.0.0.1`，首选端口为 `5050`；启动前会逐个探测并在
+`5050-5099` 中选择第一个可绑定端口，因此实际 URL 以启动日志为准。也可用
+`--port N` 指定首选起点；这不是严格端口，程序会从 `N` 向上最多搜索 50 个
+候选（到 `65535` 为止）。搜索范围耗尽时会直接报错。无参数启动与
+`--web` 的端口行为相同；`--port` 在 CLI、Replay、PvP 或 PvE 模式下会被忽略并
+给出提示。
 
 ---
 
@@ -222,8 +231,15 @@ https://example.trycloudflare.com/?room=ABC123
 
 ```powershell
 python scripts/run_p2p_server.py
-cloudflared tunnel --url http://127.0.0.1:5000
+# 使用上一个命令日志中的实际端口
+cloudflared tunnel --url http://127.0.0.1:<actual-port>
 ```
+
+`scripts/start_p2p.ps1` 会先调用 Python 的机器可读端口选择模式，再把同一个
+具体端口严格传给 P2P Flask 服务和 `cloudflared tunnel --url`；不会从普通日志中
+猜测端口。单独运行 `run_p2p_server.py` 且不传 `--port` 时会动态选择并记录实际
+URL；显式传入 `--port N` 则是严格的内部绑定参数。端口探测只是启动前检查，若
+最终 Flask 绑定时发生竞争，会报告可操作的错误而不会静默改用另一个端口。
 
 邀请 URL **只包含 room code**。房间码用于定位房间，不是认证凭据；`player_token` 永远不会被写入 query string、hash、pathname、邀请链接或邀请 toast。token 继续只保存在现有 P2P `localStorage` 会话中，并由认证后的 `/api/p2p/*` 请求使用。URL 中的 `room` 会统一转成大写并只接受恰好 6 位 ASCII 字母或数字；非法长度、特殊字符或 HTML/script payload 会被安全忽略并退回普通手动加入流程。页面用 `textContent` 显示邀请房间码，不把 URL 参数拼进 HTML。
 
@@ -376,13 +392,17 @@ PvE 现在使用 canonical Action 级 AI。AI 在引擎快照上规划一个可�
 
 搜索由状态数、候选 Action 数、单 Action Move 深度和单调时钟共同设限。预算耗尽不会被误判为将杀、逼和或“无合法 Action”：已有完整候选时从中安全选择；尚无完整候选时返回明确的 bounded-search failure 并停止本次 AI 执行。早期 `choose_move()` 和单 Move Opening Book 仅作为兼容接口保留，不进入 canonical PvE 主路径。
 
-AI Local Training、自对弈数据、模型结构与 checkpoint 管理尚未进入主线，继续作为下一阶段工作；现有历史分支为：
+AI Local Training、自对弈数据、模型结构与 checkpoint 管理尚未进入主线。当前实验分支为：
 
 ```text
-feat/local-ai-training
+feat/local-ai-training-v2
 ```
 
 规则、Web 与 Replay / Storage 主线不会直接混入本地训练实现。
+
+该实验分支提供手动触发的 **Local AI Cloud Training**：GitHub-hosted CPU runner 可独立完成
+canonical self-play、训练、Arena 与可续训 Artifact；启动后本地浏览器和电脑均可关闭。它不表示
+训练模型已完成，也不会把权重或训练代码自动合并到 `main`。详见训练文档。
 
 ---
 

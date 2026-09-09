@@ -1,5 +1,6 @@
 # Python
 .venv/
+.venv-training/
 __pycache__/
 *.pyc
 *.pyo
@@ -16,6 +17,16 @@ logs/
 
 # 测试缓存
 .pytest_cache/
+
+# Local AI Training v2 outputs (never commit generated data or weights)
+datasets/
+training_data/
+data/training/
+checkpoints/
+runs/
+*.pt
+*.pth
+*.safetensors
 
 # 临时文件
 *.tmp

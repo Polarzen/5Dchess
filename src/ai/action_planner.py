@@ -17,6 +17,7 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
+from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
 from src.utils.constants import ChessColor, GameState, PieceType
@@ -274,6 +275,14 @@ class ActionSearchBudget:
             raise ValueError("max_seconds must be non-negative or None")
 
 
+_PRODUCTION_HYBRID_BUDGET = ActionSearchBudget(
+    max_states=1024,
+    max_actions=24,
+    max_move_depth=32,
+    max_seconds=5.0,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ActionSearchResult:
     """Bounded search evidence and complete candidate Action paths."""
@@ -281,6 +290,7 @@ class ActionSearchResult:
     candidates: tuple[tuple[MoveSpec, ...], ...]
     explored_states: int
     termination_reason: str | None = None
+    failed_state_cache_hits: int = 0
 
     @property
     def has_legal_action(self) -> bool:
@@ -297,22 +307,48 @@ class _BudgetTracker:
         self.started_at = time.monotonic()
         self.explored_states = 0
         self.explored_actions = 0
+        self.failed_state_cache_hits = 0
+        self.depth_cutoffs = 0
         self.termination_reason: str | None = None
+        self.phase_interrupted = False
 
-    def check(self, depth: int) -> bool:
+    def check_time(self, local_deadline: float | None = None) -> bool:
+        """Stop on the global deadline or an optional local phase deadline."""
         if self.termination_reason is not None:
             return True
+        if self.budget.max_seconds is None and local_deadline is None:
+            return False
+        now = time.monotonic()
         if (
             self.budget.max_seconds is not None
-            and time.monotonic() - self.started_at >= self.budget.max_seconds
+            and now - self.started_at >= self.budget.max_seconds
         ):
             self.termination_reason = "time_budget"
             return True
+        if local_deadline is not None and now >= local_deadline:
+            self.phase_interrupted = True
+            return True
+        return False
+
+    def check(
+        self,
+        depth: int,
+        depth_limit: int | None = None,
+        local_deadline: float | None = None,
+    ) -> bool:
+        if self.check_time(local_deadline):
+            return True
+        move_depth_limit = (
+            self.budget.max_move_depth if depth_limit is None else depth_limit
+        )
         if (
-            self.budget.max_move_depth is not None
-            and depth >= self.budget.max_move_depth
+            move_depth_limit is not None
+            and depth >= move_depth_limit
         ):
-            self.termination_reason = "move_depth_budget"
+            # Move depth is a per-path bound, unlike wall/state/action limits.
+            # Record the incomplete-search evidence without poisoning sibling
+            # branches with a global termination reason.
+            self.depth_cutoffs += 1
             return True
         if (
             self.budget.max_states is not None
@@ -331,19 +367,63 @@ class _BudgetTracker:
 
 def _move_sort_key(move: Move) -> tuple:
     return (
-        move.source.board.timeline,
-        move.source.board.turn,
-        _enum_value(move.source.board.side),
-        move.source.y,
-        move.source.x,
+        bool(move.is_branching),
         move.destination.board.timeline,
         move.destination.board.turn,
         _enum_value(move.destination.board.side),
         move.destination.y,
         move.destination.x,
+        move.source.board.timeline,
+        move.source.board.turn,
+        _enum_value(move.source.board.side),
+        move.source.y,
+        move.source.x,
         _enum_value(move.promotion) or "",
-        bool(move.is_branching),
         bool(move.is_cross_timeline),
+    )
+
+
+def _required_board_progress(move: Move, required: set[BoardCoord]) -> int:
+    """Return how many currently-required boards this legal Move advances.
+
+    A single non-branching cross-timeline Move can satisfy both its required
+    source board and a distinct required destination board.  With exactly one
+    required board left, preserve the established deterministic ordering;
+    with two or more, count that double progress so a one-Move completion is
+    not buried behind Moves that can advance only one required board.
+    """
+    progress = int(move.source.board in required)
+    if len(required) <= 1:
+        return progress
+    if (
+        move.is_cross_timeline
+        and not move.is_branching
+        and move.destination.board != move.source.board
+        and move.destination.board in required
+    ):
+        progress += 1
+    return progress
+
+
+def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
+    """Prioritize legal Moves that can complete required-board progress early."""
+    base = _move_sort_key(move)
+    if len(required) <= 1:
+        return base
+    if len(required) == 2:
+        return (
+            base[0],
+            -_required_board_progress(move, required),
+            move.piece.piece_type is not PieceType.KING,
+            move.captured is None,
+            *base[1:],
+        )
+    return (
+        base[0],
+        move.piece.piece_type is not PieceType.KING,
+        move.captured is None,
+        -_required_board_progress(move, required),
+        *base[1:],
     )
 
 
@@ -353,24 +433,204 @@ class ActionPlanner:
     def __init__(self, budget: ActionSearchBudget | None = None):
         self.budget = budget or ActionSearchBudget()
         self._tracker: _BudgetTracker | None = None
+        self._search_telemetry: list[dict[str, Any]] = []
 
     def search(self, engine: "FiveDEngine") -> ActionSearchResult:
         """Search all bounded complete Action witnesses from ``engine``."""
+        self._search_telemetry = []
         if engine.game_state != GameState.PLAYING:
             return ActionSearchResult((), 0, "game_not_playing")
 
-        state = deepcopy(engine)
+        state = engine.clone_for_simulation()
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
         tracker = _BudgetTracker(self.budget)
         self._tracker = tracker
         candidates: list[tuple[MoveSpec, ...]] = []
-        self._dfs(state, (), 0, tracker, candidates)
+        failed_states: set[tuple] = set()
+
+        if self.budget != _PRODUCTION_HYBRID_BUDGET:
+            self._dfs(state, (), 0, tracker, candidates, failed_states)
+            termination_reason = tracker.termination_reason
+            if termination_reason is None and tracker.depth_cutoffs:
+                termination_reason = "move_depth_budget"
+            return self._build_result(candidates, tracker, termination_reason)
+
+        candidate_keys: set[tuple[MoveSpec, ...]] = set()
+        probe_cutoffs_before = tracker.depth_cutoffs
+        probe_states_before = tracker.explored_states
+        probe_actions_before = tracker.explored_actions
+        probe_candidates_before = len(candidates)
+        probe_cache_hits_before = tracker.failed_state_cache_hits
+        probe_elapsed_start = time.monotonic() - tracker.started_at
+        probe_deadline = tracker.started_at + 1.0
+        tracker.phase_interrupted = False
+        self._dfs(
+            state,
+            (),
+            0,
+            tracker,
+            candidates,
+            failed_states,
+            depth_limit=1,
+            candidate_keys=candidate_keys,
+            local_deadline=probe_deadline,
+            cooperative_checks=True,
+        )
+        tracker.check_time(probe_deadline)
+        probe_elapsed_end = time.monotonic() - tracker.started_at
+        probe_interrupted = (
+            tracker.phase_interrupted and tracker.termination_reason is None
+        )
+        probe_global_reason = tracker.termination_reason
+        probe_cutoffs_delta = tracker.depth_cutoffs - probe_cutoffs_before
+        self._record_search_phase(
+            tracker=tracker,
+            phase="probe",
+            depth_limit=1,
+            elapsed_start=probe_elapsed_start,
+            elapsed_end=probe_elapsed_end,
+            local_slice=1.0,
+            local_deadline=probe_deadline,
+            phase_interrupted=probe_interrupted,
+            global_reason=probe_global_reason,
+            states_before=probe_states_before,
+            actions_before=probe_actions_before,
+            candidates_before=probe_candidates_before,
+            cache_hits_before=probe_cache_hits_before,
+            cutoffs_before=probe_cutoffs_before,
+            candidates_after=len(candidate_keys),
+        )
+        tracker.phase_interrupted = False
+
+        run_fallback = (
+            probe_global_reason is None
+            and (probe_interrupted or probe_cutoffs_delta > 0)
+        )
+        if run_fallback:
+            fallback_cutoffs_before = tracker.depth_cutoffs
+            fallback_states_before = tracker.explored_states
+            fallback_actions_before = tracker.explored_actions
+            fallback_candidates_before = len(candidates)
+            fallback_cache_hits_before = tracker.failed_state_cache_hits
+            fallback_elapsed_start = time.monotonic() - tracker.started_at
+            tracker.phase_interrupted = False
+            self._dfs(
+                state,
+                (),
+                0,
+                tracker,
+                candidates,
+                failed_states,
+                depth_limit=self.budget.max_move_depth,
+                candidate_keys=candidate_keys,
+                cooperative_checks=True,
+            )
+            tracker.check_time()
+            fallback_elapsed_end = time.monotonic() - tracker.started_at
+            fallback_global_reason = tracker.termination_reason
+            self._record_search_phase(
+                tracker=tracker,
+                phase="fallback",
+                depth_limit=self.budget.max_move_depth,
+                elapsed_start=fallback_elapsed_start,
+                elapsed_end=fallback_elapsed_end,
+                local_slice=None,
+                local_deadline=None,
+                phase_interrupted=False,
+                global_reason=fallback_global_reason,
+                states_before=fallback_states_before,
+                actions_before=fallback_actions_before,
+                candidates_before=fallback_candidates_before,
+                cache_hits_before=fallback_cache_hits_before,
+                cutoffs_before=fallback_cutoffs_before,
+                candidates_after=len(candidate_keys),
+            )
+            tracker.phase_interrupted = False
+
+        termination_reason = tracker.termination_reason
+        if termination_reason is None and run_fallback:
+            fallback_cutoffs = tracker.depth_cutoffs - fallback_cutoffs_before
+            if fallback_cutoffs:
+                termination_reason = "move_depth_budget"
+        return self._build_result(candidates, tracker, termination_reason)
+
+    @staticmethod
+    def _build_result(
+        candidates: list[tuple[MoveSpec, ...]],
+        tracker: _BudgetTracker,
+        termination_reason: str | None,
+    ) -> ActionSearchResult:
         return ActionSearchResult(
             tuple(candidates),
             tracker.explored_states,
-            tracker.termination_reason,
+            termination_reason,
+            tracker.failed_state_cache_hits,
         )
+
+    @property
+    def search_telemetry(self) -> tuple[Mapping[str, Any], ...]:
+        """Return immutable snapshots of the most recent hybrid phases."""
+        return tuple(
+            MappingProxyType(dict(record))
+            for record in self._search_telemetry
+        )
+
+    def _record_search_phase(
+        self,
+        *,
+        tracker: _BudgetTracker,
+        phase: str,
+        depth_limit: int | None,
+        elapsed_start: float,
+        elapsed_end: float,
+        local_slice: float | None,
+        local_deadline: float | None,
+        phase_interrupted: bool,
+        global_reason: str | None,
+        states_before: int,
+        actions_before: int,
+        candidates_before: int,
+        cache_hits_before: int,
+        cutoffs_before: int,
+        candidates_after: int,
+    ) -> None:
+        self._search_telemetry.append({
+            "phase": phase,
+            "depth_limit": depth_limit,
+            "elapsed_start": elapsed_start,
+            "elapsed_end": elapsed_end,
+            "elapsed_start_seconds": elapsed_start,
+            "elapsed_end_seconds": elapsed_end,
+            "elapsed_bound_seconds": self.budget.max_seconds,
+            "elapsed_bound": self.budget.max_seconds,
+            "local_slice_seconds": local_slice,
+            "local_slice": local_slice,
+            "local_deadline": local_deadline,
+            "phase_interrupted": phase_interrupted,
+            "local_interrupted": phase_interrupted,
+            "global_reason": global_reason,
+            "global_termination_reason": global_reason,
+            "termination_reason": global_reason,
+            "states_before": states_before,
+            "states_after": tracker.explored_states,
+            "states_delta": tracker.explored_states - states_before,
+            "actions_before": actions_before,
+            "actions_after": tracker.explored_actions,
+            "actions_delta": tracker.explored_actions - actions_before,
+            "unique_candidates_before": candidates_before,
+            "unique_candidates_after": candidates_after,
+            "unique_candidates_delta": candidates_after - candidates_before,
+            "cache_hits_before": cache_hits_before,
+            "cache_hits_after": tracker.failed_state_cache_hits,
+            "cache_hits_delta": tracker.failed_state_cache_hits - cache_hits_before,
+            "failed_state_cache_hits_before": cache_hits_before,
+            "failed_state_cache_hits_after": tracker.failed_state_cache_hits,
+            "failed_state_cache_hits_delta": tracker.failed_state_cache_hits - cache_hits_before,
+            "depth_cutoffs_before": cutoffs_before,
+            "depth_cutoffs_after": tracker.depth_cutoffs,
+            "depth_cutoffs_delta": tracker.depth_cutoffs - cutoffs_before,
+        })
 
     # Friendly aliases used by older callers and by the AI implementations.
     find_candidates = search
@@ -402,6 +662,7 @@ class ActionPlanner:
             "explored_states": result.explored_states,
             "candidate_count": len(result.candidates),
             "search_complete": not result.exhausted,
+            "failed_state_cache_hits": result.failed_state_cache_hits,
         })
         return AIActionPlan(
             color=engine.current_turn_color,
@@ -419,37 +680,85 @@ class ActionPlanner:
         depth: int,
         tracker: _BudgetTracker,
         candidates: list[tuple[MoveSpec, ...]],
-    ) -> None:
-        action = state._ensure_current_action()
+        failed_states: set[tuple],
+        *,
+        depth_limit: int | None = None,
+        candidate_keys: set[tuple[MoveSpec, ...]] | None = None,
+        local_deadline: float | None = None,
+        cooperative_checks: bool = False,
+    ) -> bool:
+        # Time is the only budget that must gate even completion checks.  This
+        # prevents entering a potentially expensive canonical submit query after
+        # the wall deadline has already elapsed.  Depth/state/action limits are
+        # still checked after completion so a witness exactly on those bounds is
+        # accepted as before.
+        if tracker.check_time(local_deadline):
+            return False
 
-        # Completion is checked before the budget so a witness exactly at the
-        # configured depth is still accepted.  A submit-capable state is also
-        # allowed to continue through optional boards: callers may deliberately
-        # include those moves before the one final submission.
-        if state.can_submit_action():
-            candidates.append(path)
+        action = state._ensure_current_action()
+        required = set(ActionRules.required_boards(
+            action,
+            state.timeline_manager.timelines,
+        ))
+        if cooperative_checks and tracker.check_time(local_deadline):
+            return False
+        found_completion = False
+        depth_cutoffs_before = tracker.depth_cutoffs
+
+        # A non-empty required set proves that The Present still belongs to the
+        # acting color, so ActionRules.can_submit() must be false.  Once no board
+        # is required we delegate the decisive royal-safety check to the
+        # canonical API, then re-check time before accepting the witness.  A
+        # query that began inside the deadline but returned after it is therefore
+        # inconclusive rather than silently accepted late.
+        if not required and state.can_submit_action():
+            if tracker.check_time(local_deadline):
+                return False
             tracker.explored_actions += 1
+            found_completion = True
+            if candidate_keys is None or path not in candidate_keys:
+                candidates.append(path)
+                if candidate_keys is not None:
+                    candidate_keys.add(path)
             if (
                 self.budget.max_actions is not None
                 and tracker.explored_actions >= self.budget.max_actions
             ):
                 tracker.termination_reason = "action_budget"
-                return
+                return True
 
-        if tracker.check(depth):
-            return
+        if tracker.check(depth, depth_limit, local_deadline):
+            return found_completion
+
+        # Reuse the engine ActionSearch equivalence relation, whose regression
+        # tests prove that Position.move_number and commuting Action Move order
+        # do not affect future rule semantics.  This is deliberately a failed-
+        # state cache rather than a general visited set: successful states remain
+        # searchable so ordered candidate Actions and evaluator semantics are
+        # unchanged.  The cache is scoped to this one plan() call.
+        key = ActionSearch._state_key(state)
+        if tracker.check_time(local_deadline):
+            return found_completion
+        if key in failed_states:
+            tracker.failed_state_cache_hits += 1
+            return found_completion
+
         tracker.explored_states += 1
 
-        required = set(ActionRules.required_boards(
-            action,
-            state.timeline_manager.timelines,
-        ))
         movable = ActionRules.movable_boards(
             action,
             state.timeline_manager.timelines,
         )
+        if cooperative_checks and tracker.check_time(local_deadline):
+            return found_completion
         if not movable:
-            return
+            if (
+                not found_completion
+                and tracker.termination_reason is None
+                and tracker.depth_cutoffs == depth_cutoffs_before
+            ):
+                failed_states.add(key)
+            return found_completion
 
         ordered_boards = tuple(
             sorted(
@@ -463,10 +772,118 @@ class ActionPlanner:
             )
         )
 
+        # With exactly two required Present boards, a complete Action can be a
+        # single cross-timeline Move between them.  Rank legal Moves from both
+        # required boards together so a completion on the second board is not
+        # hidden behind a deep dead-end from the first board.  An optional-board
+        # Move that lands directly on a required board is also completion-relevant:
+        # inspect only those optional Moves before ordinary required-board
+        # branches.  Other optional Moves remain after required Moves as before.
+        if len(required) == 2:
+            required_moves: list[Move] = []
+            optional_progress_moves: list[Move] = []
+            optional_boards: list[BoardCoord] = []
+            for board in ordered_boards:
+                position = state._resolve_position(board)
+                if cooperative_checks and tracker.check_time(local_deadline):
+                    return found_completion
+                if position is None:
+                    continue
+                if board not in required:
+                    optional_boards.append(board)
+                    optional_moves = state.get_legal_moves(position)
+                    if cooperative_checks and tracker.check_time(local_deadline):
+                        return found_completion
+                    optional_progress_moves.extend(
+                        move
+                        for move in optional_moves
+                        if move.destination.board in required
+                    )
+                    continue
+                required_moves_for_board = state.get_legal_moves(position)
+                if cooperative_checks and tracker.check_time(local_deadline):
+                    return found_completion
+                required_moves.extend(required_moves_for_board)
+
+            ordered_required_moves = sorted(
+                required_moves,
+                key=lambda candidate: _required_move_sort_key(candidate, required),
+            )
+            ordered_optional_progress_moves = sorted(
+                optional_progress_moves,
+                key=lambda candidate: _required_move_sort_key(candidate, required),
+            )
+
+            # A progress=2 required-board Move can advance both required Present
+            # boards at once. Probe only those few candidates through the
+            # canonical submission predicate before descending. A royal-unsafe
+            # progress=2 Move can otherwise open a huge subtree and consume the
+            # whole budget before a later one-Move legal Action is inspected.
+            #
+            # Priority classes are ordering only:
+            #   0 = proven direct completion from a required board
+            #   1 = optional source whose legal destination is currently required
+            #   2 = every other required-board Move
+            # Every Move still executes through the canonical engine API.
+            prepared_moves: list[tuple[int, Move, "FiveDEngine | None"]] = []
+            for move in ordered_required_moves:
+                if tracker.check(depth, depth_limit, local_deadline):
+                    return found_completion
+                child = None
+                direct_completion = False
+                if _required_board_progress(move, required) == 2:
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                    child_required = set(ActionRules.required_boards(
+                        child._ensure_current_action(),
+                        child.timeline_manager.timelines,
+                    ))
+                    if cooperative_checks and tracker.check_time(local_deadline):
+                        return found_completion
+                    if not child_required:
+                        if tracker.check_time(local_deadline):
+                            return found_completion
+                        direct_completion = child.can_submit_action()
+                        if tracker.check_time(local_deadline):
+                            return found_completion
+                prepared_moves.append((0 if direct_completion else 2, move, child))
+
+            prepared_moves.extend(
+                (1, move, None)
+                for move in ordered_optional_progress_moves
+            )
+            prepared_moves.sort(key=lambda item: item[0])
+
+            for _, move, child in prepared_moves:
+                if tracker.check(depth, depth_limit, local_deadline):
+                    return found_completion
+                if child is None:
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                if self._dfs(
+                    child,
+                    path + (MoveSpec.from_move(move),),
+                    depth + 1,
+                    tracker,
+                    candidates,
+                    failed_states,
+                    depth_limit=depth_limit,
+                    candidate_keys=candidate_keys,
+                    local_deadline=local_deadline,
+                    cooperative_checks=cooperative_checks,
+                ):
+                    found_completion = True
+
+            ordered_boards = tuple(optional_boards)
+
         for board in ordered_boards:
-            if tracker.check(depth):
-                return
+            if tracker.check(depth, depth_limit, local_deadline):
+                return found_completion
             position = state._resolve_position(board)
+            if cooperative_checks and tracker.check_time(local_deadline):
+                return found_completion
             if position is None:
                 continue
             # No movement/rule legality is duplicated here.  All generated
@@ -474,21 +891,50 @@ class ActionPlanner:
             # are retained and passed through the engine's canonical API.
             legal_moves = sorted(
                 state.get_legal_moves(position),
-                key=_move_sort_key,
+                key=lambda move: _required_move_sort_key(move, required),
             )
+            if cooperative_checks and tracker.check_time(local_deadline):
+                return found_completion
+            if len(required) == 2 and board not in required:
+                # These exact optional->required Moves were already explored in
+                # the completion-relevant priority class above.  Skip only the
+                # duplicate traversal; no legal Move is removed from the search.
+                legal_moves = [
+                    move
+                    for move in legal_moves
+                    if move.destination.board not in required
+                ]
             for move in legal_moves:
-                if tracker.check(depth):
-                    return
-                child = deepcopy(state)
+                if tracker.check(depth, depth_limit, local_deadline):
+                    return found_completion
+                child = state.clone_for_simulation()
                 if not child.execute_action_move(move):
                     continue
-                self._dfs(
+                if self._dfs(
                     child,
                     path + (MoveSpec.from_move(move),),
                     depth + 1,
                     tracker,
                     candidates,
-                )
+                    failed_states,
+                    depth_limit=depth_limit,
+                    candidate_keys=candidate_keys,
+                    local_deadline=local_deadline,
+                    cooperative_checks=cooperative_checks,
+                ):
+                    found_completion = True
+
+        # Only cache a state after every reachable descendant was explored and
+        # none produced a legal completion.  Any global budget interruption or
+        # branch-local depth cutoff leaves that state unresolved and uncached.
+        if (
+            not found_completion
+            and tracker.termination_reason is None
+            and not tracker.phase_interrupted
+            and tracker.depth_cutoffs == depth_cutoffs_before
+        ):
+            failed_states.add(key)
+        return found_completion
 
 
 def enumerate_action_candidates(
@@ -516,7 +962,11 @@ def resolve_move_spec(engine: "FiveDEngine", spec: MoveSpec) -> Move:
     position = engine._resolve_position(spec.source.board)
     if position is None:
         raise InvalidActionPlanError(f"source board does not exist: {spec.source.board}")
-    legal_moves = engine.get_legal_moves(position)
+    legal_moves = engine.get_legal_moves_from_square(
+        position,
+        spec.source.x,
+        spec.source.y,
+    )
     matches = [move for move in legal_moves if _spec_matches(move, spec)]
     if len(matches) != 1:
         if not matches:
@@ -542,6 +992,8 @@ def _verify_plan_start(engine: "FiveDEngine", plan: AIActionPlan) -> None:
 def _apply_specs_once(
     engine: "FiveDEngine",
     plan: AIActionPlan,
+    *,
+    evaluate_outcome: bool = True,
 ) -> tuple[Move, ...]:
     applied: list[Move] = []
     for index, spec in enumerate(plan.moves):
@@ -555,50 +1007,58 @@ def _apply_specs_once(
             raise ActionApplicationError(f"plan move {index} was rejected by engine")
         applied.append(move)
 
-    if not engine.can_submit_action():
+    # ``FiveDEngine.submit_action`` is the canonical submission boundary and
+    # already performs the full ActionRules.can_submit / royal-safety check.
+    # Calling ``can_submit_action`` immediately before it duplicates that exact
+    # validation on both the probe and live replay paths.
+    if not engine.submit_action(evaluate_outcome=evaluate_outcome):
         raise ActionApplicationError("plan does not reach a submit-capable Action")
-    if not engine.submit_action():
-        raise ActionApplicationError("engine rejected Action submission")
     return tuple(applied)
 
 
 def apply_action_plan(engine: "FiveDEngine", plan: AIActionPlan) -> tuple[Move, ...]:
-    """Preflight and apply a complete plan, submitting exactly once.
+    """Apply one complete plan atomically through canonical engine methods.
 
-    The preflight runs all exact resolutions and the single submission on a
-    deep copy.  The real engine is then resolved afresh for every step and is
-    submitted once only after all steps succeed. The canonical Move objects
-    actually applied to the live engine are returned in execution order.
+    The plan is first resolved and executed on a deepcopy.  Only after every
+    Move and the single final submission succeed do we replay the same immutable
+    specs against the caller.  Expected stale/malformed plans therefore leave
+    the caller untouched and cannot partially mutate a live game.
     """
     _verify_plan_start(engine, plan)
 
-    preflight = deepcopy(engine)
+    probe = deepcopy(engine)
     try:
-        _apply_specs_once(preflight, plan)
+        # Validate every Move and canonical ActionRules.submit() on the isolated
+        # engine, but do not run the expensive global outcome search inside
+        # submit_action. Evaluate that post-submit state exactly once afterwards
+        # so any evaluation exception is still discovered before live mutation.
+        _apply_specs_once(probe, plan, evaluate_outcome=False)
+        outcome, rule_warning = probe._evaluate_multiverse_game_result()
     except InvalidActionPlanError:
         raise
-    except Exception as exc:
-        raise ActionApplicationError(f"plan preflight failed: {exc}") from exc
+    except (ValueError, RuntimeError) as exc:
+        raise ActionApplicationError(f"plan validation failed: {exc}") from exc
 
-    # The signature was checked before preflight; this second check catches a
-    # concurrent caller changing state while the copy was being validated.
-    _verify_plan_start(engine, plan)
-    return _apply_specs_once(engine, plan)
+    try:
+        # Replay through the same canonical Move/Action submission path. The
+        # already-validated outcome is then applied on the live engine without
+        # repeating ActionSearch. Normal submit_action() callers remain unchanged.
+        applied = _apply_specs_once(engine, plan, evaluate_outcome=False)
+        engine._check_multiverse_game_result(
+            precomputed_outcome=outcome,
+            rule_warning=rule_warning,
+        )
+        return applied
+    except InvalidActionPlanError:
+        raise
+    except (ValueError, RuntimeError) as exc:
+        raise ActionApplicationError(f"plan application failed: {exc}") from exc
 
 
-__all__ = [
-    "ActionApplicationError",
-    "ActionPlanError",
-    "ActionPlanner",
-    "ActionPlanningError",
-    "ActionSearchBudget",
-    "ActionSearchResult",
-    "AIActionPlan",
-    "InvalidActionPlanError",
-    "MoveSpec",
-    "StaleActionPlanError",
-    "apply_action_plan",
-    "engine_state_signature",
-    "enumerate_action_candidates",
-    "resolve_move_spec",
-]
+def plan_action(
+    engine: "FiveDEngine",
+    budget: ActionSearchBudget | None = None,
+    **kwargs,
+) -> AIActionPlan:
+    """Convenience wrapper returning the first complete legal Action plan."""
+    return ActionPlanner(budget).plan(engine, **kwargs)
