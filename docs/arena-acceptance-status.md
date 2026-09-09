@@ -1,6 +1,7 @@
 # Arena acceptance status
 
-This document records the current acceptance gate for `feat/local-ai-training-v2` / PR #24.
+This document records the current acceptance gate for
+`feat/local-ai-training-v2` / PR #24.
 
 ## Current validated state
 
@@ -32,37 +33,100 @@ Failure attribution by seed:
 - neural: 42 (time), 46 (state), 48 (time), 50 (state), 60 (time)
 - baseline: 43 (state), 51 (time), 52 (time), 53 (state), 55 (time), 56 (state)
 
-Cleanup head `d9c28eae665b34144a15dfce392619a9f70e9995` passed both required validation workflows:
+Actor-specific reporting was accepted by run `34101659061` on head
+`afa4075d7202f820b297475c1003a76064ca2bdb`. It reproduced the same 11
+failures as 5 neural + 6 baseline failures while retaining the strict aggregate
+failure gate.
 
-- CI run `34094705484`: success
-- Local AI Training v2 CI run `34094705603`: success
+The current branch head also passes both required validation suites. For head
+`040fab7f9898aacff174d270b43bc8a3c2f35c1f`:
 
-## Acceptance interpretation
+- CI run `34180368954`: success
+- Local AI Training v2 CI runs `34180366685` and `34180369003`: success
 
-The aggregate 7/2/11 W/D/L is not a clean model-quality measurement because the Easy baseline itself accounts for 6 of the 11 planning failures. The evidence also rules out a neural-only failure mode: both actors are hitting the shared bounded complete-Action search limits.
+## Reliability work completed after attribution
 
-Do not advance to Medium/Hard Arena and do not scale training while this reliability ambiguity remains.
+Arena now distinguishes three outcomes after a bounded planner stops without a
+candidate:
+
+1. A larger canonical `ActionSearch` finds a legal witness. Arena applies it
+   through the normal transactional `apply_action_plan()` path and records an
+   actor-specific planner recovery.
+2. The larger search proves that no legal Action exists. Arena adjudicates the
+   proven checkmate or stalemate.
+3. The larger search is also inconclusive. Arena preserves the original
+   planning failure and the strict CLI failure gate remains non-zero.
+
+The following invariants are enforced in the result builder:
+
+```text
+planning_failure_count
+  == neural_planning_failure_count + baseline_planning_failure_count
+
+planner_recovery_count
+  == neural_planner_recovery_count + baseline_planner_recovery_count
+```
+
+Recovery does not bypass `MoveValidator`, `ActionRules.can_submit`,
+`RoyalRules.is_action_safe`, stale-plan checks, or the transactional application
+probe.
+
+## Residual planner bottleneck
+
+The recovery path reduced ambiguity but did not make the fixed failure set
+reliable. Follow-up runs against seeds 51, 53, and 55 still produced at least
+one unresolved planning failure per game under the unchanged production budget.
+Increasing the proof search to 8192 states / 30 seconds and 16384 states / 45
+seconds did not resolve those three seeds.
+
+The latest focused profile used seed 53 with the neural model playing Black.
+The Easy baseline failed on White at action index 38 / ply 42 with three
+timelines and two required boards:
+
+- termination: state budget
+- explored states: 1024
+- completed candidate Actions: 0
+- failed-state cache hits: 0
+- planner wall time: 4.65 s
+- `can_submit_action`: 1052 calls / 2.36 s
+- `RoyalRules.is_action_safe`: 1052 calls / 2.33 s
+- `clone_for_simulation`: 1034 calls / 0.95 s
+- planner state-key construction: 1024 calls / 0.70 s
+
+This evidence identifies canonical royal-safety evaluation as the largest
+measured cost in the residual seed-53 search. It does not justify weakening or
+skipping royal safety: the search must first establish a semantics-preserving
+ordering, incremental query, or narrower proven-dead-state rule.
+
+Experiments that did not pass the acceptance gate are intentionally not part of
+production code:
+
+- moving the failed-state lookup before submission checks
+- prioritizing optional-board moves before required-board moves
+- pruning every royal-unsafe state after required-board progress completes
+
+The temporary workflows used for the completed attribution, revalidation, and
+seed-53 profiling have been removed. Durable manual Arena validation remains in
+`.github/workflows/local-ai-arena-validate.yml`; deterministic planner
+before/after evidence remains in `.github/workflows/planner-regression.yml`.
 
 ## Next production gate
 
-`src/training/arena.py` should report planning failures by actor while retaining the existing aggregate field for compatibility.
+Do not advance to Medium/Hard Arena or scale beyond the Stage 1 checkpoint yet.
+The next planner change must satisfy all of the following:
 
-Required fields:
+- preserve canonical complete-Action semantics and every existing safety rail
+- add a focused regression for the exact state class it optimizes
+- reduce unresolved failures for the published fixed seed set without relaxing
+  the 5.0 s / 1024-state production envelope
+- keep illegal, stale, and unexpected failures at zero
+- retain actor-specific failure and recovery accounting
+- pass normal CI, training CI, and the fixed-seed planner regression workflow
 
-- `planning_failure_count`
-- `neural_planning_failure_count`
-- `baseline_planning_failure_count`
-
-Required invariant:
-
-```text
-planning_failure_count == neural_planning_failure_count + baseline_planning_failure_count
-```
-
-The existing strict Arena/CLI failure gate must continue to use the aggregate count. This change is reporting-only and must not relax planner budgets, canonical move validation, Royal safety, stale-plan rejection, or any other safety rail.
-
-After the reporting change passes CI, rerun the exact same Easy seed schedule and budget. Acceptance requires the actor-specific fields to reproduce the established attribution of 5 neural and 6 baseline planning failures. Only then should planner reliability work proceed against the fixed failing seeds.
+Until such a change is validated, the 7/2/11 result must not be interpreted as
+model quality and no Medium/Hard benchmark or larger training run is accepted.
 
 ## PR policy
 
-PR #24 remains experimental and must stay Draft and unmerged. Do not mutate `main`, enable auto-merge, or mark the PR Ready for Review during this stage.
+PR #24 remains experimental and must stay Draft and unmerged. Do not mutate
+`main`, enable auto-merge, or mark the PR Ready for Review during this stage.
