@@ -553,17 +553,25 @@ class ActionPlanner:
         # With exactly two required Present boards, a complete Action can be a
         # single cross-timeline Move between them.  Rank legal Moves from both
         # required boards together so a completion on the second board is not
-        # hidden behind a deep dead-end from the first board.  Optional boards
-        # remain fully searchable afterwards; this changes ordering only.
+        # hidden behind a deep dead-end from the first board.  An optional-board
+        # Move that lands directly on a required board is also completion-relevant:
+        # inspect only those optional Moves before ordinary required-board
+        # branches.  Other optional Moves remain after required Moves as before.
         if len(required) == 2:
             required_moves: list[Move] = []
+            optional_progress_moves: list[Move] = []
             optional_boards: list[BoardCoord] = []
             for board in ordered_boards:
-                if board not in required:
-                    optional_boards.append(board)
-                    continue
                 position = state._resolve_position(board)
                 if position is None:
+                    continue
+                if board not in required:
+                    optional_boards.append(board)
+                    optional_progress_moves.extend(
+                        move
+                        for move in state.get_legal_moves(position)
+                        if move.destination.board in required
+                    )
                     continue
                 required_moves.extend(state.get_legal_moves(position))
 
@@ -571,16 +579,23 @@ class ActionPlanner:
                 required_moves,
                 key=lambda candidate: _required_move_sort_key(candidate, required),
             )
+            ordered_optional_progress_moves = sorted(
+                optional_progress_moves,
+                key=lambda candidate: _required_move_sort_key(candidate, required),
+            )
 
-            # A progress=2 Move can advance both required Present boards at once.
-            # Probe only those few candidates through the canonical submission
-            # predicate before descending. A royal-unsafe progress=2 Move can
-            # otherwise open a huge optional-move subtree and consume the whole
-            # budget before a later one-Move legal Action is even inspected.
+            # A progress=2 required-board Move can advance both required Present
+            # boards at once. Probe only those few candidates through the
+            # canonical submission predicate before descending. A royal-unsafe
+            # progress=2 Move can otherwise open a huge subtree and consume the
+            # whole budget before a later one-Move legal Action is inspected.
             #
-            # This is ordering only: every Move remains in the search, and a
-            # prebuilt child is reused below instead of executing the Move twice.
-            prepared_required_moves = []
+            # Priority classes are ordering only:
+            #   0 = proven direct completion from a required board
+            #   1 = optional source whose legal destination is currently required
+            #   2 = every other required-board Move
+            # Every Move still executes through the canonical engine API.
+            prepared_moves: list[tuple[int, Move, "FiveDEngine | None"]] = []
             for move in ordered_required_moves:
                 if tracker.check(depth):
                     return found_completion
@@ -600,13 +615,15 @@ class ActionPlanner:
                         direct_completion = child.can_submit_action()
                         if tracker.check_time():
                             return found_completion
-                prepared_required_moves.append((direct_completion, move, child))
+                prepared_moves.append((0 if direct_completion else 2, move, child))
 
-            # Python's sort is stable, so non-direct candidates retain the exact
-            # deterministic order produced by _required_move_sort_key.
-            prepared_required_moves.sort(key=lambda item: not item[0])
+            prepared_moves.extend(
+                (1, move, None)
+                for move in ordered_optional_progress_moves
+            )
+            prepared_moves.sort(key=lambda item: item[0])
 
-            for _, move, child in prepared_required_moves:
+            for _, move, child in prepared_moves:
                 if tracker.check(depth):
                     return found_completion
                 if child is None:
@@ -638,6 +655,15 @@ class ActionPlanner:
                 state.get_legal_moves(position),
                 key=lambda move: _required_move_sort_key(move, required),
             )
+            if len(required) == 2 and board not in required:
+                # These exact optional->required Moves were already explored in
+                # the completion-relevant priority class above.  Skip only the
+                # duplicate traversal; no legal Move is removed from the search.
+                legal_moves = [
+                    move
+                    for move in legal_moves
+                    if move.destination.board not in required
+                ]
             for move in legal_moves:
                 if tracker.check(depth):
                     return found_completion
