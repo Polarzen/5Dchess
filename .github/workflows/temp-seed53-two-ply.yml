@@ -39,7 +39,6 @@ jobs:
           mkdir -p _work/seed53-two-ply
           python - <<'PY'
           import json
-          from collections import Counter
           from pathlib import Path
 
           from src.ai.action_planner import (
@@ -53,6 +52,11 @@ jobs:
 
           source = Path("_work/seed53-state/seed53-failure-archive.json")
           engine = GameArchive.restore(json.loads(source.read_text(encoding="utf-8")))
+          # The live Arena state that was captured has no storage-only replay
+          # metadata. Normalize the restored fixture back to that runtime shape
+          # instead of weakening clone_for_simulation's fail-closed policy.
+          if hasattr(engine, "_replay_origin"):
+              delattr(engine, "_replay_origin")
           action = engine._ensure_current_action()
           required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
           movable = tuple(ActionRules.movable_boards(action, engine.timeline_manager.timelines))
@@ -132,7 +136,11 @@ jobs:
                   "root_move": move_key(root_move),
                   "child_safe": bool(child_safe),
                   "threats": [
-                      {"attacker": square_key(t.attacker), "king": square_key(t.king)}
+                      {
+                          "piece": t.piece.piece_type.value,
+                          "attacker": square_key(t.attacker),
+                          "king": square_key(t.king),
+                      }
                       for t in threats
                   ],
                   "second_move_count": len(second_moves),
