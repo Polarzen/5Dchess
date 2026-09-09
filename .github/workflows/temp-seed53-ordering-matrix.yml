@@ -1,4 +1,4 @@
-name: TEMP Planner Ordering Matrix
+name: TEMP Royal Scan Perf A-B
 
 on:
   push:
@@ -14,9 +14,11 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -34,61 +36,23 @@ jobs:
           repository: ${{ github.repository }}
           run-id: 34337992183
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compare required-board ordering variants
+      - name: Compare pre-optimization and current HEAD
         run: |
-          mkdir -p _work/ordering
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("src/ai/action_planner.py")
-          original = path.read_text(encoding="utf-8")
-          board_old = '''                key=lambda board: (\n                    board not in required,\n                    board.timeline,\n                    board.turn,\n                    _enum_value(board.side),\n                ),\n'''
-          board_reverse = '''                key=lambda board: (\n                    board not in required,\n                    -board.timeline,\n                    board.turn,\n                    _enum_value(board.side),\n                ),\n'''
-          sort_old = '''    return (\n        base[0],\n        move.piece.piece_type is not PieceType.KING,\n        move.captured is None,\n        -_required_board_progress(move, required),\n        *base[1:],\n    )\n'''
-          sort_progress = '''    return (\n        base[0],\n        -_required_board_progress(move, required),\n        move.piece.piece_type is not PieceType.KING,\n        move.captured is None,\n        *base[1:],\n    )\n'''
-          if original.count(board_old) != 1:
-              raise SystemExit("board ordering pattern changed")
-          if original.count(sort_old) != 1:
-              raise SystemExit("required sort pattern changed")
-          reverse = original.replace(board_old, board_reverse, 1)
-          variants = {
-              "current": original,
-              "reverse_timeline": reverse,
-              "reverse_progress_first": reverse.replace(sort_old, sort_progress, 1),
-          }
-          out = Path("_work/ordering/variants")
-          out.mkdir(parents=True, exist_ok=True)
-          for name, text in variants.items():
-              (out / f"{name}.py").write_text(text, encoding="utf-8")
-          PY
-
-          cat > _work/ordering/run_variant.py <<'PY'
+          mkdir -p _work/perf
+          cat > _work/perf/run_variant.py <<'PY'
           import json
           import os
           import time
           from pathlib import Path
 
-          planner_path = Path("src/ai/action_planner.py")
-          variant = os.environ["VARIANT"]
-          planner_path.write_text(
-              Path(f"_work/ordering/variants/{variant}.py").read_text(encoding="utf-8"),
-              encoding="utf-8",
-          )
-          if os.environ.get("VARIANT_CHILD") != "1":
-              import subprocess, sys
-              env = dict(os.environ)
-              env["VARIANT_CHILD"] = "1"
-              env["PYTHONPATH"] = str(Path.cwd())
-              raise SystemExit(subprocess.call([sys.executable, __file__], env=env))
-
           from src.ai.action_planner import ActionPlanner, ActionSearchBudget
           from src.data.archive import GameArchive
 
+          variant = os.environ["VARIANT"]
           rows = []
           for seed in (51, 53, 55):
-              payload = json.loads(Path(
-                  f"_work/failure-states/seed{seed}-failure-archive.json"
-              ).read_text(encoding="utf-8"))
+              archive = Path(f"_work/failure-states/seed{seed}-failure-archive.json")
+              payload = json.loads(archive.read_text(encoding="utf-8"))
               engine = GameArchive.restore(payload)
               if hasattr(engine, "_replay_origin"):
                   delattr(engine, "_replay_origin")
@@ -110,34 +74,51 @@ jobs:
                   "first_action_length": len(result.candidates[0]) if result.candidates else None,
               }
               rows.append(row)
-              print("ORDERING_RESULT=" + json.dumps(row, sort_keys=True))
-          Path(f"_work/ordering/{variant}.json").write_text(
+              print("PERF_RESULT=" + json.dumps(row, sort_keys=True))
+          Path(f"_work/perf/{variant}.json").write_text(
               json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
           )
           PY
 
-          for variant in current reverse_timeline reverse_progress_first; do
-            echo "=== ${variant} ==="
-            VARIANT="${variant}" python _work/ordering/run_variant.py
-          done
-          git checkout -- src/ai/action_planner.py
+          # 89eadf is the last production-code-equivalent state before the two
+          # allocation-only engine optimizations (subsequent diagnostic commits
+          # touched workflows only). Run both variants on the same hosted runner.
+          git show 89eadf879ada1aea74aa63b49c9218964014612f:src/engine/piece.py > src/engine/piece.py
+          git show 89eadf879ada1aea74aa63b49c9218964014612f:src/engine/royal_rules.py > src/engine/royal_rules.py
+          VARIANT=before python _work/perf/run_variant.py
+
+          git checkout HEAD -- src/engine/piece.py src/engine/royal_rules.py
+          VARIANT=current python _work/perf/run_variant.py
 
           python - <<'PY'
           import json
           from pathlib import Path
+          before = json.loads(Path("_work/perf/before.json").read_text())
+          current = json.loads(Path("_work/perf/current.json").read_text())
           rows = []
-          for path in sorted(Path("_work/ordering").glob("*.json")):
-              rows.extend(json.loads(path.read_text(encoding="utf-8")))
-          Path("_work/ordering/results.json").write_text(
+          for b, c in zip(before, current):
+              rows.append({
+                  "seed": b["seed"],
+                  "before_states": b["explored_states"],
+                  "current_states": c["explored_states"],
+                  "state_gain_pct": (
+                      (c["explored_states"] - b["explored_states"]) / max(1, b["explored_states"]) * 100.0
+                  ),
+                  "before_candidate_count": b["candidate_count"],
+                  "current_candidate_count": c["candidate_count"],
+                  "before_termination": b["termination_reason"],
+                  "current_termination": c["termination_reason"],
+              })
+          Path("_work/perf/comparison.json").write_text(
               json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
           )
-          print("ORDERING_MATRIX=" + json.dumps(rows, sort_keys=True))
+          print("PERF_COMPARISON=" + json.dumps(rows, sort_keys=True))
           PY
-      - name: Upload matrix
+      - name: Upload comparison
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: planner-ordering-matrix-${{ github.run_id }}
-          path: _work/ordering
+          name: royal-scan-perf-${{ github.run_id }}
+          path: _work/perf
           retention-days: 7
           if-no-files-found: error
