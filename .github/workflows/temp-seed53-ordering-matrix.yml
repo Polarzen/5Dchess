@@ -66,7 +66,6 @@ jobs:
           cat > _work/ordering/run_variant.py <<'PY'
           import json
           import os
-          import shutil
           import time
           from pathlib import Path
 
@@ -81,6 +80,7 @@ jobs:
               import subprocess, sys
               env = dict(os.environ)
               env["VARIANT_CHILD"] = "1"
+              env["PYTHONPATH"] = str(Path.cwd())
               raise SystemExit(subprocess.call([sys.executable, __file__], env=env))
 
           from src.ai.action_planner import ActionPlanner, ActionSearchBudget
