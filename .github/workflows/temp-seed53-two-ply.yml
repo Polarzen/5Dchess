@@ -1,0 +1,181 @@
+name: TEMP Seed53 Two Ply Analysis
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-seed53-two-ply.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install game dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Download exact seed53 state
+        uses: actions/download-artifact@v4
+        with:
+          name: seed53-planner-state-34332477538
+          path: _work/seed53-state
+          repository: ${{ github.repository }}
+          run-id: 34332477538
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Enumerate two-ply completions
+        run: |
+          mkdir -p _work/seed53-two-ply
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          from src.ai.action_planner import (
+              _move_sort_key,
+              _required_board_progress,
+              _required_move_sort_key,
+          )
+          from src.data.archive import GameArchive
+          from src.engine.action import ActionRules
+          from src.engine.royal_rules import RoyalRules
+
+          source = Path("_work/seed53-state/seed53-failure-archive.json")
+          engine = GameArchive.restore(json.loads(source.read_text(encoding="utf-8")))
+          action = engine._ensure_current_action()
+          required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
+          movable = tuple(ActionRules.movable_boards(action, engine.timeline_manager.timelines))
+
+          def board_key(board):
+              return (board.timeline, board.turn, board.side.value)
+
+          def square_key(square):
+              return (*board_key(square.board), square.x, square.y)
+
+          def move_key(move):
+              return {
+                  "piece": move.piece.piece_type.value,
+                  "source": square_key(move.source),
+                  "destination": square_key(move.destination),
+                  "capture": move.captured.piece_type.value if move.captured else None,
+                  "branching": bool(move.is_branching),
+                  "cross_timeline": bool(move.is_cross_timeline),
+              }
+
+          root_moves = []
+          for board in movable:
+              position = engine._resolve_position(board)
+              if position is None:
+                  continue
+              root_moves.extend(engine.get_legal_moves(position))
+          root_moves.sort(key=lambda move: _required_move_sort_key(move, required))
+
+          results = []
+          total_second_moves = 0
+          total_direct_completions = 0
+          for root_rank, root_move in enumerate(root_moves):
+              if _required_board_progress(root_move, required) != 2:
+                  continue
+              child = engine.clone_for_simulation()
+              if not child.execute_action_move(root_move):
+                  continue
+              child_action = child._ensure_current_action()
+              child_required = set(ActionRules.required_boards(
+                  child_action, child.timeline_manager.timelines
+              ))
+              if child_required:
+                  continue
+              child_safe = child.can_submit_action()
+              threats = RoyalRules(child.timeline_manager.timelines).direct_threats_against(
+                  child.current_turn_color
+              )
+              second_moves = []
+              for board in ActionRules.movable_boards(
+                  child_action, child.timeline_manager.timelines
+              ):
+                  position = child._resolve_position(board)
+                  if position is None:
+                      continue
+                  second_moves.extend(child.get_legal_moves(position))
+              second_moves.sort(key=_move_sort_key)
+              completions = []
+              for second_rank, second_move in enumerate(second_moves):
+                  grandchild = child.clone_for_simulation()
+                  if not grandchild.execute_action_move(second_move):
+                      continue
+                  grand_action = grandchild._ensure_current_action()
+                  grand_required = set(ActionRules.required_boards(
+                      grand_action, grandchild.timeline_manager.timelines
+                  ))
+                  if grand_required:
+                      continue
+                  if grandchild.can_submit_action():
+                      completions.append({
+                          "second_rank": second_rank,
+                          "move": move_key(second_move),
+                      })
+              total_second_moves += len(second_moves)
+              total_direct_completions += len(completions)
+              results.append({
+                  "root_rank": root_rank,
+                  "root_move": move_key(root_move),
+                  "child_safe": bool(child_safe),
+                  "threats": [
+                      {"attacker": square_key(t.attacker), "king": square_key(t.king)}
+                      for t in threats
+                  ],
+                  "second_move_count": len(second_moves),
+                  "completion_count": len(completions),
+                  "completions": completions,
+              })
+
+          summary = {
+              "required": [board_key(board) for board in sorted(required, key=board_key)],
+              "root_move_count": len(root_moves),
+              "double_progress_roots": len(results),
+              "total_second_moves": total_second_moves,
+              "total_direct_completions": total_direct_completions,
+              "roots_with_direct_completion": sum(bool(item["completions"]) for item in results),
+              "best_completion_second_rank": min(
+                  (c["second_rank"] for item in results for c in item["completions"]),
+                  default=None,
+              ),
+              "results": results,
+          }
+          Path("_work/seed53-two-ply/analysis.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print("TWO_PLY_SUMMARY=" + json.dumps({
+              key: summary[key]
+              for key in (
+                  "root_move_count",
+                  "double_progress_roots",
+                  "total_second_moves",
+                  "total_direct_completions",
+                  "roots_with_direct_completion",
+                  "best_completion_second_rank",
+              )
+          }, sort_keys=True))
+          for item in results:
+              if item["completions"]:
+                  print("COMPLETION_ROOT=" + json.dumps(item, sort_keys=True))
+          PY
+      - name: Upload analysis
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: seed53-two-ply-${{ github.run_id }}
+          path: _work/seed53-two-ply
+          retention-days: 7
+          if-no-files-found: error
