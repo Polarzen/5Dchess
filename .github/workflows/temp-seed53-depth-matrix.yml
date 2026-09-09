@@ -1,0 +1,94 @@
+name: TEMP Seed53 Completion Depth Matrix
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-seed53-depth-matrix.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install game dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Download exact seed53 state
+        uses: actions/download-artifact@v4
+        with:
+          name: seed53-planner-state-34332477538
+          path: _work/seed53-state
+          repository: ${{ github.repository }}
+          run-id: 34332477538
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compare shallow completion depths
+        run: |
+          mkdir -p _work/depth
+          python - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+          from src.data.archive import GameArchive
+
+          payload = json.loads(Path("_work/seed53-state/seed53-failure-archive.json").read_text(encoding="utf-8"))
+
+          def load_engine():
+              engine = GameArchive.restore(payload)
+              if hasattr(engine, "_replay_origin"):
+                  delattr(engine, "_replay_origin")
+              return engine
+
+          results = []
+          for depth in (1, 2, 3, 4, 5, 6, 8, 12, 32):
+              engine = load_engine()
+              budget = ActionSearchBudget(
+                  max_states=1024,
+                  max_actions=1,
+                  max_move_depth=depth,
+                  max_seconds=60.0,
+              )
+              started = time.monotonic()
+              result = ActionPlanner(budget).search(engine)
+              item = {
+                  "depth": depth,
+                  "elapsed_seconds": time.monotonic() - started,
+                  "explored_states": result.explored_states,
+                  "candidate_count": len(result.candidates),
+                  "termination_reason": result.termination_reason,
+                  "failed_state_cache_hits": result.failed_state_cache_hits,
+                  "first_action_length": len(result.candidates[0]) if result.candidates else None,
+                  "first_action": [
+                      {
+                          "source": [spec.source.board.timeline, spec.source.board.turn, spec.source.board.side.value, spec.source.x, spec.source.y],
+                          "destination": [spec.destination.board.timeline, spec.destination.board.turn, spec.destination.board.side.value, spec.destination.x, spec.destination.y],
+                      }
+                      for spec in (result.candidates[0] if result.candidates else ())
+                  ],
+              }
+              results.append(item)
+              print("DEPTH_RESULT=" + json.dumps(item, sort_keys=True))
+          Path("_work/depth/results.json").write_text(json.dumps(results, indent=2, sort_keys=True), encoding="utf-8")
+          PY
+      - name: Upload matrix
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: seed53-depth-matrix-${{ github.run_id }}
+          path: _work/depth
+          retention-days: 7
+          if-no-files-found: error
