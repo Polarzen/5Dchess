@@ -300,6 +300,7 @@ class _BudgetTracker:
         self.explored_states = 0
         self.explored_actions = 0
         self.failed_state_cache_hits = 0
+        self.depth_cutoffs = 0
         self.termination_reason: str | None = None
 
     def check_time(self) -> bool:
@@ -321,7 +322,10 @@ class _BudgetTracker:
             self.budget.max_move_depth is not None
             and depth >= self.budget.max_move_depth
         ):
-            self.termination_reason = "move_depth_budget"
+            # Move depth is a per-path bound, unlike wall/state/action limits.
+            # Record the incomplete-search evidence without poisoning sibling
+            # branches with a global termination reason.
+            self.depth_cutoffs += 1
             return True
         if (
             self.budget.max_states is not None
@@ -420,10 +424,13 @@ class ActionPlanner:
         candidates: list[tuple[MoveSpec, ...]] = []
         failed_states: set[tuple] = set()
         self._dfs(state, (), 0, tracker, candidates, failed_states)
+        termination_reason = tracker.termination_reason
+        if termination_reason is None and tracker.depth_cutoffs:
+            termination_reason = "move_depth_budget"
         return ActionSearchResult(
             tuple(candidates),
             tracker.explored_states,
-            tracker.termination_reason,
+            termination_reason,
             tracker.failed_state_cache_hits,
         )
 
@@ -491,6 +498,7 @@ class ActionPlanner:
             state.timeline_manager.timelines,
         ))
         found_completion = False
+        depth_cutoffs_before = tracker.depth_cutoffs
 
         # A non-empty required set proves that The Present still belongs to the
         # acting color, so ActionRules.can_submit() must be false.  Once no board
@@ -534,7 +542,11 @@ class ActionPlanner:
             state.timeline_manager.timelines,
         )
         if not movable:
-            if not found_completion and tracker.termination_reason is None:
+            if (
+                not found_completion
+                and tracker.termination_reason is None
+                and tracker.depth_cutoffs == depth_cutoffs_before
+            ):
                 failed_states.add(key)
             return found_completion
 
@@ -681,11 +693,12 @@ class ActionPlanner:
                     found_completion = True
 
         # Only cache a state after every reachable descendant was explored and
-        # none produced a legal completion.  Any budget interruption leaves the
-        # state unresolved and therefore uncached.
+        # none produced a legal completion.  Any global budget interruption or
+        # branch-local depth cutoff leaves that state unresolved and uncached.
         if (
             not found_completion
             and tracker.termination_reason is None
+            and tracker.depth_cutoffs == depth_cutoffs_before
         ):
             failed_states.add(key)
         return found_completion
