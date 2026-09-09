@@ -4,6 +4,7 @@ import src.ai.action_planner as action_planner
 from src.ai.action_planner import (
     ActionPlanner,
     ActionSearchBudget,
+    _BudgetTracker,
     _move_sort_key,
     _required_move_sort_key,
 )
@@ -162,6 +163,22 @@ def test_non_branching_cross_timeline_move_advancing_two_required_boards_sorts_f
 
     assert ordered == [cross_timeline, ordinary]
     assert set(ordered) == {ordinary, cross_timeline}
+
+
+def test_move_depth_cutoff_is_branch_local_not_global():
+    tracker = _BudgetTracker(ActionSearchBudget(
+        max_states=16,
+        max_actions=None,
+        max_move_depth=1,
+        max_seconds=None,
+    ))
+
+    # Reaching the per-path move-depth bound must prune only that descendant.
+    # A sibling at root depth still has to be searchable. The overall search
+    # may later report that it was incomplete because a depth cutoff occurred.
+    assert tracker.check(1)
+    assert tracker.termination_reason is None
+    assert tracker.check(0) is False
 
 
 def test_ordering_change_preserves_complete_candidate_set(monkeypatch):
