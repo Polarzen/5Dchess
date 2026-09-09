@@ -231,25 +231,17 @@ class RoyalRules:
         by_color = color.opposite()
         view = MultiverseBoardView(timelines)
 
-        # An attacker and its target must live on boards whose side-to-move is
-        # the attacker's color. Pre-filter and validate those King instances
-        # once instead of repeating the same side/lookup checks for every
-        # attacker × historical-King pair.
+        # Attack source and target boards must both be on the attacker's phase.
+        # iter_boards already validates each stored Position, and find_king()
+        # proves the exact royal piece in that Position. Filtering by side here
+        # avoids constructing a second board view, scanning the opposite phase,
+        # then resolving and validating every King board a second time.
         kings: list[Square5D] = []
-        for king in cls._king_squares_in(timelines, color):
-            if king.side != by_color:
+        for board in view.iter_boards(side=by_color):
+            king = board.position.find_king(color)
+            if king is None:
                 continue
-            target_position = view.resolve(king.board)
-            if target_position is None:
-                continue
-            king_piece = target_position.get_piece(king.x, king.y)
-            if (
-                king_piece is None
-                or king_piece.color != color
-                or king_piece.piece_type != PieceType.KING
-            ):
-                continue
-            kings.append(king)
+            kings.append(Square5D(board.coord, king[0], king[1]))
 
         if not kings:
             return
