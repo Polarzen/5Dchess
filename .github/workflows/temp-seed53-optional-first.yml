@@ -1,0 +1,100 @@
+name: TEMP Seed53 Optional First Diagnostic
+
+on:
+  push:
+    branches:
+      - feat/local-ai-training-v2
+    paths:
+      - .github/workflows/temp-seed53-optional-first.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install game dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Download exact seed53 state
+        uses: actions/download-artifact@v4
+        with:
+          name: seed53-planner-state-34332477538
+          path: _work/seed53-state
+          repository: ${{ github.repository }}
+          run-id: 34332477538
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch diagnostic ordering only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/ai/action_planner.py')
+          text = p.read_text(encoding='utf-8')
+          old = '''                key=lambda board: (\n                    board not in required,\n                    board.timeline,'''
+          new = '''                key=lambda board: (\n                    board in required,\n                    board.timeline,'''
+          if old not in text:
+              raise SystemExit('ordered_boards pattern not found')
+          text = text.replace(old, new, 1)
+          old2 = '        if len(required) == 2:\n'
+          new2 = '        if False and len(required) == 2:  # diagnostic: bypass required-first fast path\n'
+          if old2 not in text:
+              raise SystemExit('two-required fast-path pattern not found')
+          text = text.replace(old2, new2, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+      - name: Run exact state under unchanged state budget
+        run: |
+          mkdir -p _work/optional-first
+          python - <<'PY'
+          import json, time
+          from pathlib import Path
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+          from src.data.archive import GameArchive
+
+          payload = json.loads(Path('_work/seed53-state/seed53-failure-archive.json').read_text(encoding='utf-8'))
+          engine = GameArchive.restore(payload)
+          if hasattr(engine, '_replay_origin'):
+              delattr(engine, '_replay_origin')
+          started = time.monotonic()
+          result = ActionPlanner(ActionSearchBudget(
+              max_states=1024,
+              max_actions=1,
+              max_move_depth=32,
+              max_seconds=60.0,
+          )).search(engine)
+          item = {
+              'elapsed_seconds': time.monotonic() - started,
+              'explored_states': result.explored_states,
+              'candidate_count': len(result.candidates),
+              'termination_reason': result.termination_reason,
+              'failed_state_cache_hits': result.failed_state_cache_hits,
+              'first_action_length': len(result.candidates[0]) if result.candidates else None,
+              'first_action': [
+                  {
+                      'source': [s.source.board.timeline, s.source.board.turn, s.source.board.side.value, s.source.x, s.source.y],
+                      'destination': [s.destination.board.timeline, s.destination.board.turn, s.destination.board.side.value, s.destination.x, s.destination.y],
+                  }
+                  for s in (result.candidates[0] if result.candidates else ())
+              ],
+          }
+          print('OPTIONAL_FIRST_RESULT=' + json.dumps(item, sort_keys=True))
+          Path('_work/optional-first/result.json').write_text(json.dumps(item, indent=2, sort_keys=True), encoding='utf-8')
+          PY
+      - name: Upload result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: seed53-optional-first-${{ github.run_id }}
+          path: _work/optional-first
+          retention-days: 7
+          if-no-files-found: error
