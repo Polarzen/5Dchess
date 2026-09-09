@@ -18,7 +18,7 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,7 +42,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: 34028226472
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Capture exact current failure states
+      - name: Capture current seed 51 failure state
         run: |
           mkdir -p _work/planner-failure-states
           python - <<'PY'
@@ -55,43 +55,22 @@ jobs:
           from src.engine.action import ActionRules
           from src.training.arena import evaluate_arena
 
+          seed = 51
+          expected = "b8e7f211f1aa93e20d80509ed6d9132d84d401ad091f76e3dfdc41e4d32d5da5"
           checkpoint = Path("_work/checkpoint/best")
           out_dir = Path("_work/planner-failure-states")
-          production_budget = ActionSearchBudget(
-              max_states=1024,
-              max_actions=24,
-              max_move_depth=32,
-              max_seconds=5.0,
-          )
-          expected = {
-              51: "78d5472a18b43d3d6709619cee669afe5bcdd9a573a4e2507da20ad3c5aacd36",
-              53: "e30e779bcc4be9c6e7c5ad42b5d039e2af79ce9775f7f9082303a01f178862ae",
-              55: "163a13bee506ce35d8d5c9012aa9557333b6ea797265c0621805f026fedf1828",
-          }
-          current_seed = None
-          captured = {}
+          budget = ActionSearchBudget(max_states=1024, max_actions=24, max_move_depth=32, max_seconds=5.0)
+          captured = False
           original_search = ActionPlanner.search
 
           def board_dict(board):
-              return {
-                  "timeline": board.timeline,
-                  "turn": board.turn,
-                  "side": board.side.value,
-              }
+              return {"timeline": board.timeline, "turn": board.turn, "side": board.side.value}
 
           def move_dict(move, required):
               return {
                   "piece": move.piece.piece_type.value,
-                  "source": {
-                      "board": board_dict(move.source.board),
-                      "x": move.source.x,
-                      "y": move.source.y,
-                  },
-                  "destination": {
-                      "board": board_dict(move.destination.board),
-                      "x": move.destination.x,
-                      "y": move.destination.y,
-                  },
+                  "source": {"board": board_dict(move.source.board), "x": move.source.x, "y": move.source.y},
+                  "destination": {"board": board_dict(move.destination.board), "x": move.destination.x, "y": move.destination.y},
                   "capture": move.captured.piece_type.value if move.captured else None,
                   "promotion": move.promotion.value if move.promotion else None,
                   "branching": bool(move.is_branching),
@@ -99,99 +78,65 @@ jobs:
                   "required_progress": _required_board_progress(move, required),
               }
 
-          def is_production_budget(budget):
-              return (
-                  budget.max_states == production_budget.max_states
-                  and budget.max_actions == production_budget.max_actions
-                  and budget.max_move_depth == production_budget.max_move_depth
-                  and budget.max_seconds == production_budget.max_seconds
-              )
-
           def profiled_search(self, engine):
+              global captured
               result = original_search(self, engine)
-              if (
-                  current_seed in expected
-                  and current_seed not in captured
-                  and is_production_budget(self.budget)
-                  and not result.candidates
-                  and result.termination_reason is not None
-              ):
-                  signature = arena_module._state_signature_sha256(engine)
-                  if signature != expected[current_seed]:
-                      return result
-                  action = engine._ensure_current_action()
-                  required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
-                  movable = tuple(ActionRules.movable_boards(action, engine.timeline_manager.timelines))
-                  root_moves = []
-                  for board in movable:
-                      position = engine._resolve_position(board)
-                      if position is None:
-                          continue
+              if captured or self.budget != budget or result.candidates or result.termination_reason is None:
+                  return result
+              signature = arena_module._state_signature_sha256(engine)
+              if signature != expected:
+                  return result
+              action = engine._ensure_current_action()
+              required = set(ActionRules.required_boards(action, engine.timeline_manager.timelines))
+              movable = tuple(ActionRules.movable_boards(action, engine.timeline_manager.timelines))
+              root_moves = []
+              for board in movable:
+                  position = engine._resolve_position(board)
+                  if position is not None:
                       root_moves.extend(move_dict(move, required) for move in engine.get_legal_moves(position))
-                  payload = {
-                      "seed": current_seed,
-                      "state_signature_sha256": signature,
-                      "termination_reason": result.termination_reason,
-                      "explored_states": result.explored_states,
-                      "failed_state_cache_hits": result.failed_state_cache_hits,
-                      "player": engine.current_turn_color.value,
-                      "ply": engine.move_counter,
-                      "timeline_count": len(engine.timeline_manager.timelines),
-                      "required": [board_dict(item) for item in sorted(
-                          required, key=lambda b: (b.timeline, b.turn, b.side.value)
-                      )],
-                      "movable": [board_dict(item) for item in sorted(
-                          movable, key=lambda b: (b.timeline, b.turn, b.side.value)
-                      )],
-                      "root_move_count": len(root_moves),
-                      "root_moves": root_moves,
-                  }
-                  captured[current_seed] = payload
-                  (out_dir / f"seed{current_seed}-failure-archive.json").write_text(
-                      json.dumps(GameArchive.capture(engine), indent=2, sort_keys=True),
-                      encoding="utf-8",
-                  )
-                  (out_dir / f"seed{current_seed}-root-analysis.json").write_text(
-                      json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
-                  )
-                  print("CAPTURE=" + json.dumps({
-                      "seed": current_seed,
-                      "signature": signature,
-                      "root_moves": len(root_moves),
-                      "required": len(required),
-                      "movable": len(movable),
-                  }, sort_keys=True))
+              payload = {
+                  "seed": seed,
+                  "state_signature_sha256": signature,
+                  "termination_reason": result.termination_reason,
+                  "explored_states": result.explored_states,
+                  "failed_state_cache_hits": result.failed_state_cache_hits,
+                  "player": engine.current_turn_color.value,
+                  "ply": engine.move_counter,
+                  "timeline_count": len(engine.timeline_manager.timelines),
+                  "required": [board_dict(item) for item in sorted(required, key=lambda b: (b.timeline, b.turn, b.side.value))],
+                  "movable": [board_dict(item) for item in sorted(movable, key=lambda b: (b.timeline, b.turn, b.side.value))],
+                  "root_move_count": len(root_moves),
+                  "root_moves": root_moves,
+              }
+              captured = True
+              (out_dir / "seed51-failure-archive.json").write_text(json.dumps(GameArchive.capture(engine), indent=2, sort_keys=True), encoding="utf-8")
+              (out_dir / "seed51-root-analysis.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+              print("CAPTURE=" + json.dumps({"signature": signature, "root_moves": len(root_moves), "required": len(required), "movable": len(movable)}, sort_keys=True))
               return result
 
           ActionPlanner.search = profiled_search
-          for seed in (51, 53, 55):
-              current_seed = seed
-              result = evaluate_arena(
-                  checkpoint=checkpoint,
-                  opponent="easy",
-                  games=1,
-                  device_name="cpu",
-                  seed=seed,
-                  max_actions=120,
-                  budget=production_budget,
-                  max_wall_seconds=900,
-                  output="json",
-                  model_color="black",
-                  game_seeds=[seed],
-              )
-              (out_dir / f"seed{seed}-arena-result.json").write_text(
-                  json.dumps(result, indent=2, sort_keys=True), encoding="utf-8"
-              )
-
-          missing = sorted(set(expected) - set(captured))
-          if missing:
-              raise SystemExit(f"expected planner failure states were not captured: {missing}")
+          result = evaluate_arena(
+              checkpoint=checkpoint,
+              opponent="easy",
+              games=1,
+              device_name="cpu",
+              seed=seed,
+              max_actions=120,
+              budget=budget,
+              max_wall_seconds=900,
+              output="json",
+              model_color="black",
+              game_seeds=[seed],
+          )
+          (out_dir / "seed51-arena-result.json").write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+          if not captured:
+              raise SystemExit("current seed51 planner failure boundary was not captured")
           PY
       - name: Upload state artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: planner-failure-states-${{ github.run_id }}
+          name: planner-seed51-current-${{ github.run_id }}
           path: _work/planner-failure-states
           retention-days: 7
           if-no-files-found: error
