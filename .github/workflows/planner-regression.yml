@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   fixed-failures:
-    name: Fixed failure seeds 42 and 43
+    name: Fixed failure seeds 42, 43, 51, 53, 55
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -170,6 +170,9 @@ jobs:
               "cases": [
                   run_case(42, "white"),
                   run_case(43, "black"),
+                  run_case(51, "black"),
+                  run_case(53, "black"),
+                  run_case(55, "black"),
               ],
           }
           out.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
@@ -178,7 +181,7 @@ jobs:
           python _work/run_planner_case.py before _work/before.json
           python _work/run_planner_case.py after _work/after.json
 
-      - name: Publish comparison
+      - name: Publish comparison and enforce known-failure gate
         run: |
           python - <<'PY'
           import json
@@ -187,6 +190,7 @@ jobs:
           before = json.loads(Path("_work/before.json").read_text(encoding="utf-8"))
           after = json.loads(Path("_work/after.json").read_text(encoding="utf-8"))
           lines = ["# Deterministic Planner regression", "", "Baseline: `afa4075d` (pre failed-state dedup)", ""]
+          unresolved = []
           for old, new in zip(before["cases"], after["cases"]):
               seed = old["seed"]
               old_arena = old["arena"]
@@ -197,6 +201,7 @@ jobs:
                   f"## Seed {seed} ({old['model_color']})",
                   "",
                   f"- planning failures: `{old_arena['planning_failure_count']} -> {new_arena['planning_failure_count']}`",
+                  f"- planner recoveries: `{old_arena.get('planner_recovery_count', 0)} -> {new_arena.get('planner_recovery_count', 0)}`",
                   f"- failure reason: `{(old_arena.get('first_failure') or {}).get('planning_reason')} -> {(new_arena.get('first_failure') or {}).get('planning_reason')}`",
                   f"- failure explored states: `{old_fail.get('explored_states')} -> {new_fail.get('explored_states')}`",
                   f"- failure planner elapsed: `{old_fail.get('elapsed_seconds')} -> {new_fail.get('elapsed_seconds')}`",
@@ -206,12 +211,29 @@ jobs:
                   f"- game wall seconds: `{old['wall_seconds']} -> {new['wall_seconds']}`",
                   "",
               ])
-              for report in (old_arena, new_arena):
+              for label, report in (("baseline", old_arena), ("candidate", new_arena)):
+                  if (
+                      report["planning_failure_count"]
+                      != report.get("neural_planning_failure_count", 0)
+                      + report.get("baseline_planning_failure_count", 0)
+                  ):
+                      raise SystemExit(f"seed {seed}: {label} planner failure accounting mismatch")
+                  if (
+                      report.get("planner_recovery_count", 0)
+                      != report.get("neural_planner_recovery_count", 0)
+                      + report.get("baseline_planner_recovery_count", 0)
+                  ):
+                      raise SystemExit(f"seed {seed}: {label} planner recovery accounting mismatch")
                   if report["illegal_action_count"] or report["stale_failure_count"] or report["unexpected_failure_count"]:
-                      raise SystemExit(f"seed {seed}: Arena correctness regression")
+                      raise SystemExit(f"seed {seed}: {label} Arena correctness regression")
+              if seed in {51, 53, 55} and new_arena["planning_failure_count"]:
+                  unresolved.append(seed)
+
           Path("_work/comparison.md").write_text("\n".join(lines), encoding="utf-8")
           with open(Path().resolve() / "_work/comparison.md", encoding="utf-8") as handle:
               print(handle.read())
+          if unresolved:
+              raise SystemExit(f"known planner failures remain unresolved for seeds: {unresolved}")
           PY
           cat _work/comparison.md >> "$GITHUB_STEP_SUMMARY"
 
