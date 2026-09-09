@@ -1,6 +1,11 @@
 from copy import deepcopy
 
-from src.ai.action_planner import ActionPlanner, ActionSearchBudget, engine_state_signature
+from src.ai.action_planner import (
+    ActionPlanner,
+    ActionSearchBudget,
+    engine_state_signature,
+    resolve_move_spec,
+)
 from src.engine.action import ActionRules
 from src.engine.board import Position
 from src.engine.engine import FiveDEngine
@@ -153,3 +158,33 @@ def test_depth_budget_behavior_matches_deepcopy_oracle(monkeypatch):
         ),
         monkeypatch,
     )
+
+
+def test_move_depth_cutoff_keeps_later_sibling_action_canonical_and_safe():
+    engine = _multi_required_engine()
+    before = engine_state_signature(engine)
+    planner = ActionPlanner(ActionSearchBudget(
+        max_states=256,
+        max_actions=None,
+        max_move_depth=1,
+        max_seconds=None,
+    ))
+
+    result = planner.search(engine)
+
+    assert result.termination_reason == "move_depth_budget"
+    assert len(result.candidates) >= 2
+    first, sibling = result.candidates[:2]
+    assert first != sibling
+
+    # The second root sibling must remain a complete canonical Action even
+    # after the first path reaches its branch-local depth bound.  Resolve and
+    # execute its immutable specs through the engine APIs, then require the
+    # canonical royal-safety/submission predicate to accept the result.
+    probe = engine.clone_for_simulation()
+    for spec in sibling:
+        assert probe.execute_action_move(resolve_move_spec(probe, spec))
+    assert probe.can_submit_action()
+
+    # Searching is simulation-only; the caller's source engine remains exact.
+    assert engine_state_signature(engine) == before
