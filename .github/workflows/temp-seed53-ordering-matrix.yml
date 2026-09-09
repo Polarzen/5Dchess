@@ -1,4 +1,4 @@
-name: TEMP Royal Scan Perf A-B
+name: TEMP Constrained Required Board Ordering A-B
 
 on:
   push:
@@ -17,8 +17,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -36,90 +34,103 @@ jobs:
           repository: ${{ github.repository }}
           run-id: 34337992183
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compare pre-optimization and current HEAD
+      - name: Compare current and constrained-target ordering
         run: |
           export PYTHONPATH="$PWD"
-          mkdir -p _work/perf
-          cat > _work/perf/run_variant.py <<'PY'
+          mkdir -p _work/constrained-order
+          cat > _work/constrained-order/run.py <<'PY'
           import json
-          import os
           import time
           from pathlib import Path
 
-          from src.ai.action_planner import ActionPlanner, ActionSearchBudget
+          import src.ai.action_planner as planner_module
+          from src.ai.action_planner import ActionPlanner, ActionSearchBudget, _required_board_progress
           from src.data.archive import GameArchive
+          from src.engine.action import ActionRules
 
-          variant = os.environ["VARIANT"]
-          rows = []
-          for seed in (51, 53, 55):
-              archive = Path(f"_work/failure-states/seed{seed}-failure-archive.json")
-              payload = json.loads(archive.read_text(encoding="utf-8"))
+          def restore(seed: int):
+              payload = json.loads(Path(
+                  f"_work/failure-states/seed{seed}-failure-archive.json"
+              ).read_text(encoding="utf-8"))
               engine = GameArchive.restore(payload)
               if hasattr(engine, "_replay_origin"):
                   delattr(engine, "_replay_origin")
-              started = time.monotonic()
-              result = ActionPlanner(ActionSearchBudget(
-                  max_states=1024,
-                  max_actions=24,
-                  max_move_depth=32,
-                  max_seconds=5.0,
-              )).search(engine)
-              row = {
-                  "variant": variant,
-                  "seed": seed,
-                  "elapsed_seconds": time.monotonic() - started,
-                  "explored_states": result.explored_states,
-                  "candidate_count": len(result.candidates),
-                  "termination_reason": result.termination_reason,
-                  "failed_state_cache_hits": result.failed_state_cache_hits,
-                  "first_action_length": len(result.candidates[0]) if result.candidates else None,
-              }
-              rows.append(row)
-              print("PERF_RESULT=" + json.dumps(row, sort_keys=True))
-          Path(f"_work/perf/{variant}.json").write_text(
-              json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
-          )
-          PY
+              return engine
 
-          # 89eadf is the last production-code-equivalent state before the two
-          # allocation-only engine optimizations (subsequent diagnostic commits
-          # touched workflows only). Run both variants on the same hosted runner.
-          git show 89eadf879ada1aea74aa63b49c9218964014612f:src/engine/piece.py > src/engine/piece.py
-          git show 89eadf879ada1aea74aa63b49c9218964014612f:src/engine/royal_rules.py > src/engine/royal_rules.py
-          VARIANT=before python _work/perf/run_variant.py
+          def root_constraints(engine):
+              action = engine._ensure_current_action()
+              required = set(ActionRules.required_boards(
+                  action, engine.timeline_manager.timelines
+              ))
+              mobility = {}
+              for board in required:
+                  position = engine._resolve_position(board)
+                  mobility[board] = len(engine.get_legal_moves(position)) if position is not None else 0
+              return frozenset(required), mobility
 
-          git checkout HEAD -- src/engine/piece.py src/engine/royal_rules.py
-          VARIANT=current python _work/perf/run_variant.py
-
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          before = json.loads(Path("_work/perf/before.json").read_text())
-          current = json.loads(Path("_work/perf/current.json").read_text())
           rows = []
-          for b, c in zip(before, current):
-              rows.append({
-                  "seed": b["seed"],
-                  "before_states": b["explored_states"],
-                  "current_states": c["explored_states"],
-                  "state_gain_pct": (
-                      (c["explored_states"] - b["explored_states"]) / max(1, b["explored_states"]) * 100.0
-                  ),
-                  "before_candidate_count": b["candidate_count"],
-                  "current_candidate_count": c["candidate_count"],
-                  "before_termination": b["termination_reason"],
-                  "current_termination": c["termination_reason"],
-              })
-          Path("_work/perf/comparison.json").write_text(
+          original_key = planner_module._required_move_sort_key
+          for seed in (51, 53, 55):
+              probe = restore(seed)
+              root_required, mobility = root_constraints(probe)
+              constrained = frozenset(board for board, count in mobility.items() if count == 0)
+              print("ROOT=" + json.dumps({
+                  "seed": seed,
+                  "required": len(root_required),
+                  "zero_mobility": sorted((b.timeline, b.turn, str(b.side)) for b in constrained),
+                  "mobility": sorted((b.timeline, count) for b, count in mobility.items()),
+              }, sort_keys=True))
+
+              for variant in ("current", "constrained_target_first"):
+                  engine = restore(seed)
+                  if variant == "current":
+                      planner_module._required_move_sort_key = original_key
+                  else:
+                      def constrained_key(move, required, *, _root=root_required, _zero=constrained):
+                          base = original_key(move, required)
+                          if frozenset(required) != _root or not _zero:
+                              return base
+                          forced_target = (
+                              _required_board_progress(move, required) == 2
+                              and move.destination.board in _zero
+                          )
+                          # Ordering only: a required board with zero legal source Moves
+                          # can only be advanced as another Move's destination in this
+                          # state. Give those exact progress=2 witnesses first look.
+                          return (not forced_target, *base)
+                      planner_module._required_move_sort_key = constrained_key
+
+                  started = time.monotonic()
+                  result = ActionPlanner(ActionSearchBudget(
+                      max_states=1024,
+                      max_actions=24,
+                      max_move_depth=32,
+                      max_seconds=5.0,
+                  )).search(engine)
+                  row = {
+                      "seed": seed,
+                      "variant": variant,
+                      "elapsed_seconds": time.monotonic() - started,
+                      "explored_states": result.explored_states,
+                      "candidate_count": len(result.candidates),
+                      "termination_reason": result.termination_reason,
+                      "failed_state_cache_hits": result.failed_state_cache_hits,
+                      "first_action_length": len(result.candidates[0]) if result.candidates else None,
+                  }
+                  rows.append(row)
+                  print("RESULT=" + json.dumps(row, sort_keys=True))
+
+          planner_module._required_move_sort_key = original_key
+          Path("_work/constrained-order/results.json").write_text(
               json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
           )
-          print("PERF_COMPARISON=" + json.dumps(rows, sort_keys=True))
           PY
+          python _work/constrained-order/run.py
       - name: Upload comparison
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: royal-scan-perf-${{ github.run_id }}
-          path: _work/perf
+          name: constrained-required-order-${{ github.run_id }}
+          path: _work/constrained-order
           retention-days: 7
           if-no-files-found: error
