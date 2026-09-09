@@ -38,6 +38,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Compare pre-optimization and current HEAD
         run: |
+          export PYTHONPATH="$PWD"
           mkdir -p _work/perf
           cat > _work/perf/run_variant.py <<'PY'
           import json
