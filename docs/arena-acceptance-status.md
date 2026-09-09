@@ -38,7 +38,8 @@ Actor-specific reporting was accepted by run `34101659061` on head
 failures as 5 neural + 6 baseline failures while retaining the strict aggregate
 failure gate.
 
-The current branch head also passes both required validation suites. For head
+The implementation head immediately before diagnostic-workflow cleanup also
+passed both required validation suites. For head
 `040fab7f9898aacff174d270b43bc8a3c2f35c1f`:
 
 - CI run `34180368954`: success
