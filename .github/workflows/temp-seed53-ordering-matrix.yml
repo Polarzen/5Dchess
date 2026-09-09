@@ -1,4 +1,4 @@
-name: TEMP Seed53 Ordering Matrix
+name: TEMP Planner Ordering Matrix
 
 on:
   push:
@@ -26,121 +26,119 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-      - name: Download exact seed53 state
+      - name: Download exact planner failure states
         uses: actions/download-artifact@v4
         with:
-          name: seed53-planner-state-34332477538
-          path: _work/seed53-state
+          name: planner-failure-states-34337992183
+          path: _work/failure-states
           repository: ${{ github.repository }}
-          run-id: 34332477538
+          run-id: 34337992183
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Compare ordering-only variants
         run: |
           mkdir -p _work/ordering
           python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/ai/action_planner.py")
+          original = path.read_text(encoding="utf-8")
+          fast_path_old = "        if len(required) == 2:\n            required_moves: list[Move] = []\n"
+          fast_path_new = "        if len(required) >= 2:\n            required_moves: list[Move] = []\n"
+          sort_old = '''    return (\n        base[0],\n        move.piece.piece_type is not PieceType.KING,\n        move.captured is None,\n        -_required_board_progress(move, required),\n        *base[1:],\n    )\n'''
+          sort_new = '''    return (\n        base[0],\n        -_required_board_progress(move, required),\n        move.piece.piece_type is not PieceType.KING,\n        move.captured is None,\n        *base[1:],\n    )\n'''
+          if original.count(fast_path_old) != 1:
+              raise SystemExit("planner fast-path pattern changed")
+          if original.count(sort_old) != 1:
+              raise SystemExit("planner sort-key pattern changed")
+          variants = {
+              "current": original,
+              "per_board_progress_first": original.replace(sort_old, sort_new, 1),
+              "global_current_key": original.replace(fast_path_old, fast_path_new, 1),
+              "global_progress_first": original.replace(fast_path_old, fast_path_new, 1).replace(sort_old, sort_new, 1),
+          }
+          out = Path("_work/ordering/variants")
+          out.mkdir(parents=True, exist_ok=True)
+          for name, text in variants.items():
+              (out / f"{name}.py").write_text(text, encoding="utf-8")
+          path.write_text(original, encoding="utf-8")
+          PY
+
+          cat > _work/ordering/run_variant.py <<'PY'
           import json
+          import os
+          import shutil
           import time
           from pathlib import Path
 
-          import src.ai.action_planner as planner_module
+          planner_path = Path("src/ai/action_planner.py")
+          variant = os.environ["VARIANT"]
+          source = Path(f"_work/ordering/variants/{variant}.py").read_text(encoding="utf-8")
+          planner_path.write_text(source, encoding="utf-8")
+
+          # Start a fresh interpreter for each variant, so imported planner code
+          # always matches the exact source variant on disk.
+          if os.environ.get("VARIANT_CHILD") != "1":
+              import subprocess, sys
+              env = dict(os.environ)
+              env["VARIANT_CHILD"] = "1"
+              raise SystemExit(subprocess.call([sys.executable, __file__], env=env))
+
           from src.ai.action_planner import ActionPlanner, ActionSearchBudget
           from src.data.archive import GameArchive
-          from src.utils.constants import PieceType
 
-          payload = json.loads(Path("_work/seed53-state/seed53-failure-archive.json").read_text(encoding="utf-8"))
-          original_key = planner_module._required_move_sort_key
-
-          def load_engine():
+          rows = []
+          for seed in (51, 53, 55):
+              archive = Path(f"_work/failure-states/seed{seed}-failure-archive.json")
+              payload = json.loads(archive.read_text(encoding="utf-8"))
               engine = GameArchive.restore(payload)
               if hasattr(engine, "_replay_origin"):
                   delattr(engine, "_replay_origin")
-              return engine
-
-          def progress_one_first(move, required):
-              base = planner_module._move_sort_key(move)
-              if len(required) != 2:
-                  return original_key(move, required)
-              progress = planner_module._required_board_progress(move, required)
-              progress_rank = {1: 0, 2: 1, 0: 2}.get(progress, 3)
-              return (
-                  base[0],
-                  progress_rank,
-                  move.piece.piece_type is not PieceType.KING,
-                  move.captured is None,
-                  *base[1:],
-              )
-
-          def king_capture_then_progress(move, required):
-              base = planner_module._move_sort_key(move)
-              if len(required) != 2:
-                  return original_key(move, required)
-              return (
-                  base[0],
-                  move.piece.piece_type is not PieceType.KING,
-                  move.captured is None,
-                  -planner_module._required_board_progress(move, required),
-                  *base[1:],
-              )
-
-          def deterministic_base(move, required):
-              if len(required) == 2:
-                  return planner_module._move_sort_key(move)
-              return original_key(move, required)
-
-          variants = [
-              ("current", original_key),
-              ("progress_one_first", progress_one_first),
-              ("king_capture_then_progress", king_capture_then_progress),
-              ("deterministic_base", deterministic_base),
-          ]
-          results = []
-          for name, key in variants:
-              planner_module._required_move_sort_key = key
-              engine = load_engine()
-              budget = ActionSearchBudget(
-                  max_states=1024,
-                  max_actions=1,
-                  max_move_depth=32,
-                  max_seconds=60.0,
-              )
               started = time.monotonic()
-              result = ActionPlanner(budget).search(engine)
-              elapsed = time.monotonic() - started
-              item = {
-                  "variant": name,
-                  "elapsed_seconds": elapsed,
+              result = ActionPlanner(ActionSearchBudget(
+                  max_states=1024,
+                  max_actions=24,
+                  max_move_depth=32,
+                  max_seconds=5.0,
+              )).search(engine)
+              row = {
+                  "variant": variant,
+                  "seed": seed,
+                  "elapsed_seconds": time.monotonic() - started,
                   "explored_states": result.explored_states,
                   "candidate_count": len(result.candidates),
                   "termination_reason": result.termination_reason,
                   "failed_state_cache_hits": result.failed_state_cache_hits,
                   "first_action_length": len(result.candidates[0]) if result.candidates else None,
-                  "first_action": [
-                      {
-                          "source": [
-                              spec.source.board.timeline, spec.source.board.turn,
-                              spec.source.board.side.value, spec.source.x, spec.source.y,
-                          ],
-                          "destination": [
-                              spec.destination.board.timeline, spec.destination.board.turn,
-                              spec.destination.board.side.value, spec.destination.x, spec.destination.y,
-                          ],
-                      }
-                      for spec in (result.candidates[0] if result.candidates else ())
-                  ],
               }
-              results.append(item)
-              print("ORDERING_RESULT=" + json.dumps(item, sort_keys=True))
-
-          planner_module._required_move_sort_key = original_key
-          Path("_work/ordering/results.json").write_text(
-              json.dumps(results, indent=2, sort_keys=True), encoding="utf-8"
+              rows.append(row)
+              print("ORDERING_RESULT=" + json.dumps(row, sort_keys=True))
+          Path(f"_work/ordering/{variant}.json").write_text(
+              json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
           )
+          PY
+
+          for variant in current per_board_progress_first global_current_key global_progress_first; do
+            echo "=== ${variant} ==="
+            VARIANT="${variant}" python _work/ordering/run_variant.py
+          done
+          git checkout -- src/ai/action_planner.py
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows = []
+          for path in sorted(Path("_work/ordering").glob("*.json")):
+              rows.extend(json.loads(path.read_text(encoding="utf-8")))
+          Path("_work/ordering/results.json").write_text(
+              json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print("ORDERING_MATRIX=" + json.dumps(rows, sort_keys=True))
           PY
       - name: Upload matrix
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: seed53-ordering-matrix-${{ github.run_id }}
+          name: planner-ordering-matrix-${{ github.run_id }}
           path: _work/ordering
           retention-days: 7
           if-no-files-found: error
