@@ -1,4 +1,4 @@
-name: TEMP Seed53 Completion Depth Matrix
+name: TEMP Seed53 Unsafe Branch Ordering
 
 on:
   push:
@@ -26,46 +26,73 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-      - name: Download exact seed53 state
+      - name: Download exact current failure states
         uses: actions/download-artifact@v4
         with:
-          name: seed53-planner-state-34332477538
-          path: _work/seed53-state
+          name: planner-failure-states-34337992183
+          path: _work/failure-states
           repository: ${{ github.repository }}
-          run-id: 34332477538
+          run-id: 34337992183
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compare shallow completion depths
+      - name: Compare proven-unsafe branch ordering
         run: |
-          mkdir -p _work/depth
+          mkdir -p _work/unsafe-order/variants
           python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/ai/action_planner.py")
+          original = path.read_text(encoding="utf-8")
+          old_init = "                direct_completion = False\n                if _required_board_progress(move, required) == 2:\n"
+          new_init = "                direct_completion = False\n                canonical_unsafe_completion = False\n                if _required_board_progress(move, required) == 2:\n"
+          old_submit = "                        direct_completion = child.can_submit_action()\n                        if tracker.check_time():\n"
+          new_submit = "                        direct_completion = child.can_submit_action()\n                        canonical_unsafe_completion = not direct_completion\n                        if tracker.check_time():\n"
+          old_append = "                prepared_moves.append((0 if direct_completion else 2, move, child))\n"
+          new_append = "                priority = 0 if direct_completion else (3 if canonical_unsafe_completion else 2)\n                prepared_moves.append((priority, move, child))\n"
+          for needle in (old_init, old_submit, old_append):
+              if original.count(needle) != 1:
+                  raise SystemExit(f"planner pattern changed: {needle!r}")
+          variant = original.replace(old_init, new_init, 1).replace(old_submit, new_submit, 1).replace(old_append, new_append, 1)
+          Path("_work/unsafe-order/variants/current.py").write_text(original, encoding="utf-8")
+          Path("_work/unsafe-order/variants/defer_proven_unsafe_p2.py").write_text(variant, encoding="utf-8")
+          PY
+
+          cat > _work/unsafe-order/run_variant.py <<'PY'
           import json
+          import os
           import time
           from pathlib import Path
+
+          variant = os.environ["VARIANT"]
+          Path("src/ai/action_planner.py").write_text(
+              Path(f"_work/unsafe-order/variants/{variant}.py").read_text(encoding="utf-8"),
+              encoding="utf-8",
+          )
+          if os.environ.get("VARIANT_CHILD") != "1":
+              import subprocess, sys
+              env = dict(os.environ)
+              env["VARIANT_CHILD"] = "1"
+              env["PYTHONPATH"] = str(Path.cwd())
+              raise SystemExit(subprocess.call([sys.executable, __file__], env=env))
 
           from src.ai.action_planner import ActionPlanner, ActionSearchBudget
           from src.data.archive import GameArchive
 
-          payload = json.loads(Path("_work/seed53-state/seed53-failure-archive.json").read_text(encoding="utf-8"))
-
-          def load_engine():
+          payload = json.loads(Path("_work/failure-states/seed53-failure-archive.json").read_text(encoding="utf-8"))
+          rows = []
+          for repeat in range(3):
               engine = GameArchive.restore(payload)
               if hasattr(engine, "_replay_origin"):
                   delattr(engine, "_replay_origin")
-              return engine
-
-          results = []
-          for depth in (1, 2, 3, 4, 5, 6, 8, 12, 32):
-              engine = load_engine()
-              budget = ActionSearchBudget(
-                  max_states=1024,
-                  max_actions=1,
-                  max_move_depth=depth,
-                  max_seconds=60.0,
-              )
               started = time.monotonic()
-              result = ActionPlanner(budget).search(engine)
-              item = {
-                  "depth": depth,
+              result = ActionPlanner(ActionSearchBudget(
+                  max_states=1024,
+                  max_actions=24,
+                  max_move_depth=32,
+                  max_seconds=5.0,
+              )).search(engine)
+              row = {
+                  "variant": variant,
+                  "repeat": repeat,
                   "elapsed_seconds": time.monotonic() - started,
                   "explored_states": result.explored_states,
                   "candidate_count": len(result.candidates),
@@ -74,21 +101,36 @@ jobs:
                   "first_action_length": len(result.candidates[0]) if result.candidates else None,
                   "first_action": [
                       {
-                          "source": [spec.source.board.timeline, spec.source.board.turn, spec.source.board.side.value, spec.source.x, spec.source.y],
-                          "destination": [spec.destination.board.timeline, spec.destination.board.turn, spec.destination.board.side.value, spec.destination.x, spec.destination.y],
+                          "source": [s.source.board.timeline, s.source.board.turn, s.source.board.side.value, s.source.x, s.source.y],
+                          "destination": [s.destination.board.timeline, s.destination.board.turn, s.destination.board.side.value, s.destination.x, s.destination.y],
                       }
-                      for spec in (result.candidates[0] if result.candidates else ())
+                      for s in (result.candidates[0] if result.candidates else ())
                   ],
               }
-              results.append(item)
-              print("DEPTH_RESULT=" + json.dumps(item, sort_keys=True))
-          Path("_work/depth/results.json").write_text(json.dumps(results, indent=2, sort_keys=True), encoding="utf-8")
+              rows.append(row)
+              print("UNSAFE_ORDER_RESULT=" + json.dumps(row, sort_keys=True))
+          Path(f"_work/unsafe-order/{variant}.json").write_text(
+              json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
+          )
           PY
-      - name: Upload matrix
+
+          for variant in current defer_proven_unsafe_p2; do
+            VARIANT="${variant}" python _work/unsafe-order/run_variant.py
+          done
+          git checkout -- src/ai/action_planner.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for name in ("current", "defer_proven_unsafe_p2"):
+              rows.extend(json.loads(Path(f"_work/unsafe-order/{name}.json").read_text(encoding="utf-8")))
+          Path("_work/unsafe-order/results.json").write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
+          PY
+      - name: Upload comparison
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: seed53-depth-matrix-${{ github.run_id }}
-          path: _work/depth
+          name: seed53-unsafe-order-${{ github.run_id }}
+          path: _work/unsafe-order
           retention-days: 7
           if-no-files-found: error
