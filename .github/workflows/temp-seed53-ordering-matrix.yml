@@ -34,7 +34,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: 34337992183
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compare ordering-only variants
+      - name: Compare required-board ordering variants
         run: |
           mkdir -p _work/ordering
           python - <<'PY'
@@ -42,25 +42,24 @@ jobs:
 
           path = Path("src/ai/action_planner.py")
           original = path.read_text(encoding="utf-8")
-          fast_path_old = "        if len(required) == 2:\n            required_moves: list[Move] = []\n"
-          fast_path_new = "        if len(required) >= 2:\n            required_moves: list[Move] = []\n"
+          board_old = '''                key=lambda board: (\n                    board not in required,\n                    board.timeline,\n                    board.turn,\n                    _enum_value(board.side),\n                ),\n'''
+          board_reverse = '''                key=lambda board: (\n                    board not in required,\n                    -board.timeline,\n                    board.turn,\n                    _enum_value(board.side),\n                ),\n'''
           sort_old = '''    return (\n        base[0],\n        move.piece.piece_type is not PieceType.KING,\n        move.captured is None,\n        -_required_board_progress(move, required),\n        *base[1:],\n    )\n'''
-          sort_new = '''    return (\n        base[0],\n        -_required_board_progress(move, required),\n        move.piece.piece_type is not PieceType.KING,\n        move.captured is None,\n        *base[1:],\n    )\n'''
-          if original.count(fast_path_old) != 1:
-              raise SystemExit("planner fast-path pattern changed")
+          sort_progress = '''    return (\n        base[0],\n        -_required_board_progress(move, required),\n        move.piece.piece_type is not PieceType.KING,\n        move.captured is None,\n        *base[1:],\n    )\n'''
+          if original.count(board_old) != 1:
+              raise SystemExit("board ordering pattern changed")
           if original.count(sort_old) != 1:
-              raise SystemExit("planner sort-key pattern changed")
+              raise SystemExit("required sort pattern changed")
+          reverse = original.replace(board_old, board_reverse, 1)
           variants = {
               "current": original,
-              "per_board_progress_first": original.replace(sort_old, sort_new, 1),
-              "global_current_key": original.replace(fast_path_old, fast_path_new, 1),
-              "global_progress_first": original.replace(fast_path_old, fast_path_new, 1).replace(sort_old, sort_new, 1),
+              "reverse_timeline": reverse,
+              "reverse_progress_first": reverse.replace(sort_old, sort_progress, 1),
           }
           out = Path("_work/ordering/variants")
           out.mkdir(parents=True, exist_ok=True)
           for name, text in variants.items():
               (out / f"{name}.py").write_text(text, encoding="utf-8")
-          path.write_text(original, encoding="utf-8")
           PY
 
           cat > _work/ordering/run_variant.py <<'PY'
@@ -71,11 +70,10 @@ jobs:
 
           planner_path = Path("src/ai/action_planner.py")
           variant = os.environ["VARIANT"]
-          source = Path(f"_work/ordering/variants/{variant}.py").read_text(encoding="utf-8")
-          planner_path.write_text(source, encoding="utf-8")
-
-          # Start a fresh interpreter for each variant, so imported planner code
-          # always matches the exact source variant on disk.
+          planner_path.write_text(
+              Path(f"_work/ordering/variants/{variant}.py").read_text(encoding="utf-8"),
+              encoding="utf-8",
+          )
           if os.environ.get("VARIANT_CHILD") != "1":
               import subprocess, sys
               env = dict(os.environ)
@@ -88,8 +86,9 @@ jobs:
 
           rows = []
           for seed in (51, 53, 55):
-              archive = Path(f"_work/failure-states/seed{seed}-failure-archive.json")
-              payload = json.loads(archive.read_text(encoding="utf-8"))
+              payload = json.loads(Path(
+                  f"_work/failure-states/seed{seed}-failure-archive.json"
+              ).read_text(encoding="utf-8"))
               engine = GameArchive.restore(payload)
               if hasattr(engine, "_replay_origin"):
                   delattr(engine, "_replay_origin")
@@ -117,7 +116,7 @@ jobs:
           )
           PY
 
-          for variant in current per_board_progress_first global_current_key global_progress_first; do
+          for variant in current reverse_timeline reverse_progress_first; do
             echo "=== ${variant} ==="
             VARIANT="${variant}" python _work/ordering/run_variant.py
           done
