@@ -1,131 +1,123 @@
 # Arena acceptance status
 
-This document records the current acceptance gate for
-`feat/local-ai-training-v2` / PR #24.
+This document records the acceptance gate for `feat/local-ai-training-v2` /
+PR #24. The stable implementation head for the evidence below is
+`b84c9cee494a1ab21c34c4e0fc289cf376b05afd` (before this documentation update).
 
-## Current validated state
+## Decision
 
-The fixed-seed Easy Arena attribution run `34092867501` used:
+The engineering validations pass, but the Arena acceptance gate is **BLOCKED**.
+The fixed-seed Planner Regression still has an unresolved seed 53 failure.
+Medium/Hard Arena and larger self-play remain blocked.
 
-- checkpoint from Stage 1 `best`
-- Easy opponent
-- 20 games
-- seeds 42–61
-- model side balanced 10 White / 10 Black
-- planner budget 5.0 s / 1024 states / 24 candidate Actions / 32 move depth
+## Root cause and planner fixes
 
-Observed result:
+The original planner defect was a move-depth cutoff treated as global state:
+when one DFS branch reached its depth bound, later sibling branches could be
+skipped. Commit `1fab473e` makes the cutoff branch-local; the regression test
+also proves that a later sibling can remain a canonical, safe complete Action
+and that the source engine is not mutated.
 
-- 7 wins / 2 draws / 11 losses
-- illegal action failures: 0
-- stale failures: 0
-- unexpected failures: 0
-- planning failures: 11
-  - neural: 5
-    - time budget: 3
-    - state budget: 2
-  - Easy baseline: 6
-    - time budget: 3
-    - state budget: 3
+The remaining reliability problem is different: a deep/root subtree can spend
+the bounded state or wall budget before a later shallow completion is visited.
+This is search-order starvation, not evidence that canonical legality or royal
+safety can be bypassed.
 
-Failure attribution by seed:
+Commit `c5b3db5` productionizes a deliberately narrow hybrid path. Only the
+exact budget `(max_seconds=5.0, max_states=1024, max_actions=24,
+max_move_depth=32)` gets a depth-1, 1-second probe followed by a depth-32
+fallback. Both phases share one prepared root, global tracker/deadline,
+state/action counters, failed-state cache, and exact `MoveSpec` candidate-path
+deduplication. All non-envelope budgets retain ordinary single-phase DFS.
 
-- neural: 42 (time), 46 (state), 48 (time), 50 (state), 60 (time)
-- baseline: 43 (state), 51 (time), 52 (time), 53 (state), 55 (time), 56 (state)
+Canonical ActionRules, MoveValidator, RoyalRules, replay/stale checks,
+transactional plan application, and Arena recovery/adjudication/accounting were
+not changed by this reliability work. Temporary diagnostic workflows were
+removed at `b84c9ce`; the durable Arena and planner-regression workflows remain
+the validation surfaces.
 
-Actor-specific reporting was accepted by run `34101659061` on head
-`afa4075d7202f820b297475c1003a76064ca2bdb`. It reproduced the same 11
-failures as 5 neural + 6 baseline failures while retaining the strict aggregate
-failure gate.
+## Evidence for the depth and starvation behavior
 
-The implementation head immediately before diagnostic-workflow cleanup also
-passed both required validation suites. For head
-`040fab7f9898aacff174d270b43bc8a3c2f35c1f`:
+The historical shallow-depth matrix is a diagnostic fixture, not a current
+Arena result:
 
-- CI run `34180368954`: success
-- Local AI Training v2 CI runs `34180366685` and `34180369003`: success
+- seed 53 produced no candidate at move depths 2 through 8;
+- seed 55 produced a length-2 candidate at depth 2;
+- later depth-1 control runs found canonical length-1 witnesses.
 
-## Reliability work completed after attribution
+A deterministic scheduling experiment showed ordinary deep-first DFS consuming
+its bounded search before a later two-move witness, while a shallow probe could
+preserve an already found shallow witness for fallback. This demonstrates the
+starvation mechanism and the value of candidate preservation; it does not prove
+that every deep subtree can be solved within the unchanged production envelope.
 
-Arena now distinguishes three outcomes after a bounded planner stops without a
-candidate:
+The correctness evidence is narrower and positive. The branch-local cutoff
+test proves that one cutoff does not poison siblings. Hybrid tests cover local
+probe interruption, global-deadline precedence, cumulative budgets, cutoff
+cache exclusion, exact path deduplication including promotion, and canonical
+replay/source immutability. The production search still discovers and applies
+only canonical complete Actions through the existing safety rails.
 
-1. A larger canonical `ActionSearch` finds a legal witness. Arena applies it
-   through the normal transactional `apply_action_plan()` path and records an
-   actor-specific planner recovery.
-2. The larger search proves that no legal Action exists. Arena adjudicates the
-   proven checkmate or stalemate.
-3. The larger search is also inconclusive. Arena preserves the original
-   planning failure and the strict CLI failure gate remains non-zero.
+The following alternatives were rejected or remain no-go options:
 
-The following invariants are enforced in the result builder:
+- larger proof budgets of 8192 states / 30 seconds and 16384 states / 45
+  seconds did not resolve seeds 51, 53, and 55;
+- moving failed-state lookup before completion checks, prioritizing optional
+  boards ahead of required boards, or pruning every royal-unsafe state after
+  progress did not pass the correctness gate;
+- global caching of depth-cutoff or interrupted states is unsound because
+  those states are unresolved;
+- exposing geometric iterative-deepening or diagnostic public APIs would
+  change ordinary budget behavior and was not productionized.
 
-```text
-planning_failure_count
-  == neural_planning_failure_count + baseline_planning_failure_count
+## Before/after status
 
-planner_recovery_count
-  == neural_planner_recovery_count + baseline_planner_recovery_count
-```
+The historical 20-game Easy run `34092867501` reported 7 wins, 2 draws, and 11
+losses with 11 planning failures (5 neural, 6 Easy baseline), while illegal,
+stale, and unexpected failures were zero. That run predates the current
+branch-local and exact-envelope reliability work and is retained only as a
+baseline; it is not a current PASS claim.
 
-Recovery does not bypass `MoveValidator`, `ActionRules.can_submit`,
-`RoyalRules.is_action_safe`, stale-plan checks, or the transactional application
-probe.
+Current local validation of the stable head passed the full suite with 448
+passed and 2 skipped tests. Current-head CI run `34380462968` succeeded, and
+training CI runs `34380462975` and `34380465712` succeeded.
 
-## Residual planner bottleneck
+## Fixed-seed Planner Regression
 
-The recovery path reduced ambiguity but did not make the fixed failure set
-reliable. Follow-up runs against seeds 51, 53, and 55 still produced at least
-one unresolved planning failure per game under the unchanged production budget.
-Increasing the proof search to 8192 states / 30 seconds and 16384 states / 45
-seconds did not resolve those three seeds.
+Planner Regression run `34380464000` failed its durable gate with unresolved
+seeds `[53]`; seeds 51 and 55 resolved. In CI, seed 53 still had one planning
+failure and two planner recoveries. This is an explicit unresolved failure,
+not a PASS.
 
-The latest focused profile used seed 53 with the neural model playing Black.
-The Easy baseline failed on White at action index 38 / ply 42 with three
-timelines and two required boards:
+The current-head local capture was repeated twice with seed 53, neural Black
+versus Easy, one game, Stage 1 `best`, and the exact 5.0/1024/24/32 budget.
+Both local runs captured the same unresolved Black planner state at ply 99:
 
-- termination: state budget
-- explored states: 1024
-- completed candidate Actions: 0
-- failed-state cache hits: 0
-- planner wall time: 4.65 s
-- `can_submit_action`: 1052 calls / 2.36 s
-- `RoyalRules.is_action_safe`: 1052 calls / 2.33 s
-- `clone_for_simulation`: 1034 calls / 0.95 s
-- planner state-key construction: 1024 calls / 0.70 s
+- zero candidates and `time_budget` termination;
+- 16 timelines and 14 required/movable boards;
+- 0 optional boards and 1,639 root legal moves;
+- archive restoration and a second production search reproduced the zero-
+  candidate result with an unchanged engine signature.
 
-This evidence identifies canonical royal-safety evaluation as the largest
-measured cost in the residual seed-53 search. It does not justify weakening or
-skipping royal safety: the search must first establish a semantics-preserving
-ordering, incremental query, or narrower proven-dead-state rule.
-
-Experiments that did not pass the acceptance gate are intentionally not part of
-production code:
-
-- moving the failed-state lookup before submission checks
-- prioritizing optional-board moves before required-board moves
-- pruning every royal-unsafe state after required-board progress completes
-
-The temporary workflows used for the completed attribution, revalidation, and
-seed-53 profiling have been removed. Durable manual Arena validation remains in
-`.github/workflows/local-ai-arena-validate.yml`; deterministic planner
-before/after evidence remains in `.github/workflows/planner-regression.yml`.
+The local Arena aggregate was one planning failure and three recoveries. This
+differs from the CI artifact's one failure/two recoveries and is recorded as
+local-versus-CI variance, not as a successful reproduction. The requested
+Easy20 acceptance run was not started because the durable fixed-seed gate
+remained failed. The disposable local capture files were removed after these
+facts and restoration checks were recorded.
 
 ## Next production gate
 
-Do not advance to Medium/Hard Arena or scale beyond the Stage 1 checkpoint yet.
-The next planner change must satisfy all of the following:
+Do not advance to Medium/Hard Arena or scale beyond the Stage 1 checkpoint until
+the fixed-seed gate is resolved. The next planner change must:
 
-- preserve canonical complete-Action semantics and every existing safety rail
-- add a focused regression for the exact state class it optimizes
-- reduce unresolved failures for the published fixed seed set without relaxing
-  the 5.0 s / 1024-state production envelope
-- keep illegal, stale, and unexpected failures at zero
-- retain actor-specific failure and recovery accounting
-- pass normal CI, training CI, and the fixed-seed planner regression workflow
-
-Until such a change is validated, the 7/2/11 result must not be interpreted as
-model quality and no Medium/Hard benchmark or larger training run is accepted.
+- preserve canonical complete-Action semantics and all safety rails;
+- include a focused regression for the exact state class it optimizes;
+- reduce unresolved failures for the published fixed seeds without relaxing
+  the 5.0-second / 1024-state production envelope;
+- retain zero illegal, stale, and unexpected failures plus actor-specific
+  recovery accounting; and
+- pass normal CI, training CI, and the fixed-seed Planner Regression.
 
 ## PR policy
 
