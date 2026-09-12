@@ -193,6 +193,9 @@ Web 默认使用 `127.0.0.1`，首选端口为 `5050`；启动前会逐个探测
 `--web` 的端口行为相同；`--port` 在 CLI、Replay、PvP 或 PvE 模式下会被忽略并
 给出提示。
 
+当前 Web 请求、AI 超时、P2P 轮询与重试行为见
+[`docs/WEB_RELIABILITY.md`](docs/WEB_RELIABILITY.md)。
+
 ---
 
 ## 👥 Local Hotseat PvP
