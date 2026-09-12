@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>5D Chess · Multiverse Board</title>
+    <title>5D Chess · 多时间线棋盘</title>
     <link rel="stylesheet" href="/static/css/style.css?v=8">
 </head>
 <body>
@@ -13,44 +13,44 @@
             <div class="brand-mark">5D</div>
             <div>
                 <h1>5D Chess</h1>
-                <p>Multiverse Time Travel · 多棋盘时间线对弈</p>
+                <p>多维时间旅行 · 多棋盘时间线对弈</p>
             </div>
         </div>
         <div class="menu-grid">
             <button class="menu-card primary" onclick="startGame('pvp')">
                 <span class="menu-icon">👥</span>
                 <strong>同屏双人对弈</strong>
-                <small>Hotseat · 本地 PvP · 同一浏览器轮流行动</small>
+                <small>同屏双人对弈 · 同一浏览器轮流行动</small>
             </button>
             <button class="menu-card primary" onclick="createP2PRoom()">
                 <span class="menu-icon">♚</span>
                 <strong>创建在线房间</strong>
-                <small>Online P2P · 房间码 · Cloudflare Tunnel</small>
+                <small>在线双人对弈 · 房间码 · 临时联机地址</small>
             </button>
             <button class="menu-card primary" onclick="joinP2PRoom()">
                 <span class="menu-icon">⇄</span>
                 <strong id="p2p-join-label">加入在线房间</strong>
-                <small id="p2p-join-detail">Online P2P · 输入 6 位房间码远程对弈</small>
+                <small id="p2p-join-detail">在线双人对弈 · 输入 6 位房间码远程对弈</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'easy')">
                 <span class="menu-icon">♞</span>
                 <strong>人机 · 简单</strong>
-                <small>Canonical Action AI</small>
+                <small>人机对弈</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'medium')">
                 <span class="menu-icon">♝</span>
                 <strong>人机 · 中等</strong>
-                <small>Canonical Action AI</small>
+                <small>人机对弈</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'hard')">
                 <span class="menu-icon">♛</span>
                 <strong>人机 · 困难</strong>
-                <small>Canonical Action AI</small>
+                <small>人机对弈</small>
             </button>
             <button class="menu-card" onclick="startGame('replay')">
                 <span class="menu-icon">↺</span>
                 <strong>棋谱回放</strong>
-                <small>Replay · 多时间线概览</small>
+                <small>棋谱回放 · 多时间线概览</small>
             </button>
         </div>
     </section>
@@ -61,7 +61,7 @@
                 <button class="ghost-btn" onclick="backToMenu()">← 菜单</button>
                 <div class="top-title">
                     <strong>5D Chess</strong>
-                    <span id="game-info">Multiverse</span>
+                    <span id="game-info">多时间线</span>
                 </div>
             </div>
             <div id="top-status" class="status-pills"></div>
@@ -71,14 +71,14 @@
             <main id="multiverse-panel">
                 <div id="canvas-toolbar">
                     <div>
-                        <strong>Multiverse Board</strong>
-                        <span class="toolbar-hint">横向 = 时间 T · 纵向 = Timeline L</span>
+                        <strong>多时间线棋盘</strong>
+                        <span class="toolbar-hint">横向 = 时间 T · 纵向 = 时间线 L</span>
                     </div>
                     <div class="toolbar-actions">
                         <button class="tool-btn" onclick="zoomBoards(-16)" title="缩小棋盘">−</button>
                         <button class="tool-btn" onclick="zoomBoards(16)" title="放大棋盘">＋</button>
-                        <button class="tool-btn wide" onclick="scrollToCurrent()">定位 Present</button>
-                        <button class="tool-btn wide" onclick="refreshState()">刷新</button>
+                        <button class="tool-btn wide" onclick="scrollToCurrent()">定位当前时刻</button>
+                        <button class="tool-btn wide" onclick="refreshState()">重新同步</button>
                     </div>
                 </div>
 
@@ -93,12 +93,12 @@
             <aside id="side-panel">
                 <section class="panel-card action-card">
                     <div class="panel-title-row">
-                        <h2>当前 Action</h2>
-                        <span id="check-badge" class="mini-badge danger hidden">CHECK</span>
+                        <h2>当前行动</h2>
+                        <span id="check-badge" class="mini-badge danger hidden">将军</span>
                     </div>
                     <div id="action-summary"></div>
                     <button id="submit-action-btn" class="submit-btn" onclick="submitAction()" disabled>
-                        Submit Action
+                        提交行动
                     </button>
                     <p id="action-help" class="panel-help"></p>
                 </section>
@@ -106,24 +106,24 @@
                 <section class="panel-card">
                     <h2>棋盘状态</h2>
                     <div id="board-inspector" class="inspector muted">
-                        点击任意棋盘可查看 BoardCoord；点击可行动棋盘上的棋子开始走子。
+                        点击任意棋盘可查看棋盘坐标；点击可行动棋盘上的棋子开始走子。
                     </div>
                 </section>
 
                 <section class="panel-card">
                     <h2>图例</h2>
                     <div class="legend-grid">
-                        <span><i class="legend present"></i>Present</span>
-                        <span><i class="legend required"></i>Required</span>
-                        <span><i class="legend movable"></i>Movable</span>
-                        <span><i class="legend inactive"></i>Inactive</span>
-                        <span><i class="legend target"></i>5D Target</span>
-                        <span><i class="legend last"></i>Last Move</span>
+                        <span><i class="legend present"></i>当前时刻</span>
+                        <span><i class="legend required"></i>必须推进</span>
+                        <span><i class="legend movable"></i>可行动</span>
+                        <span><i class="legend inactive"></i>非活动</span>
+                        <span><i class="legend target"></i>跨棋盘目标</span>
+                        <span><i class="legend last"></i>最近走子</span>
                     </div>
                 </section>
 
                 <section id="replay-panel" class="panel-card hidden">
-                    <h2>Replay</h2>
+                    <h2>棋谱回放</h2>
                     <div class="button-grid">
                         <button class="side-btn" onclick="replayAction('start')">⏮</button>
                         <button class="side-btn" onclick="replayAction('backward')">◀</button>

@@ -47,12 +47,12 @@ def test_index_is_multiverse_canvas_not_single_board(client):
     # Local hotseat and online P2P are distinct, first-class menu entries.
     assert "startGame('pvp')" in html
     assert "同屏双人对弈" in html
-    assert "Hotseat · 本地 PvP" in html
+    assert "同屏双人对弈 · 同一浏览器轮流行动" in html
     assert "createP2PRoom()" in html
     assert "创建在线房间" in html
     assert "joinP2PRoom()" in html
     assert "加入在线房间" in html
-    assert "Cloudflare Tunnel" in html
+    assert "在线双人对弈 · 房间码 · 临时联机地址" in html
 
     javascript = client.get("/static/js/game.js").get_data(as_text=True)
     assert "/api/game/legal_moves_5d" in javascript
