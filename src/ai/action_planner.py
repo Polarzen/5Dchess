@@ -427,6 +427,63 @@ def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
     )
 
 
+_PREPARATION_INTERRUPTED = object()
+
+
+def _prepare_required_legal_moves(
+    state: "FiveDEngine",
+    required: set[BoardCoord],
+    movable: tuple[BoardCoord, ...],
+    tracker: _BudgetTracker,
+    depth: int,
+    depth_limit: int | None,
+    local_deadline: float | None,
+) -> tuple[dict[BoardCoord, tuple[Move, ...]], tuple[BoardCoord, ...]] | object:
+    """Prepare required-board legal lists and order boards by MRV.
+
+    Required boards are generated once in the planner's canonical board order.
+    Optional boards intentionally remain outside this preparation boundary so
+    their existing lazy traversal and ordering are preserved.
+    """
+    canonical_boards = tuple(sorted(
+        movable,
+        key=lambda board: (
+            board not in required,
+            board.timeline,
+            board.turn,
+            _enum_value(board.side),
+        ),
+    ))
+    legal_by_board: dict[BoardCoord, tuple[Move, ...]] = {}
+    required_boards: list[BoardCoord] = []
+    for board in canonical_boards:
+        if board not in required:
+            continue
+        if tracker.check(depth, depth_limit, local_deadline):
+            return _PREPARATION_INTERRUPTED
+        position = state._resolve_position(board)
+        if tracker.check_time(local_deadline):
+            return _PREPARATION_INTERRUPTED
+        legal_by_board[board] = (
+            () if position is None else tuple(state.get_legal_moves(position))
+        )
+        if tracker.check_time(local_deadline):
+            return _PREPARATION_INTERRUPTED
+        required_boards.append(board)
+
+    ordered_required = tuple(sorted(
+        required_boards,
+        key=lambda board: (
+            len(legal_by_board[board]) == 0,
+            len(legal_by_board[board]),
+            board.timeline,
+            board.turn,
+            _enum_value(board.side),
+        ),
+    ))
+    return legal_by_board, ordered_required
+
+
 class ActionPlanner:
     """Enumerate complete legal Actions without mutating the caller."""
 
@@ -877,6 +934,54 @@ class ActionPlanner:
                     found_completion = True
 
             ordered_boards = tuple(optional_boards)
+
+        # MRV preparation is admitted only for the exact production hybrid
+        # envelope; every other budget keeps the established board ordering.
+        elif len(required) > 2 and self.budget == _PRODUCTION_HYBRID_BUDGET:
+            prepared = _prepare_required_legal_moves(
+                state,
+                required,
+                tuple(movable),
+                tracker,
+                depth,
+                depth_limit,
+                local_deadline,
+            )
+            if prepared is _PREPARATION_INTERRUPTED:
+                return found_completion
+            prepared_legal, ordered_required_boards = prepared
+            for board in ordered_required_boards:
+                if tracker.check(depth, depth_limit, local_deadline):
+                    return found_completion
+                legal_moves = sorted(
+                    prepared_legal[board],
+                    key=lambda move: _required_move_sort_key(move, required),
+                )
+                for move in legal_moves:
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                    if self._dfs(
+                        child,
+                        path + (MoveSpec.from_move(move),),
+                        depth + 1,
+                        tracker,
+                        candidates,
+                        failed_states,
+                        depth_limit=depth_limit,
+                        candidate_keys=candidate_keys,
+                        local_deadline=local_deadline,
+                        cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
+
+            # Optional boards retain the existing canonical order and lazy
+            # legal-move generation after all prepared required branches.
+            ordered_boards = tuple(
+                board for board in ordered_boards if board not in required
+            )
 
         for board in ordered_boards:
             if tracker.check(depth, depth_limit, local_deadline):
