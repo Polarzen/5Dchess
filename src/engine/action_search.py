@@ -19,7 +19,9 @@ import time
 from typing import TYPE_CHECKING
 
 from src.engine.action import ActionRules
-from src.engine.action_proof import prove_direct_threat, prove_required_board_threat
+from src.engine.action_proof import (
+    prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
+)
 from src.engine.move_generator import Move
 from src.utils.constants import ChessColor, GameState, PieceType
 
@@ -284,6 +286,8 @@ class ActionSearch:
         self._explored_states += 1
         if depth == 0:
             proof = prove_required_board_threat(state, proof_interrupted)
+            if proof is None:
+                proof = prove_required_board_immobile(state, proof_interrupted)
         if proof_interrupted():
             return None
         if proof is not None:

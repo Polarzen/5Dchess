@@ -17,10 +17,13 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
-from src.engine.action_proof import prove_direct_threat, prove_required_board_threat
+from src.engine.action_proof import (
+    prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
+)
 from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
+from src.engine.royal_rules import RoyalRules
 from src.utils.constants import ChessColor, GameState, PieceType
 
 if TYPE_CHECKING:
@@ -431,6 +434,56 @@ def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
 _PREPARATION_INTERRUPTED = object()
 
 
+def _required_defense_order(state, required, tracker, local_deadline, *, continue_strategy=False):
+    """Order real multiverse boards without generating every move list.
+
+    Virtual threats are ordering evidence only. Captures of their attackers
+    and moves of threatened Kings come first, then boards without a local King
+    (which need multiverse moves), then quiet Pawn moves. All legal moves and
+    optional boards remain in DFS; no virtual threat proves a failed state.
+    """
+    successors = {board.next(): board for board in required}
+    captures = set()
+    kings = set()
+    for threat in RoyalRules(state.timeline_manager.timelines).threats_against(state.current_turn_color):
+        if tracker.check_time(local_deadline):
+            return _PREPARATION_INTERRUPTED
+        if threat.attacker.board in successors:
+            captures.add(Square5D(successors[threat.attacker.board], threat.attacker.x, threat.attacker.y))
+        if threat.king.board in successors:
+            kings.add(Square5D(successors[threat.king.board], threat.king.x, threat.king.y))
+    if tracker.check_time(local_deadline):
+        return _PREPARATION_INTERRUPTED
+    capture_boards = {square.board for square in captures}
+    king_boards = {square.board for square in kings}
+    has_king = {}
+    for board in required:
+        position = state._resolve_position(board)
+        if position is None:
+            return None
+        has_king[board] = position.find_king(state.current_turn_color) is not None
+    if not continue_strategy and not (captures or kings or not all(has_king.values())):
+        return None
+    boards = tuple(sorted(required, key=lambda board: (
+        board not in capture_boards,
+        board not in king_boards,
+        has_king[board],
+        board.timeline, board.turn, _enum_value(board.side),
+    )))
+
+    def move_key(move):
+        return (
+            move.destination not in captures,
+            move.source not in kings,
+            move.is_branching,
+            move.piece.piece_type != PieceType.PAWN,
+            move.piece.piece_type == PieceType.KING,
+            *_required_move_sort_key(move, required),
+        )
+
+    return boards, move_key
+
+
 def _prepare_required_legal_moves(
     state: "FiveDEngine",
     required: set[BoardCoord],
@@ -492,10 +545,12 @@ class ActionPlanner:
         self.budget = budget or ActionSearchBudget()
         self._tracker: _BudgetTracker | None = None
         self._search_telemetry: list[dict[str, Any]] = []
+        self._defense_order_active = False
 
     def search(self, engine: "FiveDEngine") -> ActionSearchResult:
         """Search all bounded complete Action witnesses from ``engine``."""
         self._search_telemetry = []
+        self._defense_order_active = False
         if engine.game_state != GameState.PLAYING:
             return ActionSearchResult((), 0, "game_not_playing")
 
@@ -820,6 +875,10 @@ class ActionPlanner:
             proof = prove_required_board_threat(
                 state, lambda: tracker.check_time(local_deadline),
             )
+            if proof is None:
+                proof = prove_required_board_immobile(
+                    state, lambda: tracker.check_time(local_deadline),
+                )
             if tracker.check_time(local_deadline):
                 return found_completion
             if proof is not None:
@@ -852,6 +911,21 @@ class ActionPlanner:
                 ),
             )
         )
+        move_sort_key = lambda move: _required_move_sort_key(move, required)
+        defense_order = None
+        if (
+            depth == 0 and len(required) > 2
+            and self.budget == _PRODUCTION_HYBRID_BUDGET
+            and state.timeline_manager.timelines
+        ):
+            defense_order = _required_defense_order(
+                state, required, tracker, local_deadline,
+                continue_strategy=self._defense_order_active,
+            )
+            if defense_order is _PREPARATION_INTERRUPTED:
+                return found_completion
+            if defense_order is not None:
+                self._defense_order_active = True
 
         # With exactly two required Present boards, a complete Action can be a
         # single cross-timeline Move between them.  Rank legal Moves from both
@@ -959,6 +1033,22 @@ class ActionPlanner:
 
             ordered_boards = tuple(optional_boards)
 
+        elif (
+            len(required) > 2
+            and self.budget == _PRODUCTION_HYBRID_BUDGET
+            and self._defense_order_active
+        ):
+            prepared = defense_order if defense_order is not None else _required_defense_order(
+                state, required, tracker, local_deadline, continue_strategy=True,
+            )
+            if prepared is _PREPARATION_INTERRUPTED:
+                return found_completion
+            if prepared is not None:
+                required_order, move_sort_key = prepared
+                ordered_boards = required_order + tuple(
+                    board for board in ordered_boards if board not in required
+                )
+
         # MRV preparation is admitted only for the exact production hybrid
         # envelope; every other budget keeps the established board ordering.
         elif len(required) > 2 and self.budget == _PRODUCTION_HYBRID_BUDGET:
@@ -1020,7 +1110,7 @@ class ActionPlanner:
             # are retained and passed through the engine's canonical API.
             legal_moves = sorted(
                 state.get_legal_moves(position),
-                key=lambda move: _required_move_sort_key(move, required),
+                key=move_sort_key,
             )
             if cooperative_checks and tracker.check_time(local_deadline):
                 return found_completion

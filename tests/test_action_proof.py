@@ -11,7 +11,9 @@ from src.ai.action_planner import (
 )
 from src.data.archive import GameArchive
 from src.engine import ActionRules, ActionSearch, FiveDEngine, Position, Timeline
-from src.engine.action_proof import prove_direct_threat, prove_required_board_threat
+from src.engine.action_proof import (
+    prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
+)
 from src.engine.coordinates import BoardCoord
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.engine.piece import Piece
@@ -50,6 +52,90 @@ def _captured_engine(name='seed53_uncapturable_threat_state'):
 def _disable_proofs(monkeypatch):
     monkeypatch.setattr('src.engine.action_search.prove_required_board_threat', lambda *args: None)
     monkeypatch.setattr('src.engine.action_search.prove_direct_threat', lambda *args: None)
+    monkeypatch.setattr('src.engine.action_search.prove_required_board_immobile', lambda *args: None)
+
+
+def _immobile_engine(color=ChessColor.WHITE):
+    engine = FiveDEngine()
+    white = color == ChessColor.WHITE
+    lane, time = (1, 0) if white else (-1, 1)
+    rook, pawn, king, enemy = ('R', 'P', 'K', 'k') if white else ('r', 'p', 'k', 'K')
+    engine.timeline_manager.timelines = {
+        0: Timeline(0, positions={time: _position(0, time, [(3, 3, rook), (2, 4, pawn)])}),
+        lane: Timeline(lane, owner=color, positions={
+            time: _position(lane, time, [(3, 3, rook)]),
+            time + 1: _position(lane, time + 1, [(7, 7, king), (7, 0, enemy)]),
+        }),
+    }
+    engine.timeline_manager._next_positive_id = 2 if white else 1
+    engine.timeline_manager._next_negative_id = -1 if white else -2
+    engine.current_turn_color = color
+    engine.current_action = ActionRules.begin(color, engine.timeline_manager.timelines)
+    return engine
+
+
+@pytest.mark.parametrize('color', list(ChessColor))
+def test_immobile_board_matches_exhaustive_canonical_search(monkeypatch, color):
+    engine = _immobile_engine(color)
+    before = engine_state_signature(engine)
+    proof = prove_required_board_immobile(engine, lambda: False)
+    assert proof is not None and proof.board.timeline == 0
+    _disable_proofs(monkeypatch)
+    result = ActionSearch(max_states=None, max_depth=None, max_seconds=None).find_legal_action(engine)
+    assert not result.has_legal_action and not result.exhausted
+    assert engine_state_signature(engine) == before
+
+
+def test_inactive_incoming_move_can_advance_an_empty_required_board():
+    engine = _immobile_engine()
+    manager = engine.timeline_manager
+    manager.timelines[0].positions[0] = _position(0, 0, [])
+    manager.timelines[1].positions[0] = _position(1, 0, [])
+    manager.timelines[2] = Timeline(2, owner=ChessColor.WHITE,
+        positions={0: _position(2, 0, [(3, 3, 'R'), (7, 7, 'K'), (7, 0, 'k')])})
+    manager._next_positive_id = 3
+    assert prove_required_board_immobile(engine, lambda: False) is None
+    move = next(m for m in engine.get_legal_moves(manager.timelines[2].positions[0])
+                if m.destination.board.timeline == 0)
+    assert engine.execute_action_move(move) and engine.can_submit_action()
+
+
+def test_clear_ray_to_future_lanes_is_not_immobility_evidence():
+    engine = _immobile_engine()
+    manager = engine.timeline_manager
+    # Arrival on this old board cannot fix its local check, but the clear L ray
+    # might reach a safe board on a future new lane. Conservatively decline.
+    manager.timelines[1].positions[0] = _position(1, 0, [(7, 7, 'K'), (7, 0, 'r')])
+    assert not engine.get_legal_moves(manager.timelines[0].positions[0])
+    assert prove_required_board_immobile(engine, lambda: False) is None
+
+
+def test_immobility_requires_fixed_activity_and_in_time_generation(monkeypatch):
+    engine = _immobile_engine()
+    engine.timeline_manager.timelines[-1] = Timeline(-1, owner=ChessColor.BLACK,
+        positions={1: _position(-1, 1, [(7, 7, 'K'), (7, 0, 'k')])})
+    engine.timeline_manager._next_negative_id = -2
+    assert prove_required_board_immobile(engine, lambda: False) is None
+    engine = _immobile_engine()
+    expired = False
+    def delayed_moves(*args):
+        nonlocal expired
+        expired = True
+        return []
+    monkeypatch.setattr(engine, 'get_legal_moves', delayed_moves)
+    assert prove_required_board_immobile(engine, lambda: expired) is None
+
+
+def test_captured_immobile_required_board_is_stalemate():
+    engine = _captured_engine('easy20_immobile_required_state')
+    before = engine_state_signature(engine)
+    proof = prove_required_board_immobile(engine, lambda: False)
+    assert proof is not None and proof.board.timeline == -6
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert not result.candidates and result.termination_reason is None
+    assert result.explored_states == 1
+    assert OutcomeRules.evaluate(engine).kind == OutcomeKind.STALEMATE
+    assert engine_state_signature(engine) == before
 
 
 def test_certificate_matches_exhaustive_canonical_search(monkeypatch):
@@ -130,6 +216,67 @@ def test_locally_pinned_capture_cannot_become_legal_later(monkeypatch):
     _disable_proofs(monkeypatch)
     exhaustive = ActionSearch(max_states=None, max_depth=None, max_seconds=None).find_legal_action(engine)
     assert not exhaustive.has_legal_action and not exhaustive.exhausted
+
+
+def test_two_fixed_attackers_cannot_both_be_removed(monkeypatch):
+    engine = _engine()
+    manager = engine.timeline_manager
+    position = manager.timelines[0].positions[0]
+    position.set_piece(1, 0, Piece(PieceType.ROOK, ChessColor.BLACK))
+    for x in (0, 1):
+        position.set_piece(x, 7, Piece(PieceType.ROOK, ChessColor.WHITE))
+        assert any(m.destination.x == x and m.destination.y == 0
+                   for m in engine.get_legal_moves_from_square(position, x, 7))
+    manager.timelines[2] = Timeline(2, owner=ChessColor.WHITE,
+        positions={1: _position(2, 1, [(1, 0, 'K'), (7, 0, 'k')])})
+    manager._next_positive_id = 3
+    proof = prove_required_board_threat(engine, lambda: False)
+    assert proof is not None and proof.other_threat is not None
+    assert proof.threat.attacker != proof.other_threat.attacker
+    _disable_proofs(monkeypatch)
+    exhaustive = ActionSearch(max_states=None, max_depth=None, max_seconds=None).find_legal_action(engine)
+    assert not exhaustive.has_legal_action and not exhaustive.exhausted
+
+
+def test_one_attacker_with_two_targets_still_has_capture_escape():
+    engine = _engine()
+    manager = engine.timeline_manager
+    manager.timelines[1].positions[1] = _position(1, 1, [(1, 1, 'K'), (7, 0, 'k')])
+    manager.timelines[2] = Timeline(2, owner=ChessColor.WHITE,
+        positions={1: _position(2, 1, [(0, 0, 'K'), (7, 0, 'k')])})
+    manager._next_positive_id = 3
+    # Queen at (0,0) attacks both historical Kings; these are not two attackers.
+    position = manager.timelines[0].positions[0]
+    position.set_piece(0, 0, Piece(PieceType.QUEEN, ChessColor.BLACK))
+    position.set_piece(0, 7, Piece(PieceType.ROOK, ChessColor.WHITE))
+    # Keep the local White King out of the Queen's diagonal.
+    position.set_piece(7, 7, None)
+    position.set_piece(7, 6, Piece(PieceType.KING, ChessColor.WHITE))
+    assert prove_required_board_threat(engine, lambda: False) is None
+    move = next(m for m in engine.get_legal_moves_from_square(position, 0, 7)
+                if m.destination.x == 0 and m.destination.y == 0)
+    assert engine.execute_action_move(move) and engine.can_submit_action()
+
+
+def test_second_attacker_against_virtual_king_can_be_evaded():
+    engine = _engine()
+    manager = engine.timeline_manager
+    position = manager.timelines[0].positions[0]
+    position.set_piece(1, 0, Piece(PieceType.ROOK, ChessColor.BLACK))
+    position.set_piece(0, 7, Piece(PieceType.ROOK, ChessColor.WHITE))
+    manager.timelines[2] = Timeline(2, owner=ChessColor.WHITE,
+        positions={0: _position(2, 0, [(1, 0, 'K'), (7, 0, 'k')])})
+    manager.timelines[-1] = Timeline(-1, owner=ChessColor.BLACK,
+        positions={1: _position(-1, 1, [(7, 7, 'K'), (7, 0, 'k')])})
+    manager._next_positive_id = 3
+    manager._next_negative_id = -2
+    assert prove_required_board_threat(engine, lambda: False) is None
+    move = next(m for m in engine.get_legal_moves(manager.timelines[2].positions[0])
+                if m.is_spatial and m.destination.x == 2 and m.destination.y == 1)
+    assert engine.execute_action_move(move)
+    capture = next(m for m in engine.get_legal_moves_from_square(position, 0, 7)
+                   if m.destination.x == 0 and m.destination.y == 0)
+    assert engine.execute_action_move(capture) and engine.can_submit_action()
 
 
 def test_direct_threat_matches_exhaustive_search_with_optional_moves(monkeypatch):
@@ -273,7 +420,10 @@ def test_durable_seed53_state_is_proven_without_budget_exhaustion():
     assert engine_state_signature(engine) == before
 
 
-@pytest.mark.parametrize('fixture', ['easy20_pinned_bishop_state', 'easy20_pinned_queen_state'])
+@pytest.mark.parametrize('fixture', [
+    'easy20_pinned_bishop_state', 'easy20_pinned_queen_state',
+    'easy20_two_fixed_attackers_state',
+])
 def test_captured_locally_illegal_defense_is_proven_terminal(fixture):
     engine = _captured_engine(fixture)
     before = engine_state_signature(engine)

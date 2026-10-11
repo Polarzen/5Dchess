@@ -14,6 +14,46 @@ have not been rerun on the latest follow-up; their earlier failures remain open.
 Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
 and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
 
+## Further follow-up: coupled threats, immobile boards, and defense ordering
+
+Two further terminal certificates cover captured failures from the second
+Easy20 run. Distinct non-Pawn attackers on the same required successor cannot
+both be removed by one advancement when each attacks an immutable King/path.
+The game 11 / Action 33 fixture exercises this case, including individually
+legal captures that cannot jointly solve the Action.
+
+The game 20 / Action 118 fixture is stalemate: a required board has no current
+incoming or outgoing legal move, and its remaining Pawns/Rooks cannot reach
+future new lanes. The same activity/allocation guard prevents deferring that
+board. New acting-color sources cannot appear; old-board capture/arrival paths
+remain immutable. The mobility certificate conservatively declines other
+piece types, clear Rook rays toward new lanes, activity escapes, available
+optional incoming moves, or interrupted generation.
+
+For complex Actions with more than two required boards, a root check threat
+or absence of a board-local King admits defense ordering. It prioritizes
+captures of virtual attackers and moves of threatened Kings, then boards
+without a King and Pawn moves. Legal move lists are generated lazily per
+visited board. All required/optional moves remain searchable; virtual threats
+are ordering evidence, not terminal proofs. Ordinary multi-board roots retain
+MRV, the two-board completion path is unchanged, and the strategy resets for
+each search. The 19-required-board game 1 fixture now yields complete candidates
+that replay canonically under the existing 5/1024/24/32 budget.
+
+Focused checks for the combined follow-up passed: 61 tests, including captured
+candidate replay, strategy reset, late-preparation rejection, proof boundaries,
+state/depth/time budgets, and ordinary MRV behavior. Full suite: 494 passed,
+2 skipped, one existing telemetry warning. Fixed seeds 51/53/55 again have zero
+planning failures and recoveries (23.343 / 41.110 / 8.860 seconds). Fresh Easy20
+is still required before changing the acceptance decision.
+
+Forensic attribution of the prior Easy20 was also checked: its first counted
+failure was game 11 / Action 33, followed by game 20 / Action 118. Game 1 was
+recovered, and game 3 was adjudicated terminal. With both new root certificates
+disabled, the original recovery search still found no witness for games 11/20
+before its 4096-state / 15-second limits; those bounded results are unknown,
+not the proof. Game 3 exhaustively completed with no Action in 897 states.
+
 ## 2026-10-11 follow-up: immutable direct threats and legal captures
 
 The required-board certificate now checks canonical capture legality, including
