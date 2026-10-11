@@ -1,10 +1,45 @@
 # Arena acceptance status
 
 This document is the durable status for the Planner reliability work around
-PR #24. The current baseline is `70a5f495`; durable baseline run
-`34745200932` remains the acceptance reference.
+PR #24. The original baseline was `70a5f495`; durable baseline run
+`34745200932` is retained as a historical reference. Current acceptance is below.
 
-## Current follow-up: prefer available King defenses for local checks
+## Current local acceptance (2026-10-11)
+
+Implementation `cb1c4b2426ca99be442755b91e4e5d11c7530a69` passes the complete local reliability gate:
+600 tests passed, 2 skipped, one existing telemetry warning (262.88 seconds);
+fixed seeds 51/53/55 and controls 42/43 have zero planning failures, zero Action
+recoveries, and zero illegal/stale/unexpected failures. Both
+[CI](https://github.com/Polarzen/5Dchess/actions/runs/38149716587) and
+[Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38149719290) pass
+on this implementation.
+
+All Arena runs use the original Stage 1 model, alternating colors, seed 42,
+maximum 120 Actions/game, and the unchanged primary 5-second / 1024-state /
+24-candidate / depth-32 budget.
+
+| Opponent | Wins / draws / losses | Planning failures | Action recoveries | Seconds |
+| --- | --- | --- | --- | --- |
+| Easy20 | 16 / 3 / 1 | 0 | 0 | 202.125 |
+| Medium20 | 0 / 0 / 20 | 0 | 0 | 95.438 |
+| Hard20 | 3 / 0 / 17 | 0 | 0 | 823.922 |
+
+Illegal actions, stale state, and unexpected failures are also zero in all
+three Arena tiers. No Arena secondary search or primary-search terminal adjudication was needed in these three runs.
+
+These results establish the requested local reliability acceptance. Playing
+strength remains limited, as shown by the Medium/Hard scores. No larger
+self-play or training was started. PR #24 and #25 remain Draft and unmerged;
+`main` and the training branch are unchanged.
+
+Model SHA-256: `de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55`. Raw source fingerprints and all
+historical failed/aborted attempts are preserved in
+`docs/planner-validation-20261011.json` (`reliability_phase2_fix12` is current).
+The original remote Stage 1 artifact expired, so these local Planner/Arena
+results are not remote workflow passes. Workflow-file follow-ups remain in
+the preserved local patch because the credential lacks `workflow` scope.
+
+## Earlier follow-up: prefer available King defenses for local checks
 
 Implementation `8e7ea9a6` passes the local suite (594 passed, 2 skipped) and
 CI `38148554985` / Training CI `38148557749`. The fresh fixed-seed batch stops
