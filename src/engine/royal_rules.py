@@ -7,22 +7,20 @@ RoyalRules decides whether the resulting Action may safely be submitted.
 """
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterator, Mapping, TYPE_CHECKING
+from typing import Iterator, Mapping
 
 from src.engine.coordinates import BoardCoord, Square5D
+from src.engine.board import Position
 from src.engine.multiverse import MultiverseBoardView
 from src.engine.path_rules import PathRules
 from src.engine.piece import Piece
 from src.engine.piece_movement import PieceMovementRules
 from src.engine.timeline_rules import TimelineRules
+from src.engine.timeline import Timeline
 from src.utils.constants import ChessColor, PieceType
-
-if TYPE_CHECKING:
-    from src.engine.timeline import Timeline
-
 
 @dataclass(frozen=True, slots=True)
 class RoyalThreat:
@@ -316,6 +314,8 @@ class RoyalRules:
     def _after_virtual_present_pass(
         self,
         color: ChessColor,
+        *,
+        copy_history: bool = True,
     ) -> Mapping[int, "Timeline"]:
         """Copy the multiverse and pass every active board currently in Present.
 
@@ -323,12 +323,33 @@ class RoyalRules:
         player passed on all active Present boards.  A virtual pass therefore
         creates the next half-move board with identical occupancy and opposite
         side-to-move, without mutating real game history.
+
+        The default retains an isolated copy. Internal threat queries may borrow
+        unchanged history: they only read it and return frozen threats or a bool.
+        Only touched Timeline containers and new successor Positions then need
+        copying. Subclasses and dynamic attributes retain generic deepcopy.
         """
         present = TimelineRules.present(self.timelines)
         if present is None or present.side != color:
             return self.timelines
 
-        simulated = deepcopy(dict(self.timelines))
+        canonical = not copy_history and type(self) is RoyalRules and all(
+            type(timeline) is Timeline
+            and type(timeline.positions) is dict
+            and set(vars(timeline)) == set(Timeline.__dataclass_fields__)
+            and all(type(position) is Position
+                    and set(vars(position)) == set(Position.__dataclass_fields__)
+                    for position in timeline.positions.values())
+            for timeline in self.timelines.values()
+        )
+        if canonical:
+            simulated = dict(self.timelines)
+            for coord in present.boards:
+                timeline = copy(self.timelines[coord.timeline])
+                timeline.positions = dict(timeline.positions)
+                simulated[coord.timeline] = timeline
+        else:
+            simulated = deepcopy(dict(self.timelines))
         for coord in present.boards:
             timeline = simulated.get(coord.timeline)
             if timeline is None:
@@ -349,12 +370,12 @@ class RoyalRules:
 
     def threats_against(self, color: ChessColor) -> tuple[RoyalThreat, ...]:
         """Return check threats using the official virtual-Present-pass semantics."""
-        simulated = self._after_virtual_present_pass(color)
+        simulated = self._after_virtual_present_pass(color, copy_history=False)
         return self._direct_threats_in(simulated, color)
 
     def is_in_check(self, color: ChessColor) -> bool:
         """Whether ``color`` is in 5D check under the Present-pass definition."""
-        simulated = self._after_virtual_present_pass(color)
+        simulated = self._after_virtual_present_pass(color, copy_history=False)
         return self._has_direct_threat_in(simulated, color)
 
     def is_action_safe(self, color: ChessColor) -> bool:

@@ -92,6 +92,7 @@ def test_captured_forced_arrival_is_proven_terminal():
     'seed53_three_required_defense_state',
     'seed42_two_immobile_required_state', 'seed42_threatened_rewind_source_state',
     'seed42_twenty_required_arrival_defense_state',
+    'hard20_twenty_three_required_state',
 ])
 def test_captured_frontier_keeps_complete_candidates_in_primary_budget(fixture):
     engine = _captured(fixture)

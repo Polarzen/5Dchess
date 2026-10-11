@@ -4,7 +4,32 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: certify an unavailable last active rewind
+## Current follow-up: avoid historical copies in internal royal queries
+
+Implementation `4cadbfc1` passes 577 tests (2 skipped), all five fixed seeds,
+Easy20 (W16 D3 L1, 189.437 seconds) and Medium20 (W0 D0 L20, 119.938 seconds),
+with zero planning failures, Action recoveries or illegal/stale/unexpected
+errors. Both CI `38144452970` and Training CI `38144455731` pass. Hard is
+stopped during game 12 after neural Black needs one recovered Action in game
+10 at Action 115. That game ends in stalemate at Action 118. No full Hard20
+result exists, and the zero-recovery gate has not passed.
+
+The captured position has 23 required boards. Repeated generic deep copies of
+historical Positions in virtual-Present royal checks consume much of the
+primary budget. Internal threat queries now borrow unchanged canonical history
+and copy only touched timeline containers and new virtual successors. They
+only read that view and return frozen threat values or a boolean. The default
+isolated virtual-pass API remains unchanged; subclasses, dynamic attributes
+and nonstandard position mappings retain the generic deepcopy fallback.
+
+The diagnostic view returns 11 canonical candidates under the original
+5-second budget, compared with zero before. Six captured differential cases
+compare both colors against the isolated virtual-pass result, and source/
+successor isolation and fallback tests cover mutable boundaries. The focused
+suite passes 56 tests; the new captured primary-budget replay also passes.
+The full suite passes 590 tests, with 2 skipped and one existing telemetry warning, in 252.72 seconds. Fresh fixed/Arena acceptance is pending.
+
+## Earlier follow-up: certify an unavailable last active rewind
 
 Implementation `271b37be` passes 569 tests (2 skipped), all five fixed seeds,
 Easy20 (W16 D3 L1, 202.265 seconds) and Medium20 (W0 D0 L20, 94.141 seconds),
