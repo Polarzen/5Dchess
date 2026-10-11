@@ -1224,5 +1224,235 @@
       "Hard20"
     ],
     "note": "Batch stopped after seed42 F1/R1; no later gate results claimed. Source bytes match implementation even when raw run metadata precedes commit."
+  },
+  "reliability_phase2_fix5": {
+    "source_commit": "461401006bf4f9eeb88bdf47b9bba8b2dc284009",
+    "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+    "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+    "status": "fixed_easy_medium_pass_hard_failed_diagnostic",
+    "planner_budget": {
+      "max_seconds": 5,
+      "max_states": 1024,
+      "max_actions": 24,
+      "max_move_depth": 32
+    },
+    "fixed_seeds": [
+      {
+        "seed": 51,
+        "source_commit": "461401006bf4f9eeb88bdf47b9bba8b2dc284009",
+        "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 22.98399999999674,
+        "games": 1,
+        "wins": 0,
+        "draws": 1,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      },
+      {
+        "seed": 53,
+        "source_commit": "461401006bf4f9eeb88bdf47b9bba8b2dc284009",
+        "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 7.187000000005355,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      },
+      {
+        "seed": 55,
+        "source_commit": "461401006bf4f9eeb88bdf47b9bba8b2dc284009",
+        "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 9.328999999997905,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      },
+      {
+        "seed": 42,
+        "source_commit": "7f65cbe1d1c3eccd2e72e0b3dadb3af24aa76b8e",
+        "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 49.828999999997905,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      },
+      {
+        "seed": 43,
+        "source_commit": "461401006bf4f9eeb88bdf47b9bba8b2dc284009",
+        "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 127.82799999997951,
+        "games": 1,
+        "wins": 0,
+        "draws": 1,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      }
+    ],
+    "provenance_note": "Raw fingerprints retained; source bytes are checked against the implementation. The fix1 early fixed runs precede only a verified comment clarification.",
+    "arena_configuration": {
+      "seed": 42,
+      "model_color": "alternate",
+      "games": 20,
+      "max_actions_per_game": 120,
+      "device": "cpu"
+    },
+    "local_suite": {
+      "passed": 546,
+      "skipped": 2,
+      "warnings": 1,
+      "seconds": 222.13
+    },
+    "remote_ci": {
+      "run_id": 38133991344,
+      "conclusion": "success"
+    },
+    "remote_training_ci": {
+      "run_id": 38133994097,
+      "conclusion": "success"
+    },
+    "terminal_proof_scope": "A secondary terminal proof is distinct from a recovered Action. Its unchanged budget is 15 seconds / 4096 states / depth 64, so zero Action recoveries does not alone mean every terminal determination completed within five seconds.",
+    "remote_planner_arena": "Not rerun: original Stage 1 artifact expired. These Arena results are local with the original verified model.",
+    "baseline_seed42": {
+      "source_commit": "dfe1c13cf39c0b5a57e061b4832bd31a69ba568f",
+      "seconds": 201.657,
+      "planning_failures": 1,
+      "baseline_failures": 1,
+      "recoveries": 1,
+      "neural_recoveries": 1,
+      "failure_action": 75,
+      "recovery_action": 54
+    },
+    "easy20": {
+      "source_commit": "461401006bf4f9eeb88bdf47b9bba8b2dc284009",
+      "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+      "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+      "seconds": 246.93799999999464,
+      "games": 20,
+      "wins": 16,
+      "draws": 3,
+      "losses": 1,
+      "planning_failure_count": 0,
+      "neural_planning_failure_count": 0,
+      "baseline_planning_failure_count": 0,
+      "planner_recovery_count": 0,
+      "neural_planner_recovery_count": 0,
+      "baseline_planner_recovery_count": 0,
+      "illegal_action_count": 0,
+      "stale_failure_count": 0,
+      "unexpected_failure_count": 0,
+      "proven_terminal_adjudication_count": 1,
+      "first_failure": null
+    },
+    "medium20": {
+      "source_commit": "461401006bf4f9eeb88bdf47b9bba8b2dc284009",
+      "source_fingerprint": "19bce177172a055d1ce0eeec2875fe5c6d7289de31398a0f70cdc2fbfc614ca7",
+      "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+      "seconds": 124.39100000000326,
+      "games": 20,
+      "wins": 0,
+      "draws": 0,
+      "losses": 20,
+      "planning_failure_count": 0,
+      "neural_planning_failure_count": 0,
+      "baseline_planning_failure_count": 0,
+      "planner_recovery_count": 0,
+      "neural_planner_recovery_count": 0,
+      "baseline_planner_recovery_count": 0,
+      "illegal_action_count": 0,
+      "stale_failure_count": 0,
+      "unexpected_failure_count": 0,
+      "proven_terminal_adjudication_count": 0,
+      "first_failure": null
+    },
+    "hard20_partial": {
+      "completed_20_game_aggregate": false,
+      "last_progress": {
+        "game": 13,
+        "completed_actions": 10,
+        "state": "CHECKMATE"
+      },
+      "known_baseline_planning_failures": 1,
+      "known_baseline_action_recoveries": 2,
+      "secondary_searches": [
+        {
+          "game": 10,
+          "action": 108,
+          "color": "white",
+          "secondary_result": "witness"
+        },
+        {
+          "game": 10,
+          "action": 110,
+          "color": "white",
+          "secondary_result": "witness"
+        },
+        {
+          "game": 10,
+          "action": 112,
+          "color": "white",
+          "secondary_result": "unresolved"
+        }
+      ]
+    }
   }
 }

@@ -10,6 +10,7 @@ from src.ai.action_planner import (
     ActionPlanningError,
     ActionSearchBudget,
     ActionSearchResult,
+    _PRODUCTION_HYBRID_BUDGET,
     apply_action_plan,
     engine_state_signature,
 )
@@ -198,8 +199,12 @@ class AlphaBetaAI(AIPlayer):
         # independent of that equality, and share its original absolute deadline
         # so cloning/preparation cannot restart the global wall budget.
         deadline = None if self._timeout is None else self._start_time + self._timeout
+        strategy = (
+            "probe_then_depth_first" if self.budget == _PRODUCTION_HYBRID_BUDGET
+            else "depth_first"
+        )
         result = ActionPlanner(
-            node_budget, strategy="depth_first", deadline=deadline,
+            node_budget, strategy=strategy, deadline=deadline,
         ).search(engine)
         self._states_used += result.explored_states
         if result.termination_reason:

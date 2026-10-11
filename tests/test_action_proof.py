@@ -12,6 +12,7 @@ from src.ai.action_planner import (
 from src.data.archive import GameArchive
 from src.engine import ActionRules, ActionSearch, FiveDEngine, Position, Timeline
 from src.engine.action_proof import (
+    fixed_successor_attackers, move_exposes_fixed_attacker,
     prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
 )
 from src.engine.coordinates import BoardCoord
@@ -448,3 +449,101 @@ def test_captured_queen_has_replayable_complete_defenses():
         apply_action_plan(child, AIActionPlan(engine.current_turn_color, candidate, before))
         assert child.action_history[-1].submitted
     assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('fixture', [
+    'hard20_rewind_four_state', 'hard20_rewind_three_state',
+    'hard20_fixed_successors_terminal_state',
+])
+def test_successor_filter_matches_canonical_direct_threat(fixture):
+    engine = _captured_engine(fixture)
+    before = engine_state_signature(engine)
+    attackers = fixed_successor_attackers(engine, lambda: False)
+    assert attackers
+    rejected = allowed = branches = 0
+    for board in ActionRules.movable_boards(engine.current_action, engine.timeline_manager.timelines):
+        for move in engine.get_legal_moves(engine._resolve_position(board)):
+            if not move_exposes_fixed_attacker(move, attackers):
+                allowed += 1
+                branches += move.is_branching
+                continue
+            rejected += 1
+            child = engine.clone_for_simulation()
+            assert child.execute_action_move(move)
+            assert prove_direct_threat(child, lambda: False) is not None
+    assert rejected and allowed and branches
+    assert engine_state_signature(engine) == before
+
+
+def test_successor_filter_preserves_capture_and_ignores_virtual_targets():
+    engine = _engine()
+    position = engine.timeline_manager.timelines[0].positions[0]
+    position.set_piece(0, 7, Piece(PieceType.ROOK, ChessColor.WHITE))
+    attackers = fixed_successor_attackers(engine, lambda: False)
+    capture = next(move for move in engine.get_legal_moves(position)
+                   if move.destination.x == 0 and move.destination.y == 0)
+    assert attackers and not move_exposes_fixed_attacker(capture, attackers)
+    assert engine.execute_action_move(capture) and engine.can_submit_action()
+    engine = _engine()
+    engine.timeline_manager.timelines[1].positions = {
+        0: _position(1, 0, [(0, 0, 'K'), (7, 0, 'k')]),
+    }
+    assert fixed_successor_attackers(engine, lambda: False) == {}
+
+
+def test_successor_scan_interruption_never_returns_partial_certificate():
+    engine = _engine()
+    assert fixed_successor_attackers(engine, lambda: True) is None
+    ticks = iter([False, False, True])
+    assert fixed_successor_attackers(engine, lambda: next(ticks)) is None
+
+
+def test_black_successor_filter_preserves_the_capturing_escape():
+    engine = _engine()
+    manager = engine.timeline_manager
+    manager.timelines = {
+        0: Timeline(0, positions={1: _position(0, 1, [
+            (0, 0, 'R'), (7, 0, 'K'), (0, 7, 'r'), (7, 7, 'k'),
+        ])}),
+        -1: Timeline(-1, owner=ChessColor.BLACK,
+                     positions={2: _position(-1, 2, [(0, 0, 'k'), (7, 0, 'K')])}),
+    }
+    manager._next_positive_id = 1
+    manager._next_negative_id = -2
+    engine.current_turn_color = ChessColor.BLACK
+    engine.current_action = ActionRules.begin(ChessColor.BLACK, manager.timelines)
+    attackers = fixed_successor_attackers(engine, lambda: False)
+    assert attackers
+    capture = None
+    for move in engine.get_legal_moves(manager.timelines[0].positions[1]):
+        if move_exposes_fixed_attacker(move, attackers):
+            child = engine.clone_for_simulation()
+            assert child.execute_action_move(move)
+            assert prove_direct_threat(child, lambda: False) is not None
+        elif move.destination.x == 0 and move.destination.y == 0:
+            capture = move
+    assert capture is not None
+    assert engine.execute_action_move(capture) and engine.can_submit_action()
+
+
+def test_successor_filter_checks_the_nonbranching_arrival_board():
+    engine = _engine()
+    manager = engine.timeline_manager
+    manager.timelines[1].positions[0] = _position(1, 0, [])
+    manager.timelines[2] = Timeline(2, owner=ChessColor.WHITE,
+        positions={0: _position(2, 0, [
+            (0, 0, 'R'), (0, 7, 'R'), (7, 7, 'K'), (7, 0, 'k'),
+        ])})
+    manager._next_positive_id = 3
+    attackers = fixed_successor_attackers(engine, lambda: False)
+    arrivals = [move for move in engine.get_legal_moves(manager.timelines[2].positions[0])
+                if move.destination.board == BoardCoord(0, 0, ChessColor.WHITE)]
+    capture = next(move for move in arrivals if move.destination.y == 0)
+    quiet = next(move for move in arrivals if move.destination.y == 7)
+    assert not capture.is_branching and not quiet.is_branching
+    assert not move_exposes_fixed_attacker(capture, attackers)
+    assert move_exposes_fixed_attacker(quiet, attackers)
+    child = engine.clone_for_simulation()
+    assert child.execute_action_move(quiet)
+    assert prove_direct_threat(child, lambda: False) is not None
+    assert engine.execute_action_move(capture) and engine.can_submit_action()

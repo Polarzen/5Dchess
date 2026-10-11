@@ -4,7 +4,39 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: retain arrival priority and safe rewind sources
+## Current follow-up: bounded minimax probe and fixed-successor checks
+
+Implementation `46140100` passes 546 tests (2 skipped), all five fixed seeds
+51/53/55/42/43, Easy20 (W16 D3 L1) and Medium20 (W0 D0 L20), with zero
+planning failures, Action recoveries and illegal/stale/unexpected errors.
+Both [CI](https://github.com/Polarzen/5Dchess/actions/runs/38133991344) and
+[Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38133994097) pass.
+Easy's single terminal adjudication comes from an ordinary exhaustive primary
+search; neither completed Arena tier uses a secondary search.
+
+Hard20 was stopped during diagnosis and has no final 20-game aggregate.
+Game 10 requires two baseline Action recoveries (Actions 108 and 110), then
+has an unresolved baseline planning failure at Action 112. The latest progress
+file records game 13 completed; this is not a Hard20 acceptance pass.
+
+The new follow-up gives minimax an explicit one-second one-Move probe followed
+by its established depth-first board order. Both phases share the original
+state, candidate, depth and absolute five-second limits. Admission uses the
+configured budget, not rounded remaining time; other configured budgets keep
+their previous strategy. Search filters a Move only when advancing its source
+or non-branching destination would materialize an enemy attacker against an
+already-existing opponent-phase King and clear path. Capturing that attacker
+remains available; Pawns and virtual King/path evidence do not certify a prune.
+
+All four old/new nonterminal Hard snapshots now return canonically replayable
+Actions. The final snapshot exhausts without a candidate or timeout, rather
+than being classified terminal from a budget failure. Focused tests cover
+White/Black captures, cross-board arrivals, branch preservation, interruption,
+source immutability, strategy reset and shared budgets. The full suite passes
+562 tests, with 2 skipped and one existing telemetry warning, in 225.63 seconds.
+Fresh fixed-seed/Arena gates remain pending for this follow-up.
+
+## Earlier follow-up: retain arrival priority and safe rewind sources
 
 Implementation `7f65cbe1` passes 544 local tests (2 skipped, one telemetry
 warning; 223.36 seconds) and both [CI](https://github.com/Polarzen/5Dchess/actions/runs/38133043598)

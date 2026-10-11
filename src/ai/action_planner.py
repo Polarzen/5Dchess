@@ -18,6 +18,7 @@ from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
 from src.engine.action_proof import (
+    fixed_successor_attackers, move_exposes_fixed_attacker,
     prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
 )
 from src.engine.action_search import ActionSearch
@@ -670,14 +671,15 @@ class ActionPlanner:
         strategy: str = "auto",
         deadline: float | None = None,
     ):
-        if strategy not in {"auto", "depth_first"}:
-            raise ValueError("strategy must be auto or depth_first")
+        if strategy not in {"auto", "depth_first", "probe_then_depth_first"}:
+            raise ValueError("strategy must be auto, depth_first or probe_then_depth_first")
         self.budget = budget or ActionSearchBudget()
         # Minimax can explicitly keep the same candidate ordering as its
         # remaining wall budget changes. The default admission stays unchanged.
         self._strategy = strategy
         self._deadline = deadline
-        self._cooperative_checks = strategy == "depth_first"
+        self._cooperative_checks = strategy != "auto"
+        self._in_probe = False
         self._tracker: _BudgetTracker | None = None
         self._search_telemetry: list[dict[str, Any]] = []
         self._defense_order_active = False
@@ -685,11 +687,14 @@ class ActionPlanner:
 
     @property
     def _uses_production_strategy(self) -> bool:
-        return self._strategy == "auto" and self.budget == _PRODUCTION_HYBRID_BUDGET
+        return (
+            self._strategy == "auto" and self.budget == _PRODUCTION_HYBRID_BUDGET
+        ) or (self._strategy == "probe_then_depth_first" and self._in_probe)
 
     def search(self, engine: "FiveDEngine") -> ActionSearchResult:
         """Search all bounded complete Action witnesses from ``engine``."""
         self._search_telemetry = []
+        self._in_probe = False
         self._defense_order_active = False
         self._arrival_targets = frozenset()
         if engine.game_state != GameState.PLAYING:
@@ -703,7 +708,7 @@ class ActionPlanner:
         candidates: list[tuple[MoveSpec, ...]] = []
         failed_states: set[tuple] = set()
 
-        if not self._uses_production_strategy:
+        if not self._uses_production_strategy and self._strategy != "probe_then_depth_first":
             self._dfs(
                 state, (), 0, tracker, candidates, failed_states,
                 cooperative_checks=self._cooperative_checks,
@@ -722,6 +727,7 @@ class ActionPlanner:
         probe_elapsed_start = time.monotonic() - tracker.started_at
         probe_deadline = tracker.started_at + 1.0
         tracker.phase_interrupted = False
+        self._in_probe = True
         self._dfs(
             state,
             (),
@@ -734,6 +740,12 @@ class ActionPlanner:
             local_deadline=probe_deadline,
             cooperative_checks=True,
         )
+        self._in_probe = False
+        if self._strategy == "probe_then_depth_first":
+            # The probe's ordering hints must not replace minimax's established
+            # board order in the deep phase. Both phases keep the same tracker.
+            self._defense_order_active = False
+            self._arrival_targets = frozenset()
         tracker.check_time(probe_deadline)
         probe_elapsed_end = time.monotonic() - tracker.started_at
         probe_interrupted = (
@@ -990,7 +1002,7 @@ class ActionPlanner:
         # A direct immutable threat is cheaper to prove than to serialize this
         # whole multiverse for the transposition key. Charge the inspected state
         # once; no failed-state cache is needed for this independently proved leaf.
-        if self._uses_production_strategy:
+        if self._uses_production_strategy or self._strategy == "probe_then_depth_first":
             proof = prove_direct_threat(
                 state, lambda: tracker.check_time(local_deadline),
             )
@@ -1055,6 +1067,13 @@ class ActionPlanner:
                 ),
             )
         )
+        fixed_attackers = {}
+        if self._strategy == "probe_then_depth_first":
+            fixed_attackers = fixed_successor_attackers(
+                state, lambda: tracker.check_time(local_deadline),
+            )
+            if fixed_attackers is None:
+                return found_completion
         move_sort_key = lambda move: _required_move_sort_key(move, required)
         defense_order = None
         prioritized_specs = set()
@@ -1103,6 +1122,8 @@ class ActionPlanner:
                 for move in rewinds:
                     if tracker.check(depth, depth_limit, local_deadline):
                         return found_completion
+                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                        continue
                     child = state.clone_for_simulation()
                     spec = MoveSpec.from_move(move)
                     prioritized_specs.add(spec)
@@ -1164,6 +1185,8 @@ class ActionPlanner:
                     for move in moves:
                         if tracker.check(depth, depth_limit, local_deadline):
                             return found_completion
+                        if move_exposes_fixed_attacker(move, fixed_attackers):
+                            continue
                         child = state.clone_for_simulation()
                         if not child.execute_action_move(move):
                             continue
@@ -1211,6 +1234,8 @@ class ActionPlanner:
                             return found_completion
                         if MoveSpec.from_move(move) in prioritized_specs:
                             continue
+                        if move_exposes_fixed_attacker(move, fixed_attackers):
+                            continue
                         child = state.clone_for_simulation()
                         if not child.execute_action_move(move):
                             continue
@@ -1251,6 +1276,8 @@ class ActionPlanner:
                 for move in arrivals:
                     if tracker.check(depth, depth_limit, local_deadline):
                         return found_completion
+                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                        continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
                         continue
@@ -1316,6 +1343,8 @@ class ActionPlanner:
                 child = None
                 direct_completion = False
                 if _required_board_progress(move, required) == 2:
+                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                        continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
                         continue
@@ -1355,6 +1384,8 @@ class ActionPlanner:
                 if tracker.check(depth, depth_limit, local_deadline):
                     return found_completion
                 if child is None:
+                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                        continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
                         continue
@@ -1419,6 +1450,8 @@ class ActionPlanner:
                 for move in legal_moves:
                     if tracker.check(depth, depth_limit, local_deadline):
                         return found_completion
+                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                        continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
                         continue
@@ -1477,6 +1510,9 @@ class ActionPlanner:
                     for move in legal_moves
                     if move.destination.board not in required
                 ]
+            if fixed_attackers:
+                legal_moves = (move for move in legal_moves
+                               if not move_exposes_fixed_attacker(move, fixed_attackers))
             ordered_moves = (
                 _safe_king_moves_first(state, legal_moves, tracker, local_deadline)
                 if self._defense_order_active and len(required) > 2
@@ -1486,6 +1522,8 @@ class ActionPlanner:
                 if tracker.check(depth, depth_limit, local_deadline):
                     return found_completion
                 if child is None:
+                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                        continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
                         continue

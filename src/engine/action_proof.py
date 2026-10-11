@@ -14,6 +14,66 @@ from src.utils.constants import ChessColor, PieceType
 
 if TYPE_CHECKING:
     from src.engine.engine import FiveDEngine
+    from src.engine.move_generator import Move
+
+
+def fixed_successor_attackers(engine, interrupted):
+    """Find enemy pieces whose survival on a successor proves direct check.
+
+    The source is hypothetical, but its royal target and every intervening
+    square must already exist on the opponent's phase. Those boards cannot be
+    changed in this Action. Advancing the source therefore makes the threat
+    irreversible unless that very Move captures the attacker. Optional and
+    inactive source boards are included. Pawns are excluded because en passant
+    can remove them away from the Move's destination.
+
+    None means interrupted; an empty mapping means no such certificate.
+    """
+    if interrupted():
+        return None
+    rules = RoyalRules(engine.timeline_manager.timelines)
+    color = engine.current_turn_color
+    kings = tuple(square for square in rules.king_squares(color)
+                  if square.side == color.opposite())
+    result = {}
+    movable = ActionRules.movable_boards(
+        engine._ensure_current_action(), engine.timeline_manager.timelines,
+    )
+    for board in movable:
+        if interrupted():
+            return None
+        position = rules.board_view.resolve(board)
+        if position is None:
+            continue
+        targets = set()
+        for x, y, piece in position.get_all_pieces(color.opposite()):
+            if piece.piece_type == PieceType.PAWN:
+                continue
+            source = Square5D(board.next(), x, y)
+            for king in kings:
+                if interrupted():
+                    return None
+                if rules._attacks_prevalidated_square_with_view(
+                    piece, source, king, rules.board_view,
+                ):
+                    targets.add(Square5D(board, x, y))
+                    break
+        if targets:
+            result[board] = frozenset(targets)
+    return None if interrupted() else result
+
+
+def move_exposes_fixed_attacker(move: "Move", attackers) -> bool:
+    """Reject only canonical Moves which materialize a certified attacker.
+
+    Branching advances the original source, but not the historical destination.
+    A non-branching cross-timeline Move advances both original boards.
+    """
+    boards = {move.source.board}
+    if move.is_cross_timeline and not move.is_branching:
+        boards.add(move.destination.board)
+    return any(move.destination != target
+               for board in boards for target in attackers.get(board, ()))
 
 
 @dataclass(frozen=True, slots=True)
