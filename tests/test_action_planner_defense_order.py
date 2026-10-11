@@ -77,6 +77,21 @@ def test_large_mutable_king_escape_candidates_replay():
     assert engine_state_signature(engine) == before
 
 
+@pytest.mark.parametrize('fixture', ['easy20_twenty_six_required_state', 'seed42_fourteen_required_state'])
+def test_double_progress_solves_recovery_frontiers(fixture):
+    engine = _captured(fixture)
+    before = engine_state_signature(engine)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates
+    assert result.explored_states <= 1024 and len(result.candidates) <= 24
+    candidate = result.candidates[0]
+    assert len(candidate) < len(engine.get_required_action_boards())
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, candidate, before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
 def test_risky_king_moves_are_deferred_but_retained():
     engine = _captured('easy20_king_escape_state')
     before = engine_state_signature(engine)

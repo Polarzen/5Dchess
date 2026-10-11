@@ -303,6 +303,10 @@ class FiveDEngine:
         generator = MoveGenerator(position, self.timeline_manager.timelines)
         validator = MoveValidator(self.timeline_manager.timelines)
         pseudo_moves = generator.generate_all()
+        if len(self.timeline_manager.timelines) >= self.timeline_manager.max_timelines:
+            # Execution cannot allocate another timeline at capacity. Exclude
+            # those transitions before spending work on board-local safety.
+            pseudo_moves = [move for move in pseudo_moves if not move.is_branching]
         return validator.filter_legal_moves(position, pseudo_moves)
 
     def get_legal_moves_from_square(
@@ -330,6 +334,8 @@ class FiveDEngine:
         generator = MoveGenerator(position, self.timeline_manager.timelines)
         validator = MoveValidator(self.timeline_manager.timelines)
         pseudo_moves = generator.generate_from_square(x, y)
+        if len(self.timeline_manager.timelines) >= self.timeline_manager.max_timelines:
+            pseudo_moves = [move for move in pseudo_moves if not move.is_branching]
         return validator.filter_legal_moves(position, pseudo_moves)
 
     def execute_action_move(self, move: Move) -> bool:

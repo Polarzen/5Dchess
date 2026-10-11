@@ -34,6 +34,10 @@ def _branches_cannot_defer_required_boards(engine: "FiveDEngine") -> bool:
     color = engine.current_turn_color
     if not timelines:
         return False
+    if len(timelines) >= manager.max_timelines:
+        # No further branch can be allocated. Existing optional moves only
+        # advance their sources/targets, and cannot activate or add a lane.
+        return True
     for lane, timeline in timelines.items():
         expected = None if lane == 0 else (
             ChessColor.WHITE if lane > 0 else ChessColor.BLACK
@@ -68,7 +72,9 @@ def prove_required_board_immobile(
     Future historical destinations on new lanes need a separate guard. This
     certificate admits only Pawns (new own lanes lie behind their L movement)
     and Rooks whose first L-ray square toward new lanes is already blocked or
-    missing on an original lane. All other pieces conservatively reject it.
+    missing on an original lane. At full timeline capacity there can be no new
+    destinations, so all piece types may be checked. Otherwise other pieces
+    conservatively reject the certificate.
     """
     if interrupted() or not engine.timeline_manager.timelines:
         return None
@@ -91,7 +97,9 @@ def prove_required_board_immobile(
         if position is None:
             return None
         future_destination_possible = False
-        for x, y, piece in position.get_all_pieces(color):
+        pieces = (position.get_all_pieces(color)
+                  if len(manager.timelines) < manager.max_timelines else ())
+        for x, y, piece in pieces:
             if piece.piece_type == PieceType.PAWN:
                 continue
             if piece.piece_type == PieceType.ROOK and abs(next_lane - board.timeline) > 1:
@@ -186,9 +194,9 @@ def prove_required_board_threat(
     if not required:
         return None
 
-    # Future actor branches must remain outside existing lanes and inactive.
-    # Existing opponent lanes must already be active: increasing actor count
-    # could otherwise activate one at an earlier opponent-side Present.
+    # At capacity no branches are possible. Otherwise future actor branches
+    # must remain outside existing lanes and inactive; existing opponent lanes
+    # must already be active so increasing actor count cannot rewind Present.
     if not _branches_cannot_defer_required_boards(engine):
         return None
 

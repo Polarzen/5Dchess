@@ -532,6 +532,7 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
             move.destination not in captures,
             move.source not in kings,
             move.is_branching,
+            -_required_board_progress(move, required),
             move.piece.piece_type != PieceType.PAWN,
             move.piece.piece_type == PieceType.KING,
             *_required_move_sort_key(move, required),
@@ -1192,7 +1193,11 @@ class ActionPlanner:
                     return found_completion
                 legal_moves = sorted(
                     prepared_legal[board],
-                    key=lambda move: _required_move_sort_key(move, required),
+                    key=lambda move: (
+                        move.is_branching,
+                        -_required_board_progress(move, required),
+                        *_required_move_sort_key(move, required),
+                    ),
                 )
                 for move in legal_moves:
                     if tracker.check(depth, depth_limit, local_deadline):

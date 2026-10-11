@@ -4,7 +4,39 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Decision
+## Current follow-up: remove recovery dependency, then Medium/Hard
+
+The next acceptance phase is in progress. It must resolve the Easy recovery
+dependency and seed 42 before proceeding to Medium20 and Hard20 with the same
+Stage 1 model and 5/1024/24/32 primary planner budget.
+
+On baseline `dfe1c13c` (implementation `c573320e`), seed 42 was reproduced:
+one neural recovery at Action 54 and one baseline failure at Action 75,
+in 201.657 seconds. The failure signature matches the historical capture.
+At Action 75 all 32 timeline slots are occupied. Required board L10 has 21
+nominal legal moves, but all require a new branch and execution rejects every
+one; no existing source can advance that board by arrival.
+
+Legal-Move APIs now exclude branch allocations at full capacity, consistently
+with execution. The immobility certificate then proves this captured state
+is stalemate. At capacity there can be no new lanes, activity changes, or future
+branch destinations; below capacity the previous conservative guards remain.
+Tests compare generated moves with actual execution and use exhaustive small
+White/Black positions, plus a spare-slot escape, to check the proof boundary.
+
+Multi-board search also prioritizes moves advancing two required boards before
+ordinary piece preferences. Board MRV and the exact production-budget admission
+remain unchanged; all executable moves and optional sources remain searchable.
+The captured 26-board Easy recovery and 14-board seed 42 recovery both have
+canonical complete candidates within the unchanged primary budget.
+
+Focused checks: 17 passed. Full suite: 514 passed, 2 skipped, one existing
+telemetry warning. Seeds 51/53/55 pass with zero failures/recoveries in
+24.969 / 7.359 / 9.796 seconds; controls 42/43 and Arena are pending. New evidence
+records a source fingerprint and the original model SHA-256 to prevent mixing
+acceptance results from different implementations.
+
+## Previous completed local gate
 
 The requested **local fixed-seed gate and Easy20 zero-failure gate PASS** on
 `c573320e`, using the original hash-verified Stage 1 model and unchanged
