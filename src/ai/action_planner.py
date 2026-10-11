@@ -17,6 +17,7 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
+from src.engine.action_proof import prove_required_board_threat
 from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
@@ -801,6 +802,16 @@ class ActionPlanner:
             return found_completion
 
         tracker.explored_states += 1
+
+        if depth == 0 and self.budget == _PRODUCTION_HYBRID_BUDGET:
+            proof = prove_required_board_threat(
+                state, lambda: tracker.check_time(local_deadline),
+            )
+            if tracker.check_time(local_deadline):
+                return found_completion
+            if proof is not None:
+                failed_states.add(key)
+                return False
 
         movable = ActionRules.movable_boards(
             action,

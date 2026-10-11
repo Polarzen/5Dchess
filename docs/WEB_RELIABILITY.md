@@ -19,4 +19,4 @@
 
 ## AI 验收边界
 
-Planner 生产预算固定为 5 秒、1024 个状态、24 个行动、最大深度 32。固定种子 53 的 Planner Regression 仍未解决，状态为 BLOCKED；Medium、Hard 和大规模 self-play 在该问题解决前继续阻塞。PR #24 必须保持 Draft，DO NOT MERGE。
+Planner 生产预算固定为 5 秒、1024 个状态、24 个行动、最大深度 32。2026-10-11 本地固定种子 51、53、55 已通过；seed 53 使用独立的必走棋盘威胁证明确认终局，超时本身仍表示未知。控制种子 42、43 尚有规划失败，Easy20 和新远端验证结果见 `arena-acceptance-status.md`。Medium、Hard 和大规模 self-play 继续阻塞。PR #24 保持 Draft，DO NOT MERGE。

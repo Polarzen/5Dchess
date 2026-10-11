@@ -1,125 +1,208 @@
 # Arena acceptance status
 
-This document records the acceptance gate for `feat/local-ai-training-v2` /
-PR #24. The stable implementation head for the evidence below is
-`b84c9cee494a1ab21c34c4e0fc289cf376b05afd` (before this documentation update).
+This document is the durable status for the Planner reliability work around
+PR #24. The current baseline is `70a5f495`; durable baseline run
+`34745200932` remains the acceptance reference.
 
 ## Decision
 
-The engineering validations pass, but the Arena acceptance gate is **BLOCKED**.
-The fixed-seed Planner Regression still has an unresolved seed 53 failure.
-Medium/Hard Arena and larger self-play remain blocked.
+The local fixed-seed gate now **PASSES** for seeds 51, 53, and 55 under the
+unchanged production budget. Wider Arena acceptance remains **PENDING**:
+Easy20 is running, and control seeds 42/43 retain planning failures.
+Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
+and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
 
-## Root cause and planner fixes
+## 2026-10-11: exact required-board threat certificate
 
-The original planner defect was a move-depth cutoff treated as global state:
-when one DFS branch reached its depth bound, later sibling branches could be
-skipped. Commit `1fab473e` makes the cutoff branch-local; the regression test
-also proves that a later sibling can remain a canonical, safe complete Action
-and that the source engine is not mutated.
+The `8d2ffb23` seed 53 failure was reproduced locally with the exact remote
+state signature, at white Action 40 / ply 43 / six timelines. This state is
+now retained as `tests/fixtures/seed53_uncapturable_threat_state.json.gz`.
+It has four required boards and 357 legal root moves. Every one of the 108
+current legal moves advancing L0 leaves a direct royal threat. That finite
+observation motivated a stronger proof; it is not itself the terminal oracle.
 
-The remaining reliability problem is different: a deep/root subtree can spend
-the bounded state or wall budget before a later shallow completion is visited.
-This is search-order starvation, not evidence that canonical legality or royal
-safety can be bypassed.
+`src/engine/action_proof.py` proves only a restricted, unavoidable threat:
 
-Commit `c5b3db5` productionizes a deliberately narrow hybrid path. Only the
-exact budget `(max_seconds=5.0, max_states=1024, max_actions=24,
-max_move_depth=32)` gets a depth-1, 1-second probe followed by a depth-32
-fallback. Both phases share one prepared root, global tracker/deadline,
-state/action counters, failed-state cache, and exact `MoveSpec` candidate-path
-deduplication. All non-envelope budgets retain ordinary single-phase DFS.
+1. No future branch by the acting player can be active, and no existing
+   opponent timeline can become newly active. The required board must therefore
+   advance before submission; it cannot be deferred by rewinding The Present.
+2. Its virtual successor contains an enemy attacker whose target King and
+   entire attack path already exist on opponent-phase boards. These boards are
+   immutable during the current Action; virtual-only King/path boards are
+   explicitly rejected as evidence.
+3. No piece on any currently movable board, including optional/inactive boards,
+   can geometrically capture that attacker. Geometry deliberately ignores
+   occupancy and local safety, so it overapproximates possible legal captures.
+   Pawn attackers are excluded to avoid an en-passant exception.
+4. All successors created during this Action have the opponent's side to move,
+   including new branches. No new acting-color source can arise later; existing
+   capture sources only disappear. The attacker and its fixed attack therefore
+   survive every possible completion.
 
-Canonical ActionRules, MoveValidator, RoyalRules, replay/stale checks,
-transactional plan application, and Arena recovery/adjudication/accounting were
-not changed by this reliability work. Temporary diagnostic workflows were
-removed at `b84c9ce`; the durable Arena and planner-regression workflows remain
-the validation surfaces.
+This independent certificate is checked at the search root, inside existing
+deadlines and state accounting. Missing evidence or interruption returns to
+ordinary bounded search; timeout still means unknown. No legality, royal-safety,
+Arena scoring, recovery, or production-budget rule was relaxed. The planner
+uses it only for the existing exact 5/1024/24/32 envelope; canonical terminal
+search also uses the same proof.
 
-## Evidence for the depth and starvation behavior
+The Stage 1 model is unchanged, SHA-256
+`de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55`.
+Local seed 53 now ends after 40 Actions as a proven Black win, with zero
+planning failures/recoveries, in 8.547 seconds. Seeds 51 and 55 also have zero
+planning failures/recoveries. Controls 42 and 43 have one failure each, with
+one and zero recoveries respectively. All five have zero illegal/stale/
+unexpected failures and consistent actor-specific accounting.
 
-The historical shallow-depth matrix is a diagnostic fixture, not a current
-Arena result:
+Validation: full local suite 472 passed / 2 skipped, followed by the added
+Black-symmetry regression passing. Coverage includes exhaustive canonical
+search agreement in small White/Black positions, a real capture escape, a real
+active-branch escape, optional capture sources, mutable virtual paths/Kings,
+allocation/activity preconditions, and interrupted proof handling. Compileall
+and browser/invite checks passed. The original GitHub checkpoint artifact from
+run `34028226472` has expired; these fixed-seed results use its locally retained,
+hash-verified model and are not a new remote workflow PASS.
 
-- seed 53 produced no candidate at move depths 2 through 8;
-- seed 55 produced a length-2 candidate at depth 2;
-- later depth-1 control runs found canonical length-1 witnesses.
+The earlier branch-local depth-cutoff fix remains valid historical context: a
+cutoff in one DFS branch must not suppress later siblings. The current failure
+class is different. A large required-board subtree can consume the bounded
+search before a later complete Action is visited. The production envelope is
+unchanged at 5 seconds, 1024 states, 24 Actions, and move depth 32, with the
+existing canonical legality, royal-safety, cache, hybrid, and transactional
+application rules.
 
-A deterministic scheduling experiment showed ordinary deep-first DFS consuming
-its bounded search before a later two-move witness, while a shallow probe could
-preserve an already found shallow witness for fallback. This demonstrates the
-starvation mechanism and the value of candidate preservation; it does not prove
-that every deep subtree can be solved within the unchanged production envelope.
+## Durable baseline
 
-The correctness evidence is narrower and positive. The branch-local cutoff
-test proves that one cutoff does not poison siblings. Hybrid tests cover local
-probe interruption, global-deadline precedence, cumulative budgets, cutoff
-cache exclusion, exact path deduplication including promotion, and canonical
-replay/source immutability. The production search still discovers and applies
-only canonical complete Actions through the existing safety rails.
+The five-seed baseline reported the following aggregate results. `F` is a
+planning failure and `R` is a Planner recovery; illegal, stale, and unexpected
+failures were zero for every seed.
 
-The following alternatives were rejected or remain no-go options:
+| Seed | Actor | F | R |
+| ---: | :--- | ---: | ---: |
+| 42 | white | 1 | 0 |
+| 43 | black | 1 | 0 |
+| 51 | black | 0 | 0 |
+| 53 | black | 1 | 3 |
+| 55 | black | 0 | 0 |
 
-- larger proof budgets of 8192 states / 30 seconds and 16384 states / 45
-  seconds did not resolve seeds 51, 53, and 55;
-- moving failed-state lookup before completion checks, prioritizing optional
-  boards ahead of required boards, or pruning every royal-unsafe state after
-  progress did not pass the correctness gate;
-- global caching of depth-cutoff or interrupted states is unsound because
-  those states are unresolved;
-- exposing geometric iterative-deepening or diagnostic public APIs would
-  change ordinary budget behavior and was not productionized.
+For seed 53, the actor breakdown is baseline F1/R2 and neural F0/R1. The
+published remote final failure is white, action 88 at ply 131, with 20
+timelines, 183 explored states, and 5.1229 seconds. A separate local final
+failure is white, action 86 at ply 129, with 19 timelines, one required board,
+two movable boards, and 169 root moves. These are different captures and must
+not be combined.
 
-## Before/after status
+## Seed 53 witness and failure evidence
 
-The historical 20-game Easy run `34092867501` reported 7 wins, 2 draws, and 11
-losses with 11 planning failures (5 neural, 6 Easy baseline), while illegal,
-stale, and unexpected failures were zero. That run predates the current
-branch-local and exact-envelope reliability work and is retained only as a
-baseline; it is not a current PASS claim.
+The durable large-required fixture is action 77 at ply 99: black to move, 14
+required boards, 14 movable boards, zero optional boards, and 1,639 root legal
+moves. The later action history contains an actual submitted 11-move witness
+for this state. Its canonical replay submitted successfully, changed the
+turn, and left the source signature unchanged. This proves that the archived
+path is legal and replayable; it does not prove that the unchanged production
+five-second search discovers it in time.
 
-Current local validation of the stable head passed the full suite with 448
-passed and 2 skipped tests. Current-head CI run `34380462968` succeeded, and
-training CI runs `34380462975` and `34380465712` succeeded.
+The large-required regression exposed the baseline `time_budget` failure; the
+current candidate repairs that case, while the retained historical
+two-required regression remains passing. The durable fixed-seed gate for
+`8d2ffb23` **FAILED** with seed 53 unresolved.
 
-## Fixed-seed Planner Regression
+## Production admission boundary and validation delta
 
-Planner Regression run `34380464000` failed its durable gate with unresolved
-seeds `[53]`; seeds 51 and 55 resolved. In CI, seed 53 still had one planning
-failure and two planner recoveries. This is an explicit unresolved failure,
-not a PASS.
+MRV B is now admitted only when `len(required) > 2` and the budget is exactly
+`max_seconds=5.0`, `max_states=1024`, `max_actions=24`, and
+`max_move_depth=32`. Other budgets retain the established ordering. An
+unrestricted B implementation exhausted the existing 32-required regression
+at 64 states with a 64-state, one-Action, depth-64, no-wall budget. The
+restriction restores that compatibility behavior; it does not establish a
+universal MRV improvement. The boundary was approved by expert review.
 
-The current-head local capture was repeated twice with seed 53, neural Black
-versus Easy, one game, Stage 1 `best`, and the exact 5.0/1024/24/32 budget.
-Both local runs captured the same unresolved Black planner state at ply 99:
+The measured B/E benefit therefore applies only to the exact production
+envelope. The current candidate is committed and pushed as `8d2ffb23`.
+Focused local validation reports 45 passed, including the complex 32-required
+case, the large-required fixture, and each-field budget dispatch checks. The
+latest local full run reports 460 passed, 2 skipped, and one existing telemetry
+warning in 34.38 seconds; the prior 454 passed, 2 skipped, and 1 failed
+snapshot is historical and has been repaired. The AI subset reports 22 passed
+and the localization subset reports 2 passed. Compileall and the three Node
+browser/invite syntax gates also passed.
 
-- zero candidates and `time_budget` termination;
-- 16 timelines and 14 required/movable boards;
-- 0 optional boards and 1,639 root legal moves;
-- archive restoration and a second production search reproduced the zero-
-  candidate result with an unchanged engine signature.
+Remote results for `8d2ffb23`, rechecked on 2026-10-11:
 
-The local Arena aggregate was one planning failure and three recoveries. This
-differs from the CI artifact's one failure/two recoveries and is recorded as
-local-versus-CI variance, not as a successful reproduction. The requested
-Easy20 acceptance run was not started because the durable fixed-seed gate
-remained failed. The disposable local capture files were removed after these
-facts and restoration checks were recorded.
+- Planner Regression [34803520789](https://github.com/Polarzen/5Dchess/actions/runs/34803520789): **FAIL**.
+- CI [34803524555](https://github.com/Polarzen/5Dchess/actions/runs/34803524555): **PASS**.
+- Training CI [34803527738](https://github.com/Polarzen/5Dchess/actions/runs/34803527738): **PASS**.
 
-## Next production gate
+The candidate artifact reports zero planning failures for seeds 51 and 55.
+Seed 53 still has one baseline (white) planning failure and zero recoveries:
+action 40, ply 43, six timelines, 445 explored states, zero candidates, and
+`time_budget` after 5.1083 seconds. Its state-signature SHA-256 is
+`e74d20219af8ad5006d2981156b116f6c34e20336f3436a80690d8edf5537235`.
+This is a different state from both older seed 53 captures described above.
+Seeds 42 and 43 also retain one planning failure each; their recovery counts
+are one and zero respectively. Illegal, stale, and unexpected failures remain
+zero. Easy20 has not started.
 
-Do not advance to Medium/Hard Arena or scale beyond the Stage 1 checkpoint until
-the fixed-seed gate is resolved. The next planner change must:
+## Cost and ordering evidence
 
-- preserve canonical complete-Action semantics and all safety rails;
-- include a focused regression for the exact state class it optimizes;
-- reduce unresolved failures for the published fixed seeds without relaxing
-  the 5.0-second / 1024-state production envelope;
-- retain zero illegal, stale, and unexpected failures plus actor-specific
-  recovery accounting; and
-- pass normal CI, training CI, and the fixed-seed Planner Regression.
+Profile timings below are instrumented samples. Function times are inclusive,
+so overlapping costs must not be added. They are separate from minimum
+telemetry such as first-witness timing and from the charged search counters.
+Counts from different instrumentation runs are not merged into before/after
+comparisons.
 
-## PR policy
+| Capture | Royal safety | Clone | State key | Legal generation | First fallback root |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Many-required | 3.091 s | 1.282 s | 0.236 s | 0.250 s | 68 states / 3.985 s |
+| Optional final failure | 1.596 s | 2.341 s | 0.705 s | 0.094 s | unresolved under A/B/E |
 
-PR #24 remains experimental and must stay Draft and unmerged. Do not mutate
-`main`, enable auto-merge, or mark the PR Ready for Review during this stage.
+The three-round structural matrix used the unchanged 5/1024/24/32 envelope:
+
+| Variant | Result | First observation | Full observation |
+| --- | --- | --- | --- |
+| A original | 0 candidates | 70–71 states | 5.047–5.063 s |
+| B positive-count required-board MRV | 24 candidates, depth 8 | 9 states / 2.015–2.078 s | 32 states / 3.157–3.203 s |
+| C merged required progress | 0 candidates | 77–80 states | 5.047–5.063 s |
+| D root-only structural key | 0 candidates | 67–68 states | 5.046–5.063 s |
+| E recursive structural key | 24 candidates, depth 8 | 9 states / 1.984–2.000 s | 32 states / 3.125–3.171 s |
+
+Historical controls constrain the choice. Seed 51 produced zero candidates for
+A/B/E at 118/118/119 states. Seed 55 produced 20 candidates for A, 24 for B,
+and zero for E, so E is rejected despite its slightly shorter current timing.
+B is the provisional data-supported direction because it is the simpler
+successful required-board MRV variant; it is not yet an acceptance result.
+
+Separate probe accounting reported the following charged counts:
+
+| Probe schedule | Candidates | Charged count |
+| --- | ---: | ---: |
+| Eager | 0 | 343 |
+| Lazy | 24 | 146 |
+| Per-board | 24 | 158 |
+| Priority-class | 0 | 370 |
+
+The charged counter is not a pure expanded-state count, and none of these
+probe schedules is a newly qualified production probe. No hidden probe budget
+or changed safety/cache semantics is admitted.
+
+## Remaining gate
+
+The historical durable gate failed at `8d2ffb23`; the current local fixed-seed
+gate passes as recorded above. The admitted MRV path must prepare required
+boards only where the state class needs it, use
+positive count with zero-outgoing boards last, reuse local legal lists, keep
+optional handling lazy, and avoid inserting an interrupted preparation into
+the failed state cache. It must retain canonical Move generation, safety
+checks, and the 5/1024/24/32 limits without a seed-specific or state-specific
+heuristic.
+
+The next acceptance result is Easy20 using the same Stage 1 checkpoint and
+explicit 5/1024/24/32 limits. Fresh remote CI and training CI are also required.
+Remote fixed-seed execution additionally needs restoration of the expired
+checkpoint artifact; local results must not be presented as a remote PASS.
+Medium/Hard and large self-play stay blocked until wider Arena reliability is
+established, including the remaining control failures.
+
+Temporary profiling and trace files are diagnostic only. Root may remove them
+after preserving the compact evidence above. This document deliberately makes
+no final PASS or completion claim.
