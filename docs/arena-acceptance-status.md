@@ -4,7 +4,38 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: bounded minimax probe and fixed-successor checks
+## Current follow-up: skip forced multi-Move prefixes in the short probe
+
+Implementation `51921ee2` passes 562 tests (2 skipped), all five fixed seeds,
+Easy20 (W16 D3 L1, 192.688 seconds) and Medium20 (W0 D0 L20, 93.422 seconds),
+with zero planning failures, Action recoveries and illegal/stale/unexpected
+errors. Neither completed Arena tier invokes secondary search. Both
+[CI](https://github.com/Polarzen/5Dchess/actions/runs/38137214339) and
+[Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38137216744) pass.
+
+Its Hard diagnostic reaches a new baseline failure at game 16 / Action 118.
+Primary and secondary searches are inconclusive there. The run is stopped
+while starting game 18, after game 17 completes, without a 20-game aggregate.
+This is not a Hard acceptance pass. The captured eight-required-board position
+has a legal one-Move rewind; the one-second probe has insufficient margin
+because it also clones non-branching prefixes which cannot finish in one Move.
+
+The follow-up skips such prefixes only during minimax's one-Move probe. A
+non-branching Move can advance only its source and destination and cannot
+change timeline activity. If another required board remains, the path needs
+another Move. Recording a depth cutoff preserves that path for the deep phase
+and prevents incorrect failed-state memoization. Branches and optional arrivals
+which can complete the required-board progress remain eligible. Other planner
+strategies and all global budgets are unchanged. The explicit probe also
+respects a configured move-depth limit of zero.
+
+The new captured state yields 24 canonical candidates in 0.781 seconds.
+Focused validation passes 60 tests, including deep-phase preservation and a
+one-Move arrival from an optional board. The final full suite passes 566 tests,
+with 2 skipped and one existing telemetry warning, in 271.50 seconds. Fresh
+fixed-seed and Arena validation remain pending on this source.
+
+## Earlier follow-up: bounded minimax probe and fixed-successor checks
 
 Implementation `46140100` passes 546 tests (2 skipped), all five fixed seeds
 51/53/55/42/43, Easy20 (W16 D3 L1) and Medium20 (W0 D0 L20), with zero

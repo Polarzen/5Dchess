@@ -547,3 +547,24 @@ def test_successor_filter_checks_the_nonbranching_arrival_board():
     assert child.execute_action_move(quiet)
     assert prove_direct_threat(child, lambda: False) is not None
     assert engine.execute_action_move(capture) and engine.can_submit_action()
+
+
+def test_one_move_probe_keeps_optional_arrival_to_only_required_board():
+    engine = _immobile_engine()
+    manager = engine.timeline_manager
+    manager.timelines[0].positions[0] = _position(0, 0, [])
+    manager.timelines[1].positions[0] = _position(1, 0, [])
+    manager.timelines[2] = Timeline(2, owner=ChessColor.WHITE,
+        positions={0: _position(2, 0, [(3, 3, 'R'), (7, 7, 'K'), (7, 0, 'k')])})
+    manager._next_positive_id = 3
+    before = engine_state_signature(engine)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET, strategy='probe_then_depth_first')
+    result = planner.search(engine)
+    assert result.candidates and planner.search_telemetry[0]['unique_candidates_delta'] > 0
+    first = result.candidates[0]
+    assert len(first) == 1 and first[0].source.timeline == 2
+    assert first[0].destination.timeline == 0
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, first, before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before

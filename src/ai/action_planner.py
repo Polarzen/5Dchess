@@ -725,6 +725,10 @@ class ActionPlanner:
         probe_candidates_before = len(candidates)
         probe_cache_hits_before = tracker.failed_state_cache_hits
         probe_elapsed_start = time.monotonic() - tracker.started_at
+        probe_depth_limit = (
+            1 if self.budget.max_move_depth is None
+            else min(1, self.budget.max_move_depth)
+        )
         probe_deadline = tracker.started_at + 1.0
         tracker.phase_interrupted = False
         self._in_probe = True
@@ -735,7 +739,7 @@ class ActionPlanner:
             tracker,
             candidates,
             failed_states,
-            depth_limit=1,
+            depth_limit=probe_depth_limit,
             candidate_keys=candidate_keys,
             local_deadline=probe_deadline,
             cooperative_checks=True,
@@ -756,7 +760,7 @@ class ActionPlanner:
         self._record_search_phase(
             tracker=tracker,
             phase="probe",
-            depth_limit=1,
+            depth_limit=probe_depth_limit,
             elapsed_start=probe_elapsed_start,
             elapsed_end=probe_elapsed_end,
             local_slice=1.0,
@@ -1074,6 +1078,24 @@ class ActionPlanner:
             )
             if fixed_attackers is None:
                 return found_completion
+
+        def skip_probe_move(move):
+            if move_exposes_fixed_attacker(move, fixed_attackers):
+                return True
+            if (
+                self._strategy == "probe_then_depth_first" and depth_limit == 1
+                and not move.is_branching
+                and not required.issubset({move.source.board, move.destination.board})
+            ):
+                # A non-branching Move advances at most its source and target;
+                # it cannot change timeline activity or rewind Present. This
+                # path needs another Move, so leave it to the deep phase. Keep
+                # cutoff evidence to trigger that phase and forbid a failed-
+                # state cache entry for this deliberately incomplete probe.
+                tracker.depth_cutoffs += 1
+                return True
+            return False
+
         move_sort_key = lambda move: _required_move_sort_key(move, required)
         defense_order = None
         prioritized_specs = set()
@@ -1122,7 +1144,7 @@ class ActionPlanner:
                 for move in rewinds:
                     if tracker.check(depth, depth_limit, local_deadline):
                         return found_completion
-                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                    if skip_probe_move(move):
                         continue
                     child = state.clone_for_simulation()
                     spec = MoveSpec.from_move(move)
@@ -1185,7 +1207,7 @@ class ActionPlanner:
                     for move in moves:
                         if tracker.check(depth, depth_limit, local_deadline):
                             return found_completion
-                        if move_exposes_fixed_attacker(move, fixed_attackers):
+                        if skip_probe_move(move):
                             continue
                         child = state.clone_for_simulation()
                         if not child.execute_action_move(move):
@@ -1234,7 +1256,7 @@ class ActionPlanner:
                             return found_completion
                         if MoveSpec.from_move(move) in prioritized_specs:
                             continue
-                        if move_exposes_fixed_attacker(move, fixed_attackers):
+                        if skip_probe_move(move):
                             continue
                         child = state.clone_for_simulation()
                         if not child.execute_action_move(move):
@@ -1276,7 +1298,7 @@ class ActionPlanner:
                 for move in arrivals:
                     if tracker.check(depth, depth_limit, local_deadline):
                         return found_completion
-                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                    if skip_probe_move(move):
                         continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
@@ -1343,7 +1365,7 @@ class ActionPlanner:
                 child = None
                 direct_completion = False
                 if _required_board_progress(move, required) == 2:
-                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                    if skip_probe_move(move):
                         continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
@@ -1384,7 +1406,7 @@ class ActionPlanner:
                 if tracker.check(depth, depth_limit, local_deadline):
                     return found_completion
                 if child is None:
-                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                    if skip_probe_move(move):
                         continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
@@ -1450,7 +1472,7 @@ class ActionPlanner:
                 for move in legal_moves:
                     if tracker.check(depth, depth_limit, local_deadline):
                         return found_completion
-                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                    if skip_probe_move(move):
                         continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
@@ -1510,9 +1532,9 @@ class ActionPlanner:
                     for move in legal_moves
                     if move.destination.board not in required
                 ]
-            if fixed_attackers:
+            if fixed_attackers or (self._strategy == "probe_then_depth_first" and depth_limit == 1):
                 legal_moves = (move for move in legal_moves
-                               if not move_exposes_fixed_attacker(move, fixed_attackers))
+                               if not skip_probe_move(move))
             ordered_moves = (
                 _safe_king_moves_first(state, legal_moves, tracker, local_deadline)
                 if self._defense_order_active and len(required) > 2
@@ -1522,7 +1544,7 @@ class ActionPlanner:
                 if tracker.check(depth, depth_limit, local_deadline):
                     return found_completion
                 if child is None:
-                    if move_exposes_fixed_attacker(move, fixed_attackers):
+                    if skip_probe_move(move):
                         continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):

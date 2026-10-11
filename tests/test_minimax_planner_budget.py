@@ -96,6 +96,7 @@ def test_absolute_deadline_includes_clone_preparation(monkeypatch, seconds, stra
 @pytest.mark.parametrize('fixture', [
     'hard20_four_required_state', 'hard20_six_required_state',
     'hard20_rewind_four_state', 'hard20_rewind_three_state',
+    'hard20_eight_required_rewind_state',
 ])
 def test_hard_captured_root_returns_canonical_action_with_primary_budget(fixture):
     engine = _captured(fixture)
@@ -114,6 +115,18 @@ def test_hard_captured_root_returns_canonical_action_with_primary_budget(fixture
 def test_unknown_strategy_is_rejected():
     with pytest.raises(ValueError, match='strategy'):
         ActionPlanner(strategy='unknown')
+
+
+def test_explicit_probe_strategy_respects_zero_move_depth():
+    engine = FiveDEngine()
+    before = engine_state_signature(engine)
+    planner = ActionPlanner(ActionSearchBudget(1024, 24, 0, 5.0),
+                            strategy='probe_then_depth_first')
+    result = planner.search(engine)
+    assert result.candidates == () and result.termination_reason == 'move_depth_budget'
+    assert result.explored_states == 0
+    assert all(phase['depth_limit'] == 0 for phase in planner.search_telemetry)
+    assert engine_state_signature(engine) == before
 
 
 @pytest.mark.parametrize('budget', [ActionSearchBudget(512, 16, 32, 1.0),
@@ -148,6 +161,30 @@ def test_hard_fixed_successors_exhaust_without_recovery_and_reset():
     result = planner.search(fresh)
     assert result.candidates
     assert not planner._in_probe and not planner._defense_order_active
+
+
+def test_single_move_probe_leaves_incomplete_moves_for_the_deep_phase(monkeypatch):
+    engine = _captured('hard20_six_required_state')
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET, strategy='probe_then_depth_first')
+    original = FiveDEngine.execute_action_move
+    deep_incomplete_moves = []
+
+    def observe(self, move, *args, **kwargs):
+        result = original(self, move, *args, **kwargs)
+        if result and not move.is_branching:
+            remaining = self.get_required_action_boards()
+            if planner._in_probe:
+                assert not remaining
+            elif remaining:
+                deep_incomplete_moves.append(move)
+        return result
+
+    monkeypatch.setattr(FiveDEngine, 'execute_action_move', observe)
+    result = planner.search(engine)
+    assert result.candidates and deep_incomplete_moves
+    probe, fallback = planner.search_telemetry
+    assert probe['depth_cutoffs_delta'] > 0
+    assert fallback['unique_candidates_delta'] > 0
 
 
 @pytest.mark.parametrize('seconds', [5.0, 4.999])
