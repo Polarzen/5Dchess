@@ -6,14 +6,36 @@ PR #24. The current baseline is `70a5f495`; durable baseline run
 
 ## Decision
 
-The local fixed-seed gate now **PASSES** for seeds 51, 53, and 55 under the
-unchanged production budget. Wider Arena acceptance remains **BLOCKED**:
-The latest completed Easy20 (`50ebcd3b`) has two planning failures (one per
-actor), one neural recovery, and zero illegal/stale/unexpected failures.
-Control 43 now passes without recovery; control 42 remains at one failure
-and one recovery. Its results are explicitly tied to that implementation.
-Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
-and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
+The requested **local fixed-seed gate and Easy20 zero-failure gate PASS** on
+`c573320e`, using the original hash-verified Stage 1 model and unchanged
+5-second / 1024-state / 24-candidate / depth-32 planner budget.
+
+- Seeds 51/53/55: zero planning failures, zero recoveries, and zero
+  illegal/stale/unexpected failures.
+- Easy20: 17 wins / 3 draws / 0 losses; zero planning/illegal/stale/unexpected
+  failures; one neural recovery and one proven terminal adjudication, in
+  590.610 seconds. Colors alternate, seed is 42, maximum 120 Actions per game.
+- Full local suite: 507 passed, 2 skipped, one existing telemetry warning.
+  [CI 38123333450](https://github.com/Polarzen/5Dchess/actions/runs/38123333450)
+  and [training CI 38123835529](https://github.com/Polarzen/5Dchess/actions/runs/38123835529)
+  both passed on the implementation commit.
+
+This is **not** a strict no-recovery or merge-readiness PASS. Easy20 game 1 /
+Action 76 needed the existing recovery path, which has its own larger budget;
+the primary planner did not complete every Arena Action within five seconds.
+The W/D/L describes the evaluated system including that recovery. Control 42
+also has an unresolved F1/R1 result on `50ebcd3b`; control 43 passed there.
+These extra controls were not rerun on `c573320e` and are not relabeled as such.
+
+The original remote checkpoint artifact expired, so the local Planner/Arena
+results are not a remote workflow PASS. Workflow-file changes remain only in
+the preserved local follow-up patch because the current credential lacks
+`workflow` scope. PR #24 and stacked PR #25 remain Draft and unmerged;
+`main` and `feat/local-ai-training-v2` are unchanged. Medium/Hard and larger
+self-play remain deferred until wider reliability work is complete.
+
+Final compact evidence is `followup_v6` in `planner-validation-20261011.json`.
+The sections below preserve earlier implementation-specific evidence.
 
 ## Pinned-capture rewind follow-up
 
@@ -33,7 +55,8 @@ This remains ordering only; fallback and terminal proof rules are unchanged.
 Both captured states now produce complete one-Move candidates with canonical
 replay. Eleven focused checks passed. Full suite: 507 passed, 2 skipped, one
 existing telemetry warning. Fixed seeds 51/53/55 passed with zero planning
-failures/recoveries in 30.234 / 9.281 / 12.515 seconds; fresh Easy20 is pending.
+failures/recoveries in 30.234 / 9.281 / 12.515 seconds. Its completed Easy20
+result and CI links are recorded in the Decision above.
 The extra controls are retained at their explicitly identified `50ebcd3b`
 results and are not claimed as new runs of this follow-up.
 
@@ -42,7 +65,7 @@ these counted failures. That experimental copy implementation is not included.
 
 ## King-escape and royal-scan follow-up
 
-The latest Easy20 completed in 396.672 seconds with 16 wins / 3 draws / 1 loss,
+Easy20 on `a3ef5109` completed in 396.672 seconds with 16 wins / 3 draws / 1 loss,
 one neural failure at game 1 / Action 60, zero recoveries, and one terminal
 adjudication. The earlier game 12 failure did not recur. Implementation
 `a3ef5109` passed [CI 38121032672](https://github.com/Polarzen/5Dchess/actions/runs/38121032672)
@@ -392,13 +415,14 @@ the failed state cache. It must retain canonical Move generation, safety
 checks, and the 5/1024/24/32 limits without a seed-specific or state-specific
 heuristic.
 
-The next work is to resolve the remaining Easy20 planning failures under the
-same Stage 1 checkpoint and 5/1024/24/32 limits, then repeat affected validation.
+The requested local fixed-seed and Easy20 zero-failure gates are complete.
+The next reliability work is to eliminate the remaining recovery dependency
+and resolve control 42 under the same model and 5/1024/24/32 limits.
 Remote fixed-seed execution additionally needs restoration of the expired
 checkpoint artifact; local results must not be presented as a remote PASS.
 Medium/Hard and large self-play stay blocked until wider Arena reliability is
 established, including the remaining control failures.
 
 Temporary profiling and trace files are diagnostic only. Root may remove them
-after preserving the compact evidence above. This document deliberately makes
-no final PASS or completion claim.
+after preserving compact evidence. The bounded local acceptance phase is
+complete; wider reliability, remote reproduction, and merge readiness remain open.

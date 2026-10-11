@@ -570,5 +570,120 @@
     "remote_training_ci": 38122108143,
     "remote_training_ci_conclusion": "success",
     "acceptance": "blocked: two Easy20 planning failures; control42 remains open"
+  },
+  "followup_v6": {
+    "source_commit": "c573320efdd12f2f9fa9047dfc7de079fe3413e9",
+    "checkpoint_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+    "planner_budget": {
+      "max_seconds": 5,
+      "max_states": 1024,
+      "max_actions": 24,
+      "max_move_depth": 32
+    },
+    "fixed_seeds": [
+      {
+        "seed": 51,
+        "seconds": 30.23399999999674,
+        "games": 1,
+        "wins": 0,
+        "draws": 1,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0
+      },
+      {
+        "seed": 53,
+        "seconds": 9.28100000001723,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0
+      },
+      {
+        "seed": 55,
+        "seconds": 12.51500000001397,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0
+      }
+    ],
+    "easy20": {
+      "games": 20,
+      "wins": 17,
+      "draws": 3,
+      "losses": 0,
+      "planning_failure_count": 0,
+      "neural_planning_failure_count": 0,
+      "baseline_planning_failure_count": 0,
+      "planner_recovery_count": 1,
+      "neural_planner_recovery_count": 1,
+      "baseline_planner_recovery_count": 0,
+      "illegal_action_count": 0,
+      "stale_failure_count": 0,
+      "unexpected_failure_count": 0,
+      "proven_terminal_adjudication_count": 1
+    },
+    "easy20_seconds": 590.61,
+    "easy20_configuration": {
+      "seed": 42,
+      "model_color": "alternate",
+      "max_actions_per_game": 120,
+      "device": "cpu"
+    },
+    "recovery": {
+      "game_id": 1,
+      "action_index": 76,
+      "actor": "neural"
+    },
+    "terminal_adjudication": {
+      "game_id": 3,
+      "action_index": 37
+    },
+    "local_suite": {
+      "passed": 507,
+      "skipped": 2,
+      "warnings": 1
+    },
+    "remote_ci": 38123333450,
+    "remote_ci_conclusion": "success",
+    "remote_training_ci": 38123835529,
+    "remote_training_ci_conclusion": "success",
+    "acceptance": "PASS: requested local fixed-seed gate and Easy20 zero-failure gate; not a strict no-recovery or merge-readiness PASS",
+    "remaining": [
+      "One Easy20 neural recovery used the pre-existing recovery path beyond the primary planner budget.",
+      "Control42 has an unresolved F1/R1 result on50ebcd3b; controls were not rerun onc573320e.",
+      "Remote original Stage1 artifact expired; no new remote Planner/Arena workflow PASS is claimed.",
+      "Workflow follow-up patch remains local because credential lacks workflow scope.",
+      "Keep PR24/25 Draft and unmerged; defer Medium/Hard and larger self-play until broader reliability work."
+    ]
   }
 }
