@@ -8,11 +8,37 @@ PR #24. The current baseline is `70a5f495`; durable baseline run
 
 The local fixed-seed gate now **PASSES** for seeds 51, 53, and 55 under the
 unchanged production budget. Wider Arena acceptance remains **BLOCKED**:
-The latest completed Easy20 (`a3ef5109`) has one neural planning failure,
-zero recoveries, and zero illegal/stale/unexpected failures. That version also
-has one failure each on controls 42/43 (and one recovery on 42).
+The latest completed Easy20 (`50ebcd3b`) has two planning failures (one per
+actor), one neural recovery, and zero illegal/stale/unexpected failures.
+Control 43 now passes without recovery; control 42 remains at one failure
+and one recovery. Its results are explicitly tied to that implementation.
 Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
 and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
+
+## Pinned-capture rewind follow-up
+
+Easy20 on `50ebcd3b` completed in 448.890 seconds: 15 wins / 3 draws / 2 losses,
+two planning failures (neural game 1 / Action 74; baseline game 7 / Action 49),
+one neural recovery (game 1 / Action 68), and one terminal adjudication.
+The implementation passed [CI 38122105669](https://github.com/Polarzen/5Dchess/actions/runs/38122105669)
+and [training CI 38122108143](https://github.com/Polarzen/5Dchess/actions/runs/38122108143).
+Full compact results are stored as `followup_v5`.
+
+Both counted failures have immutable royal targets and geometric captures that
+are canonically illegal. The rewind hint now checks actual legal captures,
+including pins and blocked paths. It lazily prepares historical branches from
+one source board at a time, optional sources first, so preparation of a large
+frontier cannot consume the entire one-second probe before trying a move.
+This remains ordering only; fallback and terminal proof rules are unchanged.
+Both captured states now produce complete one-Move candidates with canonical
+replay. Eleven focused checks passed. Full suite: 507 passed, 2 skipped, one
+existing telemetry warning. Fixed seeds 51/53/55 passed with zero planning
+failures/recoveries in 30.234 / 9.281 / 12.515 seconds; fresh Easy20 is pending.
+The extra controls are retained at their explicitly identified `50ebcd3b`
+results and are not claimed as new runs of this follow-up.
+
+A diagnostic faster virtual-pass copy reduced scan time but did not resolve
+these counted failures. That experimental copy implementation is not included.
 
 ## King-escape and royal-scan follow-up
 
@@ -38,7 +64,9 @@ compare full enumeration with the previous unfiltered predicate on both colors
 and real/virtual boards. No budget, legality, scoring, or recovery is relaxed.
 The full suite passes: 505 tests, 2 skipped, one existing telemetry warning.
 Fixed seeds 51/53/55 pass with zero planning failures/recoveries in
-33.469 / 9.891 / 11.750 seconds. Controls 42/43 and fresh Easy20 are pending.
+33.469 / 9.891 / 11.750 seconds. Control 43 passes (69.469 seconds); control
+42 has one baseline failure and one neural recovery (188.688 seconds).
+Its Easy20 outcome is recorded in the subsequent pinned-capture follow-up above.
 
 ## Active-branch rewind follow-up
 

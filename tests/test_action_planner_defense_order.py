@@ -3,6 +3,8 @@ import gzip
 import json
 from pathlib import Path
 
+import pytest
+
 import src.ai.action_planner as planning
 from src.ai.action_planner import (
     AIActionPlan, ActionPlanner, _PRODUCTION_HYBRID_BUDGET,
@@ -45,6 +47,19 @@ def test_active_rewind_with_one_required_board():
     child = engine.clone_for_simulation()
     apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
     assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('fixture', ['easy20_pinned_rewind_state', 'easy20_pinned_rewind_large_state'])
+def test_pinned_capture_does_not_hide_active_rewind(fixture):
+    engine = _captured(fixture)
+    before = engine_state_signature(engine)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates and len(result.candidates[0]) == 1
+    for candidate in result.candidates:
+        child = engine.clone_for_simulation()
+        apply_action_plan(child, AIActionPlan(engine.current_turn_color, candidate, before))
+        assert child.action_history[-1].submitted
     assert engine_state_signature(engine) == before
 
 

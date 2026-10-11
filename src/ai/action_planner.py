@@ -472,7 +472,7 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
             captures.add(Square5D(successors[threat.attacker.board], threat.attacker.x, threat.attacker.y))
         if threat.king.board in successors:
             kings.add(Square5D(successors[threat.king.board], threat.king.x, threat.king.y))
-        # If an immutable royal target cannot be defended by any geometric
+        # If an immutable royal target cannot be defended by any legal
         # capture, advancing the attacker's board is hopeless. An active past
         # branch may instead defer that board. This only prioritizes Moves;
         # canonical execution/submission still decides whether a rewind works.
@@ -496,9 +496,16 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
             position = state._resolve_position(source)
             if position is None:
                 return None
-            if any(RoyalRules._attack_geometry_matches(piece, Square5D(source, x, y), target)
-                   for x, y, piece in position.get_all_pieces(color)):
-                capturable = True
+            for x, y, piece in position.get_all_pieces(color):
+                if not RoyalRules._attack_geometry_matches(piece, Square5D(source, x, y), target):
+                    continue
+                moves = state.get_legal_moves_from_square(position, x, y)
+                if tracker.check_time(local_deadline):
+                    return _PREPARATION_INTERRUPTED
+                if any(move.destination == target for move in moves):
+                    capturable = True
+                    break
+            if capturable:
                 break
         prefer_rewinds = not capturable
     if tracker.check_time(local_deadline):
@@ -1011,34 +1018,37 @@ class ActionPlanner:
         # An unsuccessful rewind must not monopolize the fallback's DFS budget.
         if defense_order is not None and defense_order[2] and depth_limit == 1:
             present_time = min(board.legacy_time_point for board in required)
-            rewinds = []
-            for board in ordered_boards:
+            # Optional sources can rewind without advancing a threatened
+            # required board. Prepare one source at a time so large frontiers
+            # do not consume the whole probe before its first execution.
+            for board in sorted(ordered_boards, key=lambda source: source in required):
                 if tracker.check_time(local_deadline):
                     return found_completion
                 position = state._resolve_position(board)
-                if position is not None:
-                    rewinds.extend(
-                        move for move in state.get_legal_moves(position)
-                        if move.is_branching
-                        and move.destination.board.legacy_time_point + 1 < present_time
-                    )
+                if position is None:
+                    continue
+                rewinds = sorted(
+                    (move for move in state.get_legal_moves(position)
+                     if move.is_branching
+                     and move.destination.board.legacy_time_point + 1 < present_time),
+                    key=lambda move: (move.destination.board.legacy_time_point, _move_sort_key(move)),
+                )
                 if tracker.check_time(local_deadline):
                     return found_completion
-            rewinds.sort(key=lambda move: (move.destination.board.legacy_time_point, _move_sort_key(move)))
-            for move in rewinds:
-                if tracker.check(depth, depth_limit, local_deadline):
-                    return found_completion
-                child = state.clone_for_simulation()
-                spec = MoveSpec.from_move(move)
-                prioritized_specs.add(spec)
-                if not child.execute_action_move(move):
-                    continue
-                if self._dfs(
-                    child, path + (spec,), depth + 1, tracker, candidates, failed_states,
-                    depth_limit=depth_limit, candidate_keys=candidate_keys,
-                    local_deadline=local_deadline, cooperative_checks=cooperative_checks,
-                ):
-                    found_completion = True
+                for move in rewinds:
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    child = state.clone_for_simulation()
+                    spec = MoveSpec.from_move(move)
+                    prioritized_specs.add(spec)
+                    if not child.execute_action_move(move):
+                        continue
+                    if self._dfs(
+                        child, path + (spec,), depth + 1, tracker, candidates, failed_states,
+                        depth_limit=depth_limit, candidate_keys=candidate_keys,
+                        local_deadline=local_deadline, cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
 
         # With exactly two required Present boards, a complete Action can be a
         # single cross-timeline Move between them.  Rank legal Moves from both
