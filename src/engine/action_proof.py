@@ -157,6 +157,71 @@ def _branches_cannot_defer_required_boards(engine: "FiveDEngine") -> bool:
     return abs(next_lane) > TimelineRules.creator_counts(timelines)[color.opposite()] + 1
 
 
+def _last_active_branch_cannot_rewind(engine, required, interrupted) -> bool:
+    """Rule out the last possible active branch using canonical legal Moves.
+
+    Before the first branch, non-branching Moves only consume original sources
+    and add opponent-phase boards. If all sources are at/after Present, they
+    cannot create an earlier acting-phase destination or enable a new Move
+    between unchanged original boards. Thus the first branch that could defer
+    Present must already be legal now. Sources with a fixed successor attacker
+    cannot branch safely: departing never captures that attacker.
+
+    Admit exactly one remaining active allocation, with every opponent lane
+    already active. Once that allocation is spent, later actor branches stay
+    inactive, even if their copied history offers new destinations. This is
+    not a claim that an arbitrary currently absent rewind stays absent.
+    """
+    if interrupted():
+        return False
+    manager = engine.timeline_manager
+    timelines = manager.timelines
+    color = engine.current_turn_color
+    for lane, timeline in timelines.items():
+        owner = None if lane == 0 else (
+            ChessColor.WHITE if lane > 0 else ChessColor.BLACK
+        )
+        if TimelineRules._owner(timeline) != owner:
+            return False
+        if owner == color.opposite() and not TimelineRules.is_active_timeline(timeline, timelines):
+            return False
+    next_lane = manager._next_positive_id if color == ChessColor.WHITE else manager._next_negative_id
+    if (
+        (color == ChessColor.WHITE and next_lane <= max(0, *timelines))
+        or (color == ChessColor.BLACK and next_lane >= min(0, *timelines))
+        or abs(next_lane) != TimelineRules.creator_counts(timelines)[color.opposite()] + 1
+    ):
+        return False
+    present = min(board.legacy_time_point for board in required)
+    movable = ActionRules.movable_boards(engine._ensure_current_action(), timelines)
+    if any(board.legacy_time_point < present for board in movable):
+        return False
+    attackers = fixed_successor_attackers(engine, interrupted)
+    if attackers is None:
+        return False
+    targets = {
+        BoardCoord.from_legacy_time_point(lane, time, position.turn)
+        for lane, timeline in timelines.items()
+        for time, position in timeline.positions.items()
+        if position.turn == color and time + 1 < present
+    }
+    for board in movable:
+        if interrupted():
+            return False
+        if board in attackers:
+            continue
+        position = engine._resolve_position(board)
+        if position is None:
+            return False
+        targeted = getattr(engine, 'get_legal_moves_to_boards', None)
+        moves = targeted(position, targets) if targeted is not None else engine.get_legal_moves(position)
+        if interrupted() or any(
+            move.is_branching and move.destination.board in targets for move in moves
+        ):
+            return False
+    return not interrupted()
+
+
 def prove_required_board_immobile(
     engine: "FiveDEngine",
     interrupted: Callable[[], bool],
@@ -306,11 +371,12 @@ def prove_required_board_threat(
     if not required:
         return None
 
-    # At capacity no branches are possible. Otherwise future actor branches
-    # must remain outside existing lanes and inactive; existing opponent lanes
-    # must already be active so increasing actor count cannot rewind Present.
-    if not _branches_cannot_defer_required_boards(engine):
-        return None
+    # First try the cheap allocation-only guard. The more expensive last-active
+    # branch check is needed only after finding an otherwise fatal attacker.
+    branches_fixed = _branches_cannot_defer_required_boards(engine)
+
+    def cannot_defer():
+        return branches_fixed or _last_active_branch_cannot_rewind(engine, required, interrupted)
 
     required_successors = {board.next(): board for board in required}
     rules = RoyalRules(timelines)
@@ -338,7 +404,7 @@ def prove_required_board_threat(
                 continue
         previous = fixed_attackers.get(board)
         if previous is not None and previous.attacker != threat.attacker:
-            if interrupted():
+            if interrupted() or not cannot_defer():
                 return None
             return RequiredBoardThreatProof(board, previous, threat)
         fixed_attackers[board] = threat
@@ -367,6 +433,8 @@ def prove_required_board_threat(
                     break
             if capturable:
                 break
-        if not capturable and not interrupted():
-            return RequiredBoardThreatProof(board, threat)
+        if not capturable:
+            if not interrupted() and cannot_defer():
+                return RequiredBoardThreatProof(board, threat)
+            return None
     return None

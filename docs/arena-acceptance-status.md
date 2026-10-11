@@ -4,7 +4,30 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: preserve threatened King boards during arrivals
+## Current follow-up: certify an unavailable last active rewind
+
+Implementation `271b37be` passes 569 tests (2 skipped), all five fixed seeds,
+Easy20 (W16 D3 L1, 202.265 seconds) and Medium20 (W0 D0 L20, 94.141 seconds),
+with zero planning failures, Action recoveries or illegal/stale/unexpected
+errors. Both CI `38141939326` and Training CI `38141941492` pass. Hard is
+stopped during game 8 after a baseline White planning failure in game 6 at
+Action 112; its secondary search is unresolved. No full Hard20 result exists.
+
+Both required boards expose fixed royal attacks. The general activity guard
+previously declined because one more active branch could be allocated, but
+every legal early branch either exposes an irreversible attacker or is absent.
+The new certificate checks this last active allocation with canonical legal
+Moves, after checking fixed ownership/allocation and active opponent lanes.
+All original acting sources must be at or after Present. Non-branching Moves
+cannot create an earlier acting-phase destination before the first branch;
+after that branch all later actor allocations are inactive. Interruptions,
+multiple remaining active allocations and real rewind escapes decline proof.
+
+The captured failure is now proved terminal in approximately 0.13 seconds.
+Exhaustive small White/Black cases and an existing canonical rewind escape
+check the boundary. The full suite passes 577 tests, with 2 skipped and one existing telemetry warning, in 235.65 seconds. Fresh fixed/Arena acceptance is pending.
+
+## Earlier follow-up: preserve threatened King boards during arrivals
 
 Implementation `17d9d1fa` passes 566 tests (2 skipped) and both
 [CI](https://github.com/Polarzen/5Dchess/actions/runs/38140184768) and

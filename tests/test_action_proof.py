@@ -12,6 +12,7 @@ from src.ai.action_planner import (
 from src.data.archive import GameArchive
 from src.engine import ActionRules, ActionSearch, FiveDEngine, Position, Timeline
 from src.engine.action_proof import (
+    _last_active_branch_cannot_rewind,
     fixed_successor_attackers, move_exposes_fixed_attacker,
     prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
 )
@@ -334,14 +335,15 @@ def test_late_capture_generation_never_yields_certificate(monkeypatch):
     assert prove_required_board_threat(engine, lambda: expired) is None
 
 
-@pytest.mark.parametrize('mutation', ['active_branch', 'activate_opponent', 'allocation', 'owner'])
+@pytest.mark.parametrize('mutation', ['multiple_active_branches', 'activate_opponent', 'allocation', 'owner'])
 def test_activity_and_allocation_preconditions_fail_closed(mutation):
     engine = _engine()
     manager = engine.timeline_manager
-    if mutation == 'active_branch':
-        manager.timelines[-1] = Timeline(-1, owner=ChessColor.BLACK,
-            positions={1: _position(-1, 1, [(7, 7, 'K'), (7, 0, 'k')])})
-        manager._next_negative_id = -2
+    if mutation == 'multiple_active_branches':
+        for lane in (-1, -2):
+            manager.timelines[lane] = Timeline(lane, owner=ChessColor.BLACK,
+                positions={1: _position(lane, 1, [(7, 7, 'K'), (7, 0, 'k')])})
+        manager._next_negative_id = -3
     elif mutation == 'activate_opponent':
         manager.timelines[-3] = Timeline(-3, owner=ChessColor.BLACK,
             positions={1: _position(-3, 1, [(7, 7, 'K'), (7, 0, 'k')])})
@@ -568,3 +570,76 @@ def test_one_move_probe_keeps_optional_arrival_to_only_required_board():
     apply_action_plan(child, AIActionPlan(engine.current_turn_color, first, before))
     assert child.action_history[-1].submitted
     assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('color', list(ChessColor))
+def test_last_active_branch_certificate_matches_exhaustive_search(monkeypatch, color):
+    engine = _engine()
+    manager = engine.timeline_manager
+    if color == ChessColor.WHITE:
+        manager.timelines[-1] = Timeline(-1, owner=ChessColor.BLACK,
+            positions={1: _position(-1, 1, [(7, 7, 'K'), (7, 0, 'k')])})
+        manager._next_negative_id = -2
+    else:
+        manager.timelines = {
+            0: Timeline(0, positions={1: _position(0, 1, [(0, 0, 'R'), (7, 0, 'K'), (7, 7, 'k')])}),
+            -1: Timeline(-1, owner=ChessColor.BLACK,
+                positions={2: _position(-1, 2, [(0, 0, 'k'), (7, 0, 'K')])}),
+            1: Timeline(1, owner=ChessColor.WHITE,
+                positions={2: _position(1, 2, [(7, 7, 'k'), (7, 0, 'K')])}),
+        }
+        manager._next_positive_id = 2
+        manager._next_negative_id = -2
+        engine.current_turn_color = color
+    manager.refresh_activity()
+    engine.current_action = ActionRules.begin(color, manager.timelines)
+    before = engine_state_signature(engine)
+    assert prove_required_board_threat(engine, lambda: False) is not None
+    _disable_proofs(monkeypatch)
+    exhaustive = ActionSearch(max_states=None, max_depth=None, max_seconds=None).find_legal_action(engine)
+    assert not exhaustive.has_legal_action and not exhaustive.exhausted
+    assert engine_state_signature(engine) == before
+
+
+def test_captured_last_active_branch_is_proven_with_primary_budget():
+    engine = _captured_engine('hard20_last_active_branch_terminal_state')
+    before = engine_state_signature(engine)
+    assert prove_required_board_threat(engine, lambda: False) is not None
+    for strategy in ('auto', 'probe_then_depth_first'):
+        result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET, strategy=strategy).search(engine)
+        assert result.candidates == () and result.termination_reason is None
+        assert result.explored_states == 1
+    outcome = OutcomeRules.evaluate(engine)
+    assert outcome.kind == OutcomeKind.CHECKMATE and outcome.winner == ChessColor.BLACK
+    assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('case', ['more_active_slots', 'inactive_opponent', 'wrong_owner', 'earlier_source'])
+def test_last_active_branch_declines_unproved_activity(case):
+    engine = _captured_engine('hard20_last_active_branch_terminal_state')
+    manager = engine.timeline_manager
+    required = engine.get_required_action_boards()
+    if case == 'more_active_slots':
+        del manager.timelines[6]
+        manager._next_positive_id = 6
+    elif case == 'inactive_opponent':
+        manager.timelines[-8] = Timeline(-8, owner=ChessColor.BLACK,
+            positions={1: _position(-8, 1, [(7, 7, 'K'), (7, 0, 'k')])})
+        manager._next_negative_id = -9
+    elif case == 'wrong_owner':
+        manager.timelines[1].owner = ChessColor.BLACK
+    else:
+        manager.timelines[4].positions = {0: _position(4, 0, [(7, 7, 'K'), (7, 0, 'k')])}
+    assert not _last_active_branch_cannot_rewind(engine, required, lambda: False)
+
+
+def test_last_active_branch_interruption_during_generation_is_not_proof(monkeypatch):
+    engine = _captured_engine('hard20_last_active_branch_terminal_state')
+    expired = False
+    def delayed(*args):
+        nonlocal expired
+        expired = True
+        return []
+    monkeypatch.setattr(engine, 'get_legal_moves_to_boards', delayed)
+    assert prove_required_board_threat(engine, lambda: expired) is None
+    assert expired
