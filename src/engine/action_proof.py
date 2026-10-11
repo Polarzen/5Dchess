@@ -295,7 +295,11 @@ def prove_required_board_threat(
                     piece, Square5D(source_board, x, y), target,
                 ):
                     continue
-                moves = engine.get_legal_moves_from_square(position, x, y)
+                targeted = getattr(engine, 'get_legal_moves_from_square_to_boards', None)
+                moves = (
+                    targeted(position, x, y, {target.board}) if targeted is not None
+                    else engine.get_legal_moves_from_square(position, x, y)
+                )
                 if interrupted():
                     return None
                 if any(move.destination == target for move in moves):

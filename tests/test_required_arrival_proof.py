@@ -50,6 +50,11 @@ def test_targeted_generation_matches_full_canonical_subset(fixture):
         assert engine.get_legal_moves_to_boards(position, targets) == [
             move for move in legal if move.destination.board in targets]
         assert engine.get_legal_moves_to_boards(position, set()) == []
+        for x, y, _piece in position.get_all_pieces(engine.current_turn_color):
+            assert engine.get_legal_moves_from_square_to_boards(position, x, y, targets) == [
+                move for move in legal
+                if (move.source.x, move.source.y) == (x, y)
+                and move.destination.board in targets]
     assert engine_state_signature(engine) == before
 
 
@@ -83,8 +88,10 @@ def test_captured_forced_arrival_is_proven_terminal():
 
 @pytest.mark.parametrize('fixture', [
     'seed43_twenty_seven_required_state', 'seed43_twenty_eight_required_state',
+    'seed43_quiet_large_state', 'seed43_immobile_arrival_large_state',
+    'seed53_three_required_defense_state',
 ])
-def test_large_frontier_keeps_complete_candidates_in_primary_budget(fixture):
+def test_captured_frontier_keeps_complete_candidates_in_primary_budget(fixture):
     engine = _captured(fixture)
     before = engine_state_signature(engine)
     result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)

@@ -465,9 +465,8 @@ def _large_frontier_moves(state, position, required, key, tracker, local_deadlin
     yield from (move for move in remaining if MoveSpec.from_move(move) not in seen)
 
 
-# Keep the established MRV behavior for smaller frontiers. Lazy defense order
-# is qualified for larger Actions, with the 14-/19-/32-board regressions guarding
-# this boundary rather than assuming it improves every multiverse.
+# Quiet frontiers use lazy generation only at this size. Smaller frontiers
+# retain MRV unless a concrete required-board attacker needs defense first.
 _LARGE_DEFENSE_MIN_REQUIRED = 17
 
 
@@ -529,7 +528,11 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
             for x, y, piece in position.get_all_pieces(color):
                 if not RoyalRules._attack_geometry_matches(piece, Square5D(source, x, y), target):
                     continue
-                moves = state.get_legal_moves_from_square(position, x, y)
+                targeted = getattr(state, 'get_legal_moves_from_square_to_boards', None)
+                moves = (
+                    targeted(position, x, y, {target.board}) if targeted is not None
+                    else state.get_legal_moves_from_square(position, x, y)
+                )
                 if tracker.check_time(local_deadline):
                     return _PREPARATION_INTERRUPTED
                 if any(move.destination == target for move in moves):
@@ -548,7 +551,10 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
         if position is None:
             return None
         has_king[board] = position.find_king(state.current_turn_color) is not None
-    if not continue_strategy and not (captures or kings or not all(has_king.values())):
+    if (
+        not continue_strategy and len(required) < _LARGE_DEFENSE_MIN_REQUIRED
+        and not (captures or kings or not all(has_king.values()))
+    ):
         return None
     boards = tuple(sorted(required, key=lambda board: (
         board not in king_boards,
@@ -1062,7 +1068,10 @@ class ActionPlanner:
             )
             if defense_order is _PREPARATION_INTERRUPTED:
                 return found_completion
-            if defense_order is not None and len(required) >= _LARGE_DEFENSE_MIN_REQUIRED:
+            if defense_order is not None and (
+                len(required) >= _LARGE_DEFENSE_MIN_REQUIRED
+                or (len(required) > 2 and depth_limit != 1 and defense_order[3])
+            ):
                 self._defense_order_active = True
 
         # This is a one-Move completion probe, not a new deep-search priority.
@@ -1108,6 +1117,49 @@ class ActionPlanner:
         # Move that lands directly on a required board is also completion-relevant:
         # inspect only those optional Moves before ordinary required-board
         # branches.  Other optional Moves remain after required Moves as before.
+        if depth == 0 and len(required) > 2 and self._defense_order_active and depth_limit != 1:
+            # A kingless required board may have no outgoing Move at all.
+            # Advance it by arrival before other defenses consume its sources.
+            # This is ordering only: retain every other legal Move below.
+            immobile = set()
+            for board in defense_order[0]:
+                if tracker.check_time(local_deadline):
+                    return found_completion
+                position = state._resolve_position(board)
+                if (
+                    position is not None
+                    and position.find_king(state.current_turn_color) is None
+                    and not state.get_legal_moves(position)
+                ):
+                    immobile.add(board)
+            if tracker.check_time(local_deadline):
+                return found_completion
+            if immobile:
+                arrival_sources = defense_order[0] + tuple(
+                    board for board in ordered_boards if board not in required
+                )
+                for board in arrival_sources:
+                    if tracker.check_time(local_deadline):
+                        return found_completion
+                    position = state._resolve_position(board)
+                    if position is None:
+                        continue
+                    moves = sorted(_legal_moves_into(state, position, immobile), key=defense_order[1])
+                    for move in moves:
+                        if tracker.check(depth, depth_limit, local_deadline):
+                            return found_completion
+                        child = state.clone_for_simulation()
+                        if not child.execute_action_move(move):
+                            continue
+                        spec = MoveSpec.from_move(move)
+                        prioritized_specs.add(spec)
+                        if self._dfs(
+                            child, path + (spec,), depth + 1, tracker, candidates, failed_states,
+                            depth_limit=depth_limit, candidate_keys=candidate_keys,
+                            local_deadline=local_deadline, cooperative_checks=cooperative_checks,
+                        ):
+                            found_completion = True
+
         if len(required) > 2 and self._defense_order_active and depth_limit != 1:
             if defense_order is None:
                 defense_order = _required_defense_order(
@@ -1141,6 +1193,8 @@ class ActionPlanner:
                     for move in captures:
                         if tracker.check(depth, depth_limit, local_deadline):
                             return found_completion
+                        if MoveSpec.from_move(move) in prioritized_specs:
+                            continue
                         child = state.clone_for_simulation()
                         if not child.execute_action_move(move):
                             continue
@@ -1153,11 +1207,19 @@ class ActionPlanner:
                         ):
                             found_completion = True
 
+        single_required_moves = None
         if len(required) == 1 and self._uses_production_strategy:
+            required_position = state._resolve_position(next(iter(required)))
+            if required_position is not None:
+                single_required_moves = state.get_legal_moves(required_position)
+            if tracker.check_time(local_deadline):
+                return found_completion
+
+        if single_required_moves == []:
             # An immobile Present board can still be advanced by an optional
             # source. Try those arrivals before unrelated optional subtrees.
             # Targeted generation retains canonical legality and destination
-            # order, without generating every historical move of each source.
+            # order. Mobile required boards keep their ordinary move priority.
             for board in ordered_boards:
                 if board in required:
                     continue
@@ -1379,6 +1441,8 @@ class ActionPlanner:
                 legal_moves = _large_frontier_moves(
                     state, position, required, move_sort_key, tracker, local_deadline,
                 )
+            elif board in required and single_required_moves is not None:
+                legal_moves = sorted(single_required_moves, key=move_sort_key)
             else:
                 legal_moves = sorted(
                     state.get_legal_moves(position),

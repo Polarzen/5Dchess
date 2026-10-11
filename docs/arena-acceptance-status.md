@@ -4,9 +4,37 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: late seed 43 positions
+## Current follow-up: preserve defenses and arrival sources
 
-The latest committed implementation is `e90bfe46`. Its 523-test suite and both
+Implementation `19ecc4d8` passes the full local suite (541 passed, 2 skipped,
+one telemetry warning) and both [CI](https://github.com/Polarzen/5Dchess/actions/runs/38131254706)
+and [Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38131256889).
+The fresh fixed gate still fails the no-recovery requirement: seed 43 has
+zero failures / two recoveries (199.359 seconds), seed 42 has zero failures /
+three recoveries (278.422 seconds), and seed 51 has zero failures / recoveries
+(16.625 seconds). Seed 53 was stopped during diagnosis after another empty
+primary search; seed 55 and all Arena tiers were not run on this revision.
+
+The new follow-up narrows one-board arrival priority to immobile
+required boards and reuses their prepared legal moves. Exact source-square
+queries now restrict destination generation in capture checks. Large quiet
+frontiers use lazy generation; immobile kingless required boards receive an
+arrival before other defenses consume their sources. Smaller frontiers with
+concrete required-board attackers prioritize defense during the deep phase.
+All moves, proof boundaries, and primary/secondary budgets remain unchanged.
+
+A focused run passed 62 tests before the final small-frontier defense admission
+was added. Captured seed 42 Actions 76/77/78 return replayable candidates under
+the primary budget; seed 43 Actions 80/87 have captured replay regressions.
+A new seed 53 three-required-board regression covers the final admission.
+The final full suite passes **544 tests, with 2 skipped and one existing
+telemetry warning**, in 223.36 seconds. The fresh fixed gate is running.
+Copy optimizations remain experiments only; no Royal virtual-copy change is
+included.
+
+## Earlier follow-up: late seed 43 positions
+
+Implementation `e90bfe46` preceded this follow-up. Its 523-test suite and both
 [CI](https://github.com/Polarzen/5Dchess/actions/runs/38127749935) and
 [Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38127752371) pass.
 Seeds 51/53/55/42 have zero failures and recoveries, but the fresh control 43

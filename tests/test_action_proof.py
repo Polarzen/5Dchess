@@ -325,7 +325,7 @@ def test_late_capture_generation_never_yields_certificate(monkeypatch):
         0, 7, Piece(PieceType.ROOK, ChessColor.WHITE),
     )
     expired = False
-    def delayed_moves(*args):
+    def delayed_moves(*args, **kwargs):
         nonlocal expired
         expired = True
         return []

@@ -1035,5 +1035,97 @@
     "remote_training_ci": 38127752371,
     "remote_training_ci_conclusion": "success",
     "arena_reruns": "Not started; fixed-seed gate failed."
+  },
+  "reliability_phase2_fix3": {
+    "implementation_commit": "19ecc4d8d98c0f213014d1f7cbc630f50e2dc43b",
+    "status": "fixed_gate_failed_recovery_dependency",
+    "local_suite": {
+      "passed": 541,
+      "skipped": 2,
+      "warnings": 1,
+      "seconds": 226.71
+    },
+    "remote_ci": {
+      "run_id": 38131254706,
+      "conclusion": "success"
+    },
+    "remote_training_ci": {
+      "run_id": 38131256889,
+      "conclusion": "success"
+    },
+    "fixed_seeds": [
+      {
+        "seed": 43,
+        "source_commit": "e90bfe4679f27282cd20c19d2528bf95b93dbe67",
+        "source_fingerprint": "a3d8aecdb4a64864f2fcbcfbdd1802e062fe338c233f28605d5626f7250e3433",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 199.35899999999674,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 2,
+        "neural_planner_recovery_count": 1,
+        "baseline_planner_recovery_count": 1,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      },
+      {
+        "seed": 42,
+        "source_commit": "19ecc4d8d98c0f213014d1f7cbc630f50e2dc43b",
+        "source_fingerprint": "a3d8aecdb4a64864f2fcbcfbdd1802e062fe338c233f28605d5626f7250e3433",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 278.4219999999914,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 3,
+        "neural_planner_recovery_count": 2,
+        "baseline_planner_recovery_count": 1,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      },
+      {
+        "seed": 51,
+        "source_commit": "19ecc4d8d98c0f213014d1f7cbc630f50e2dc43b",
+        "source_fingerprint": "a3d8aecdb4a64864f2fcbcfbdd1802e062fe338c233f28605d5626f7250e3433",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 16.625,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      }
+    ],
+    "incomplete_runs": {
+      "seed53": "Stopped during diagnostic run after Action50 capture; no aggregate result",
+      "seed55": "Not run after known failed recovery gate"
+    },
+    "arena": "No Arena tier started for this implementation",
+    "note": "Raw source fingerprints preserved. Seed43 started before commit but uses the same tested implementation bytes."
   }
 }
