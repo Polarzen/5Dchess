@@ -8,11 +8,44 @@ PR #24. The current baseline is `70a5f495`; durable baseline run
 
 The local fixed-seed gate now **PASSES** for seeds 51, 53, and 55 under the
 unchanged production budget. Wider Arena acceptance remains **BLOCKED**:
-The latest Easy20 completed with two planning failures (both baseline), one
-baseline recovery, and zero illegal/stale/unexpected failures. Controls 42/43
-have not been rerun on the latest follow-up; their earlier failures remain open.
+The latest Easy20 completed with one planning failure (baseline), one
+neural recovery, and zero illegal/stale/unexpected failures. The rewind follow-up still has one failure each on controls 42/43
+(and one recovery on 42); those failures remain open.
 Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
 and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
+
+## Active-branch rewind follow-up
+
+Easy20 on `835e4718` completed in 279.125 seconds: 15 wins / 3 draws / 2 losses,
+one baseline planning failure, one neural recovery, and one proven terminal
+adjudication; illegal/stale/unexpected failures were zero. The counted failure
+was game 12 / Action 114, a seven-required-board state. An uncapturable Queen
+threat makes advancing one board unsafe, but an active historical branch can
+rewind The Present and defer it. A single canonical branch Move was found and
+replayed in a separate 0.125-second diagnostic. This is an escape, not a
+terminal certificate.
+
+The follow-up prioritizes eligible rewinds from every movable board, including
+optional sources, only within the existing one-second depth-one probe. Deep
+fallback ordering remains intact, and all unprioritized Moves remain searchable.
+Preparation and execution share the original deadline/state/action limits.
+
+Lazy defense ordering is now restricted to roots with at least 17 required
+boards, plus a check threat or missing local King. Smaller roots keep MRV.
+The earlier broader admission could time out on the 14-board fixture when run
+in isolation, despite prior full-suite/CI passes. The revised boundary passes
+the 14-/19-/32-board compatibility checks alongside active-rewind and optional-
+source tests (16 focused checks passed). Full suite: 497 passed, 2 skipped,
+one existing telemetry warning. Fixed seeds 51/53/55 passed with zero planning
+failures/recoveries in 32.047 / 10.703 / 12.938 seconds. Controls 42/43 still
+have one failure each (42 also has one recovery), in 152.766 / 111.922 seconds.
+All five have zero illegal/stale/unexpected failures. A fresh Easy20 is pending.
+
+Implementation `835e4718` passed remote
+[CI 38119059656](https://github.com/Polarzen/5Dchess/actions/runs/38119059656)
+and [training CI 38119061935](https://github.com/Polarzen/5Dchess/actions/runs/38119061935).
+Its compact evidence is retained as `followup_v3` in
+`planner-validation-20261011.json`; it is not the final rewind candidate.
 
 ## Further follow-up: coupled threats, immobile boards, and defense ordering
 

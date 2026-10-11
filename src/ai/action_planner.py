@@ -23,7 +23,10 @@ from src.engine.action_proof import (
 from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
+from src.engine.path_rules import PathRules
+from src.engine.piece_movement import PieceMovementRules
 from src.engine.royal_rules import RoyalRules
+from src.engine.timeline_rules import TimelineRules
 from src.utils.constants import ChessColor, GameState, PieceType
 
 if TYPE_CHECKING:
@@ -432,9 +435,13 @@ def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
 
 
 _PREPARATION_INTERRUPTED = object()
+# Keep the established MRV behavior for smaller frontiers. Lazy defense order
+# is qualified for larger Actions, with the 14-/19-/32-board regressions guarding
+# this boundary rather than assuming it improves every multiverse.
+_LARGE_DEFENSE_MIN_REQUIRED = 17
 
 
-def _required_defense_order(state, required, tracker, local_deadline, *, continue_strategy=False):
+def _required_defense_order(state, required, tracker, local_deadline, *, continue_strategy=False, check_rewinds=False):
     """Order real multiverse boards without generating every move list.
 
     Virtual threats are ordering evidence only. Captures of their attackers
@@ -445,13 +452,55 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
     successors = {board.next(): board for board in required}
     captures = set()
     kings = set()
-    for threat in RoyalRules(state.timeline_manager.timelines).threats_against(state.current_turn_color):
+    manager = state.timeline_manager
+    color = state.current_turn_color
+    direction = 1 if color == ChessColor.WHITE else -1
+    next_lane = manager._next_positive_id if direction == 1 else manager._next_negative_id
+    while next_lane in manager.timelines:
+        next_lane += direction
+    can_rewind = (
+        check_rewinds
+        and len(manager.timelines) < manager.max_timelines
+        and abs(next_lane) <= TimelineRules.creator_counts(manager.timelines)[color.opposite()] + 1
+    )
+    prefer_rewinds = False
+    rules = RoyalRules(manager.timelines)
+    for threat in rules.threats_against(color):
         if tracker.check_time(local_deadline):
             return _PREPARATION_INTERRUPTED
         if threat.attacker.board in successors:
             captures.add(Square5D(successors[threat.attacker.board], threat.attacker.x, threat.attacker.y))
         if threat.king.board in successors:
             kings.add(Square5D(successors[threat.king.board], threat.king.x, threat.king.y))
+        # If an immutable royal target cannot be defended by any geometric
+        # capture, advancing the attacker's board is hopeless. An active past
+        # branch may instead defer that board. This only prioritizes Moves;
+        # canonical execution/submission still decides whether a rewind works.
+        attacker_board = successors.get(threat.attacker.board)
+        if (
+            not can_rewind or prefer_rewinds or attacker_board is None
+            or threat.piece.piece_type == PieceType.PAWN
+            or rules.board_view.resolve(threat.king.board) is None
+        ):
+            continue
+        if PieceMovementRules.is_slider(threat.piece.piece_type) and any(
+            rules.board_view.resolve(square.board) is None
+            for square in PathRules.intermediate_squares(threat.piece.piece_type, threat.attacker, threat.king)
+        ):
+            continue
+        target = Square5D(attacker_board, threat.attacker.x, threat.attacker.y)
+        capturable = False
+        for source in ActionRules.movable_boards(state._ensure_current_action(), manager.timelines):
+            if tracker.check_time(local_deadline):
+                return _PREPARATION_INTERRUPTED
+            position = state._resolve_position(source)
+            if position is None:
+                return None
+            if any(RoyalRules._attack_geometry_matches(piece, Square5D(source, x, y), target)
+                   for x, y, piece in position.get_all_pieces(color)):
+                capturable = True
+                break
+        prefer_rewinds = not capturable
     if tracker.check_time(local_deadline):
         return _PREPARATION_INTERRUPTED
     capture_boards = {square.board for square in captures}
@@ -481,7 +530,7 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
             *_required_move_sort_key(move, required),
         )
 
-    return boards, move_key
+    return boards, move_key, prefer_rewinds
 
 
 def _prepare_required_legal_moves(
@@ -913,6 +962,7 @@ class ActionPlanner:
         )
         move_sort_key = lambda move: _required_move_sort_key(move, required)
         defense_order = None
+        prioritized_specs = set()
         if (
             depth == 0 and len(required) > 2
             and self.budget == _PRODUCTION_HYBRID_BUDGET
@@ -921,11 +971,45 @@ class ActionPlanner:
             defense_order = _required_defense_order(
                 state, required, tracker, local_deadline,
                 continue_strategy=self._defense_order_active,
+                check_rewinds=depth_limit == 1,
             )
             if defense_order is _PREPARATION_INTERRUPTED:
                 return found_completion
-            if defense_order is not None:
+            if defense_order is not None and len(required) >= _LARGE_DEFENSE_MIN_REQUIRED:
                 self._defense_order_active = True
+
+        # This is a one-Move completion probe, not a new deep-search priority.
+        # An unsuccessful rewind must not monopolize the fallback's DFS budget.
+        if defense_order is not None and defense_order[2] and depth_limit == 1:
+            present_time = min(board.legacy_time_point for board in required)
+            rewinds = []
+            for board in ordered_boards:
+                if tracker.check_time(local_deadline):
+                    return found_completion
+                position = state._resolve_position(board)
+                if position is not None:
+                    rewinds.extend(
+                        move for move in state.get_legal_moves(position)
+                        if move.is_branching
+                        and move.destination.board.legacy_time_point + 1 < present_time
+                    )
+                if tracker.check_time(local_deadline):
+                    return found_completion
+            rewinds.sort(key=lambda move: (move.destination.board.legacy_time_point, _move_sort_key(move)))
+            for move in rewinds:
+                if tracker.check(depth, depth_limit, local_deadline):
+                    return found_completion
+                child = state.clone_for_simulation()
+                spec = MoveSpec.from_move(move)
+                prioritized_specs.add(spec)
+                if not child.execute_action_move(move):
+                    continue
+                if self._dfs(
+                    child, path + (spec,), depth + 1, tracker, candidates, failed_states,
+                    depth_limit=depth_limit, candidate_keys=candidate_keys,
+                    local_deadline=local_deadline, cooperative_checks=cooperative_checks,
+                ):
+                    found_completion = True
 
         # With exactly two required Present boards, a complete Action can be a
         # single cross-timeline Move between them.  Rank legal Moves from both
@@ -1044,7 +1128,7 @@ class ActionPlanner:
             if prepared is _PREPARATION_INTERRUPTED:
                 return found_completion
             if prepared is not None:
-                required_order, move_sort_key = prepared
+                required_order, move_sort_key, _ = prepared
                 ordered_boards = required_order + tuple(
                     board for board in ordered_boards if board not in required
                 )
@@ -1112,6 +1196,8 @@ class ActionPlanner:
                 state.get_legal_moves(position),
                 key=move_sort_key,
             )
+            if prioritized_specs:
+                legal_moves = [move for move in legal_moves if MoveSpec.from_move(move) not in prioritized_specs]
             if cooperative_checks and tracker.check_time(local_deadline):
                 return found_completion
             if len(required) == 2 and board not in required:
