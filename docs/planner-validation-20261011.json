@@ -2379,5 +2379,63 @@
       "Hard20"
     ],
     "note": "CI captured snapshot still lacks five-second margin; no retry or changed budget is used to claim a pass."
+  },
+  "reliability_phase2_fix11": {
+    "status": "fixed_seed42_recovery_gate_failed",
+    "source_commit": "8e7ea9a66c8460a65c8ea2bc954d92e28ea090f6",
+    "source_fingerprint": "8f378954e72f5b7e20fa30d1f9b08eda5f2e13c00f45fc6f518ba2732197bbcc",
+    "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+    "local_suite": {
+      "passed": 594,
+      "skipped": 2,
+      "warnings": 1,
+      "seconds": 231.25
+    },
+    "remote_ci": {
+      "run_id": 38148554985,
+      "conclusion": "success"
+    },
+    "remote_training_ci": {
+      "run_id": 38148557749,
+      "conclusion": "success"
+    },
+    "fixed_seed42": {
+      "seconds": 90.73500000004424,
+      "games": 1,
+      "wins": 0,
+      "draws": 0,
+      "losses": 1,
+      "planning_failure_count": 0,
+      "neural_planning_failure_count": 0,
+      "baseline_planning_failure_count": 0,
+      "planner_recovery_count": 1,
+      "neural_planner_recovery_count": 1,
+      "baseline_planner_recovery_count": 0,
+      "illegal_action_count": 0,
+      "stale_failure_count": 0,
+      "unexpected_failure_count": 0,
+      "proven_terminal_adjudication_count": 0,
+      "first_failure": null
+    },
+    "recovery": {
+      "action": 88,
+      "ply": 130,
+      "color": "white",
+      "required": 25,
+      "timelines": 31,
+      "primary_states": 183,
+      "reason": "time_budget",
+      "signature": "6125ce9b30bdf8bef4bdcda78179da88939c0f3a8cd873480578c18695ecca16",
+      "archive": "fix11-42/failure-88.json.gz"
+    },
+    "unrun": [
+      "seed43",
+      "seed51",
+      "seed53",
+      "seed55",
+      "Easy20",
+      "Medium20",
+      "Hard20"
+    ]
   }
 }

@@ -4,7 +4,30 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: skip structurally impossible single-Move probes
+## Current follow-up: prefer available King defenses for local checks
+
+Implementation `8e7ea9a6` passes the local suite (594 passed, 2 skipped) and
+CI `38148554985` / Training CI `38148557749`. The fresh fixed-seed batch stops
+at seed 42: zero planning failures but one neural Action recovery at Action 88,
+ply 130, with 25 required boards on 31 timelines (90.735 seconds). Seeds
+43/51/53/55 and all Arena tiers were not run on that implementation.
+
+The new snapshot has a board-local virtual check. Incoming capture priority
+consumes another board before the threatened King uses its own legal escape.
+Defense ordering now defers that capture priority only when canonical Move
+generation confirms a legal departure for the King. Without a King departure,
+incoming capture priority remains; captures against nonlocal targets keep their
+priority. Every legal Move remains in the fallback order, and preparation
+continues to respect the shared deadline.
+
+The diagnostic returns 24 replayable candidates in 2.297 seconds for the new
+state; three historical large snapshots also return 24. The focused run passes
+45 tests; two new blocked-King test layouts initially leave inter-timeline King
+escapes open. Corrected layouts close those routes, and all five local-check/
+interruption boundary tests pass. Fresh full-suite and fixed/Arena acceptance
+are pending.
+
+## Earlier follow-up: skip structurally impossible single-Move probes
 
 Implementation `aa916b87` passes the local suite (590 passed, 2 skipped), all
 five fixed seeds and Easy20 (W16 D3 L1, 197.547 seconds), with zero failures

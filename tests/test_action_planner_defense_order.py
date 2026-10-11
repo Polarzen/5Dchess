@@ -277,3 +277,73 @@ def test_real_active_rewinds_remain_eligible_for_the_single_move_probe(fixture):
     apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
     assert child.action_history[-1].submitted
     assert engine_state_signature(engine) == before
+
+
+def _local_check_with_incoming_capture(color, blocked):
+    engine = FiveDEngine(max_timelines=3)
+    manager = engine.timeline_manager
+    time = 0 if color == ChessColor.WHITE else 1
+    def position(lane, pieces):
+        board = [[''] * 8 for _ in range(8)]
+        for x, y, symbol in pieces:
+            board[y][x] = symbol if color == ChessColor.WHITE else symbol.swapcase()
+        return Position(board, color, lane, time, unmoved_pawns=set())
+    checked = [(4, 7, 'K'), (4, 0, 'r'), (7, 0, 'k')]
+    blocked_arrivals = []
+    if blocked:
+        checked += [(x, y, 'P') for x, y in [(3, 6), (5, 6), (3, 7), (5, 7)]]
+        blocked_arrivals = [(x, y, 'P') for x in (3, 4, 5) for y in (6, 7)]
+    manager.timelines = {
+        0: Timeline(0, positions={time: position(0, checked)}),
+        1: Timeline(1, owner=ChessColor.WHITE,
+            positions={time: position(1, [(4, 0, 'R'), (7, 7, 'K'), (7, 0, 'k')] + blocked_arrivals)}),
+        -1: Timeline(-1, owner=ChessColor.BLACK,
+            positions={time: position(-1, [(7, 7, 'K'), (7, 0, 'k')] + blocked_arrivals)}),
+    }
+    manager._next_positive_id = 2
+    manager._next_negative_id = -2
+    manager.refresh_activity()
+    engine.current_turn_color = color
+    engine.current_action = ActionRules.begin(color, manager.timelines)
+    return engine
+
+
+@pytest.mark.parametrize('color', list(ChessColor))
+@pytest.mark.parametrize('blocked', [False, True])
+def test_local_king_escape_priority_keeps_required_incoming_capture(color, blocked):
+    engine = _local_check_with_incoming_capture(color, blocked)
+    before = engine_state_signature(engine)
+    required = set(engine.get_required_action_boards())
+    target = planning.Square5D(planning.BoardCoord(0, 0, color), 4, 0)
+    checked = engine._resolve_position(target.board)
+    escapes = engine.get_legal_moves_from_square(checked, 4, 7)
+    assert bool(escapes) != blocked
+    source = engine.timeline_manager.timelines[1].positions[target.board.legacy_time_point]
+    captures = [move for move in engine.get_legal_moves(source) if move.destination == target]
+    assert captures
+    tracker = planning._BudgetTracker(_PRODUCTION_HYBRID_BUDGET)
+    order = planning._required_defense_order(engine, required, tracker, None, continue_strategy=True)
+    assert (target in order[3]) == blocked
+    assert planning.Square5D(target.board, 4, 7) in order[4]
+    child = engine.clone_for_simulation()
+    assert child.execute_action_move(captures[0])
+    assert target.board not in child.get_required_action_boards()
+    assert engine_state_signature(engine) == before
+
+
+def test_late_local_king_escape_query_aborts_defense_preparation(monkeypatch):
+    engine = _local_check_with_incoming_capture(ChessColor.WHITE, False)
+    before = engine_state_signature(engine)
+    now = [0.0]
+    monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
+    original = engine.get_legal_moves_from_square
+    def delayed(*args, **kwargs):
+        moves = original(*args, **kwargs)
+        now[0] = 6.0
+        return moves
+    monkeypatch.setattr(engine, 'get_legal_moves_from_square', delayed)
+    tracker = planning._BudgetTracker(_PRODUCTION_HYBRID_BUDGET)
+    result = planning._required_defense_order(engine, set(engine.get_required_action_boards()), tracker, None)
+    assert result is planning._PREPARATION_INTERRUPTED
+    assert tracker.termination_reason == 'time_budget'
+    assert engine_state_signature(engine) == before

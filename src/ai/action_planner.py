@@ -517,6 +517,7 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
     successors = {board.next(): board for board in required}
     captures = set()
     kings = set()
+    local_king_escapes = {}
     manager = state.timeline_manager
     color = state.current_turn_color
     direction = 1 if color == ChessColor.WHITE else -1
@@ -534,7 +535,28 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
         if tracker.check_time(local_deadline):
             return _PREPARATION_INTERRUPTED
         if threat.attacker.board in successors:
-            captures.add(Square5D(successors[threat.attacker.board], threat.attacker.x, threat.attacker.y))
+            capture_priority = True
+            if threat.attacker.board == threat.king.board:
+                # Canonical Move validation already resolves a board-local
+                # check. When its King can move, try that local defense before
+                # consuming another board for an incoming capture. Preserve
+                # capture priority when the King has no legal departure.
+                king = Square5D(successors[threat.king.board], threat.king.x, threat.king.y)
+                if king not in local_king_escapes:
+                    position = state._resolve_position(king.board)
+                    if position is None:
+                        return None
+                    targeted = getattr(state, 'get_legal_moves_from_square', None)
+                    moves = (
+                        targeted(position, king.x, king.y) if targeted is not None
+                        else [move for move in state.get_legal_moves(position) if move.source == king]
+                    )
+                    if tracker.check_time(local_deadline):
+                        return _PREPARATION_INTERRUPTED
+                    local_king_escapes[king] = bool(moves)
+                capture_priority = not local_king_escapes[king]
+            if capture_priority:
+                captures.add(Square5D(successors[threat.attacker.board], threat.attacker.x, threat.attacker.y))
         if threat.king.board in successors:
             kings.add(Square5D(successors[threat.king.board], threat.king.x, threat.king.y))
         # If an immutable royal target cannot be defended by any legal
