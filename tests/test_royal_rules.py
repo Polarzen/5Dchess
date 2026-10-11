@@ -1,5 +1,11 @@
 """Tests for canonical multiverse royal safety."""
 
+import gzip
+import json
+from pathlib import Path
+
+import pytest
+
 from src.engine import (
     Action,
     ActionRules,
@@ -14,6 +20,8 @@ from src.engine import (
     TimelineRules,
 )
 from src.utils.constants import ChessColor, PieceType
+from src.engine.multiverse import MultiverseBoardView
+from src.engine.royal_rules import RoyalThreat
 
 
 def _position(timeline_id: int, time_point: int, *pieces):
@@ -33,6 +41,35 @@ def _timeline(timeline_id: int, *positions, owner=None):
     for position in positions:
         timeline.add_position(position)
     return timeline
+
+
+@pytest.mark.parametrize('fixture', [
+    'easy20_king_escape_state', 'control43_active_rewind_state',
+    'easy20_two_fixed_attackers_state', 'seed53_uncapturable_threat_state',
+])
+def test_integer_prefilter_preserves_full_canonical_threat_enumeration(fixture):
+    from src.data.archive import GameArchive
+
+    path = Path(__file__).parent / 'fixtures' / f'{fixture}.json.gz'
+    engine = GameArchive.restore(json.loads(gzip.decompress(path.read_bytes())))
+    for color in ChessColor:
+        rules = RoyalRules(engine.timeline_manager.timelines)
+        for timelines in [rules.timelines, rules._after_virtual_present_pass(color)]:
+            view = MultiverseBoardView(timelines)
+            attacker_color = color.opposite()
+            kings = []
+            for board in view.iter_boards(side=attacker_color):
+                king = board.position.find_king(color)
+                if king is not None:
+                    kings.append(Square5D(board.coord, *king))
+            reference = []
+            for board in view.iter_boards(side=attacker_color, playable_only=True):
+                for x, y, piece in board.position.get_all_pieces(attacker_color):
+                    source = Square5D(board.coord, x, y)
+                    for king in kings:
+                        if RoyalRules._attacks_prevalidated_square_with_view(piece, source, king, view):
+                            reference.append(RoyalThreat(piece, source, king))
+            assert tuple(RoyalRules._iter_direct_threats_in(timelines, color)) == tuple(reference)
 
 
 def _square(position: Position, x: int, y: int) -> Square5D:

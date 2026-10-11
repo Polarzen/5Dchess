@@ -298,7 +298,7 @@
     "acceptance": "blocked: one remaining baseline planning failure"
   },
   "followup_v4": {
-    "source_commit": "pending: active-rewind implementation",
+    "source_commit": "a3ef51094758acc56796a626257b9830c45fa1b5",
     "fixed_seeds": [
       {
         "seed": 51,
@@ -398,7 +398,46 @@
       "skipped": 2,
       "warnings": 1
     },
-    "easy20": "pending",
-    "acceptance": "blocked: control failures; Easy20 pending"
+    "easy20": {
+      "opponent": "easy",
+      "games": 20,
+      "wins": 16,
+      "draws": 3,
+      "losses": 1,
+      "win_rate": 0.8,
+      "draw_rate": 0.15,
+      "average_actions": 56.25,
+      "illegal_action_count": 0,
+      "stale_failure_count": 0,
+      "budget_termination_count": 4,
+      "planning_failure_count": 1,
+      "neural_planning_failure_count": 1,
+      "baseline_planning_failure_count": 0,
+      "planner_recovery_count": 0,
+      "neural_planner_recovery_count": 0,
+      "baseline_planner_recovery_count": 0,
+      "unexpected_failure_count": 0,
+      "proven_terminal_adjudication_count": 1,
+      "average_inference_ms": 2.7078264551520563,
+      "checkpoint_epoch": 19,
+      "games_requested": 20,
+      "candidate_limit": 24,
+      "planner_budget_seconds": 5.0,
+      "model_color_mode": "alternate",
+      "explicit_game_seeds": null
+    },
+    "acceptance": "blocked: one neural Easy20 planning failure and control42/43 failures",
+    "easy20_seconds": 396.672,
+    "first_failure": {
+      "game_id": 1,
+      "action_index": 60,
+      "player": "white",
+      "state_signature_sha256": "c8af2d15f6d23bc33742dc4c0d01661ac48ab3241af2b6dec8dde2c4657caf8f",
+      "planning_reason": "time_budget"
+    },
+    "remote_ci": 38121032672,
+    "remote_ci_conclusion": "success",
+    "remote_training_ci": 38121034818,
+    "remote_training_ci_conclusion": "success"
   }
 }

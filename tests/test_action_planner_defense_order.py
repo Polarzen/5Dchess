@@ -11,7 +11,8 @@ from src.ai.action_planner import (
 from src.data.archive import GameArchive
 from src.engine import ActionRules, FiveDEngine, Position, Timeline
 from src.engine.coordinates import BoardCoord
-from src.utils.constants import ChessColor
+from src.engine.royal_rules import RoyalRules
+from src.utils.constants import ChessColor, PieceType
 
 
 def _captured(name='easy20_nineteen_required_state'):
@@ -33,6 +34,67 @@ def test_active_rewind_defers_uncapturable_required_attacker():
     assert child.action_history[-1].submitted
     assert child.timeline_manager.timelines[1].latest_time == engine.timeline_manager.timelines[1].latest_time
     assert engine_state_signature(engine) == before
+
+
+def test_active_rewind_with_one_required_board():
+    engine = _captured('control43_active_rewind_state')
+    before = engine_state_signature(engine)
+    assert len(engine.get_required_action_boards()) == 1
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates and len(result.candidates[0]) == 1
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def test_large_mutable_king_escape_candidates_replay():
+    engine = _captured('easy20_king_escape_state')
+    before = engine_state_signature(engine)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates
+    assert result.explored_states <= 1024 and len(result.candidates) <= 24
+    for candidate in result.candidates:
+        assert len(candidate) <= 32
+        child = engine.clone_for_simulation()
+        apply_action_plan(child, AIActionPlan(engine.current_turn_color, candidate, before))
+        assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def test_risky_king_moves_are_deferred_but_retained():
+    engine = _captured('easy20_king_escape_state')
+    before = engine_state_signature(engine)
+    position = engine._resolve_position(next(b for b in engine.get_required_action_boards() if b.timeline == 0))
+    moves = sorted((m for m in engine.get_legal_moves(position)
+                    if m.piece.piece_type == PieceType.KING), key=planning._move_sort_key)
+    tracker = planning._BudgetTracker(planning.ActionSearchBudget(max_seconds=30))
+    ordered = list(planning._safe_king_moves_first(engine, moves, tracker, None))
+    assert {planning.MoveSpec.from_move(m) for m, _ in ordered} == {planning.MoveSpec.from_move(m) for m in moves}
+    risks = []
+    for move, child in ordered:
+        if child is None:
+            child = engine.clone_for_simulation()
+            assert child.execute_action_move(move)
+        risks.append(RoyalRules(child.timeline_manager.timelines).is_in_check(engine.current_turn_color))
+    assert False in risks and True in risks
+    assert risks == sorted(risks)
+    assert engine_state_signature(engine) == before
+
+
+def test_late_king_safety_query_yields_no_prepared_child(monkeypatch):
+    engine = _captured('easy20_king_escape_state')
+    position = engine._resolve_position(next(b for b in engine.get_required_action_boards() if b.timeline == 0))
+    moves = [m for m in engine.get_legal_moves(position) if m.piece.piece_type == PieceType.KING]
+    now = [0.0]
+    monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
+    def delayed_safety(self, color):
+        now[0] = 6.0
+        return False
+    monkeypatch.setattr(RoyalRules, 'is_in_check', delayed_safety)
+    tracker = planning._BudgetTracker(_PRODUCTION_HYBRID_BUDGET)
+    assert not list(planning._safe_king_moves_first(engine, moves, tracker, None))
+    assert tracker.termination_reason == 'time_budget'
 
 
 def test_rewind_priority_includes_future_optional_sources():

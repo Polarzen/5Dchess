@@ -236,12 +236,13 @@ class RoyalRules:
         # proves the exact royal piece in that Position. Filtering by side here
         # avoids constructing a second board view, scanning the opposite phase,
         # then resolving and validating every King board a second time.
-        kings: list[Square5D] = []
+        kings = []
         for board in view.iter_boards(side=by_color):
             king = board.position.find_king(color)
             if king is None:
                 continue
-            kings.append(Square5D(board.coord, king[0], king[1]))
+            kings.append((Square5D(board.coord, king[0], king[1]),
+                          king[0], king[1], board.coord.turn, board.coord.timeline))
 
         if not kings:
             return
@@ -253,9 +254,19 @@ class RoyalRules:
         # can reuse the canonical geometry/path predicate without re-resolving
         # the same endpoints millions of times.
         for board in view.iter_boards(side=by_color, playable_only=True):
+            turn, lane = board.coord.turn, board.coord.timeline
             for x, y, piece in board.position.get_all_pieces(by_color):
                 source = Square5D(board.coord, x, y)
-                for king in kings:
+                for king, king_x, king_y, king_turn, king_lane in kings:
+                    # Both endpoints already have the attacker's phase. Use the
+                    # same exact geometry predicate on pre-extracted integers;
+                    # most pairs fail without repeated Square5D property calls.
+                    # Surviving pairs still use the canonical path predicate.
+                    if not cls._attack_delta_matches(
+                        piece.piece_type, by_color, king_x - x, king_y - y,
+                        king_turn - turn, king_lane - lane,
+                    ):
+                        continue
                     if cls._attacks_prevalidated_square_with_view(
                         piece,
                         source,

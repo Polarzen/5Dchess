@@ -8,11 +8,37 @@ PR #24. The current baseline is `70a5f495`; durable baseline run
 
 The local fixed-seed gate now **PASSES** for seeds 51, 53, and 55 under the
 unchanged production budget. Wider Arena acceptance remains **BLOCKED**:
-The latest Easy20 completed with one planning failure (baseline), one
-neural recovery, and zero illegal/stale/unexpected failures. The rewind follow-up still has one failure each on controls 42/43
-(and one recovery on 42); those failures remain open.
+The latest completed Easy20 (`a3ef5109`) has one neural planning failure,
+zero recoveries, and zero illegal/stale/unexpected failures. That version also
+has one failure each on controls 42/43 (and one recovery on 42).
 Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
 and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
+
+## King-escape and royal-scan follow-up
+
+The latest Easy20 completed in 396.672 seconds with 16 wins / 3 draws / 1 loss,
+one neural failure at game 1 / Action 60, zero recoveries, and one terminal
+adjudication. The earlier game 12 failure did not recur. Implementation
+`a3ef5109` passed [CI 38121032672](https://github.com/Polarzen/5Dchess/actions/runs/38121032672)
+and [training CI 38121034818](https://github.com/Polarzen/5Dchess/actions/runs/38121034818).
+Its compact results are recorded as `followup_v4`.
+
+The remaining 19-board state has a complete King-escape Action. The first two
+King destinations create different virtual threats; a later destination is
+safe. The follow-up orders threatened King boards first and defers unsafe King
+moves within the admitted large-board defense strategy. Deferred moves remain
+searchable: virtual threats are not a no-Action proof. All prepared children
+use canonical execution and the same deadline. The active-rewind probe now
+also covers one-/two-required-board roots; control 43 has a one-Move escape.
+
+Royal threat enumeration now prefilters the attacker/King cross-product with
+the existing exact integer geometry predicate. It pre-extracts King coordinates
+and leaves the canonical path check and threat order intact. Differential tests
+compare full enumeration with the previous unfiltered predicate on both colors
+and real/virtual boards. No budget, legality, scoring, or recovery is relaxed.
+The full suite passes: 505 tests, 2 skipped, one existing telemetry warning.
+Fixed seeds 51/53/55 pass with zero planning failures/recoveries in
+33.469 / 9.891 / 11.750 seconds. Controls 42/43 and fresh Easy20 are pending.
 
 ## Active-branch rewind follow-up
 
@@ -39,7 +65,8 @@ source tests (16 focused checks passed). Full suite: 497 passed, 2 skipped,
 one existing telemetry warning. Fixed seeds 51/53/55 passed with zero planning
 failures/recoveries in 32.047 / 10.703 / 12.938 seconds. Controls 42/43 still
 have one failure each (42 also has one recovery), in 152.766 / 111.922 seconds.
-All five have zero illegal/stale/unexpected failures. A fresh Easy20 is pending.
+All five have zero illegal/stale/unexpected failures. Its completed Easy20
+result is recorded in the subsequent King-escape follow-up above.
 
 Implementation `835e4718` passed remote
 [CI 38119059656](https://github.com/Polarzen/5Dchess/actions/runs/38119059656)

@@ -514,8 +514,8 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
     if not continue_strategy and not (captures or kings or not all(has_king.values())):
         return None
     boards = tuple(sorted(required, key=lambda board: (
-        board not in capture_boards,
         board not in king_boards,
+        board not in capture_boards,
         has_king[board],
         board.timeline, board.turn, _enum_value(board.side),
     )))
@@ -531,6 +531,35 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
         )
 
     return boards, move_key, prefer_rewinds
+
+
+def _safe_king_moves_first(state, moves, tracker, local_deadline):
+    """Defer risky King moves, without discarding their possible continuations.
+
+    Virtual threats may still be repairable on another board. They only rank
+    the child here; deferred moves are searched normally if time remains.
+    Prepared children use canonical execution and the same wall deadline.
+    """
+    deferred = []
+    for move in moves:
+        if tracker.check_time(local_deadline):
+            return
+        child = None
+        if move.piece.piece_type == PieceType.KING:
+            child = state.clone_for_simulation()
+            if not child.execute_action_move(move):
+                continue
+            unsafe = RoyalRules(child.timeline_manager.timelines).is_in_check(state.current_turn_color)
+            if tracker.check_time(local_deadline):
+                return
+            if unsafe:
+                deferred.append(move)
+                continue
+        yield move, child
+    for move in deferred:
+        if tracker.check_time(local_deadline):
+            return
+        yield move, None
 
 
 def _prepare_required_legal_moves(
@@ -964,7 +993,7 @@ class ActionPlanner:
         defense_order = None
         prioritized_specs = set()
         if (
-            depth == 0 and len(required) > 2
+            depth == 0 and required and (len(required) > 2 or depth_limit == 1)
             and self.budget == _PRODUCTION_HYBRID_BUDGET
             and state.timeline_manager.timelines
         ):
@@ -1209,12 +1238,18 @@ class ActionPlanner:
                     for move in legal_moves
                     if move.destination.board not in required
                 ]
-            for move in legal_moves:
+            ordered_moves = (
+                _safe_king_moves_first(state, legal_moves, tracker, local_deadline)
+                if self._defense_order_active and len(required) > 2
+                else ((move, None) for move in legal_moves)
+            )
+            for move, child in ordered_moves:
                 if tracker.check(depth, depth_limit, local_deadline):
                     return found_completion
-                child = state.clone_for_simulation()
-                if not child.execute_action_move(move):
-                    continue
+                if child is None:
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
                 if self._dfs(
                     child,
                     path + (MoveSpec.from_move(move),),
