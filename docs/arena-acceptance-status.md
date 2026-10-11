@@ -8,8 +8,9 @@ PR #24. The current baseline is `70a5f495`; durable baseline run
 
 The local fixed-seed gate now **PASSES** for seeds 51, 53, and 55 under the
 unchanged production budget. Wider Arena acceptance remains **BLOCKED**:
-Easy20 completed with four planning failures, and control seeds 42/43 retain
-planning failures.
+The latest Easy20 completed with two planning failures (both baseline), one
+baseline recovery, and zero illegal/stale/unexpected failures. Controls 42/43
+have not been rerun on the latest follow-up; their earlier failures remain open.
 Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
 and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
 
@@ -38,12 +39,25 @@ MRV preparation did not resolve it and are not included in production.
 The local fixed-seed gate was rerun with the unchanged model and 5/1024/24/32
 budget: seeds 51, 53, and 55 each have zero planning failures and recoveries,
 and zero illegal/stale/unexpected failures. Their elapsed times were 24.250,
-7.266, and 8.969 seconds. A fresh Easy20 run is required before changing the
-broader acceptance decision above.
+7.266, and 8.969 seconds.
 
 Validation for this follow-up: 482 passed, 2 skipped, with one existing planner
 telemetry warning. This includes exact exhaustive toy comparisons, real optional
 capture escapes, pinned and missing-path defenses, and late-proof rejection.
+
+Implementation `3ab86203` passed fresh remote
+[CI 38115887660](https://github.com/Polarzen/5Dchess/actions/runs/38115887660)
+and [training CI 38115890180](https://github.com/Polarzen/5Dchess/actions/runs/38115890180).
+Fresh local Easy20 used the same model, alternating colors, seed 42, max 120
+Actions/game, and unchanged explicit budget. It completed in 361.203 seconds:
+15 wins / 3 draws / 2 losses; two baseline planning failures, one baseline
+recovery, zero neural planning failures/recoveries, zero illegal/stale/unexpected
+failures, and one proven terminal adjudication. W/D/L is still contaminated by
+planning failures and is not a model-quality PASS. New pre-recovery snapshots
+were captured at games 1/3/11/20, Actions 67/37/33/118 respectively; a snapshot
+alone is not proof that Arena counted a failure, because adjudication and
+recovery happen afterwards. Compact evidence is in the `followup` object of
+`planner-validation-20261011.json`.
 
 ## 2026-10-11: exact required-board threat certificate
 
