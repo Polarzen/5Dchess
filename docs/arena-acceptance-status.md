@@ -7,8 +7,9 @@ PR #24. The current baseline is `70a5f495`; durable baseline run
 ## Decision
 
 The local fixed-seed gate now **PASSES** for seeds 51, 53, and 55 under the
-unchanged production budget. Wider Arena acceptance remains **PENDING**:
-Easy20 is running, and control seeds 42/43 retain planning failures.
+unchanged production budget. Wider Arena acceptance remains **BLOCKED**:
+Easy20 completed with four planning failures, and control seeds 42/43 retain
+planning failures.
 Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
 and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
 
@@ -62,6 +63,27 @@ allocation/activity preconditions, and interrupted proof handling. Compileall
 and browser/invite checks passed. The original GitHub checkpoint artifact from
 run `34028226472` has expired; these fixed-seed results use its locally retained,
 hash-verified model and are not a new remote workflow PASS.
+
+Implementation commit `38ad0da6` passed fresh remote
+[CI 38114254595](https://github.com/Polarzen/5Dchess/actions/runs/38114254595)
+and [training CI 38114257887](https://github.com/Polarzen/5Dchess/actions/runs/38114257887).
+The stacked [Draft PR #25](https://github.com/Polarzen/5Dchess/pull/25) targets
+`feat/local-ai-training-v2`; PR #24 remains Draft, unmerged, with auto-merge off.
+
+Easy20 completed locally in 486.469 seconds using that same implementation,
+the verified Stage 1 model, alternating neural colors, seed 42, max 120 Actions
+per game, and explicit 5/1024/24/32 limits. Results: 13 wins, 3 draws, 4 losses;
+four planning failures (one neural, three baseline); zero planner recoveries;
+zero illegal, stale, or unexpected failures; one proven terminal adjudication.
+Planning failures contaminate W/D/L, so this is **not** a model-quality PASS.
+Compact checked evidence is in `planner-validation-20261011.json`. The five
+pre-recovery failure snapshots are retained locally for further diagnosis.
+
+Workflow changes adding the new proof path trigger and explicit Arena state
+budget were saved as a local patch rather than pushed: the current Git OAuth
+credential lacks `workflow` scope. The existing Arena workflow still defaults
+to the CLI's 256 states, so it must not be represented as the exact 1024-state
+acceptance run. No model weights or temporary diagnostics were committed.
 
 The earlier branch-local depth-cutoff fix remains valid historical context: a
 cutoff in one DFS branch must not suppress later siblings. The current failure
@@ -196,8 +218,8 @@ the failed state cache. It must retain canonical Move generation, safety
 checks, and the 5/1024/24/32 limits without a seed-specific or state-specific
 heuristic.
 
-The next acceptance result is Easy20 using the same Stage 1 checkpoint and
-explicit 5/1024/24/32 limits. Fresh remote CI and training CI are also required.
+The next work is to resolve the remaining Easy20 planning failures under the
+same Stage 1 checkpoint and 5/1024/24/32 limits, then repeat affected validation.
 Remote fixed-seed execution additionally needs restoration of the expired
 checkpoint artifact; local results must not be presented as a remote PASS.
 Medium/Hard and large self-play stay blocked until wider Arena reliability is
