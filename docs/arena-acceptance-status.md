@@ -13,6 +13,38 @@ planning failures.
 Medium/Hard Arena and large self-play remain blocked. PR #24 remains Draft
 and **DO NOT MERGE**. Historical remote results below refer to `8d2ffb23`.
 
+## 2026-10-11 follow-up: immutable direct threats and legal captures
+
+The required-board certificate now checks canonical capture legality, including
+board-local King safety. While a capture source and its required target remain
+playable, their occupancy and local safety cannot change. Capture rays between
+original boards lie inside existing lane extrema, whereas the certificate's
+allocation guard places new lanes outside those extrema. New branches therefore
+cannot fill a missing capture-path board. All optional sources remain included.
+
+A separate certificate prunes already-materialized direct royal threats at
+each search node. The opponent-phase attacker, King and clear path cannot be
+changed by the actor's remaining moves. This predicate deliberately excludes
+virtual-pass threats and does not confuse an unadvanced Present with an
+irreversible attack. Both proofs honor interruption; timeout remains unknown.
+
+Saved Easy20 failures at games 7 and 16 are now proven terminal in one explored
+state. Game 11 has complete defenses; the planner finds 24 candidates and all
+24 replay through canonical application. These three states are retained as
+small compressed regression fixtures. The 26-timeline game 1 state remains
+unresolved within five seconds. Experimental capture/spatial ordering and lazy
+MRV preparation did not resolve it and are not included in production.
+
+The local fixed-seed gate was rerun with the unchanged model and 5/1024/24/32
+budget: seeds 51, 53, and 55 each have zero planning failures and recoveries,
+and zero illegal/stale/unexpected failures. Their elapsed times were 24.250,
+7.266, and 8.969 seconds. A fresh Easy20 run is required before changing the
+broader acceptance decision above.
+
+Validation for this follow-up: 482 passed, 2 skipped, with one existing planner
+telemetry warning. This includes exact exhaustive toy comparisons, real optional
+capture escapes, pinned and missing-path defenses, and late-proof rejection.
+
 ## 2026-10-11: exact required-board threat certificate
 
 The `8d2ffb23` seed 53 failure was reproduced locally with the exact remote

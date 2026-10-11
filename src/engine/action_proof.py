@@ -22,6 +22,26 @@ class RequiredBoardThreatProof:
     threat: RoyalThreat
 
 
+def prove_direct_threat(
+    engine: "FiveDEngine",
+    interrupted: Callable[[], bool],
+) -> RoyalThreat | None:
+    """An already-materialized royal threat cannot be repaired in this Action.
+
+    Its playable attacker, historical King and clear ray all lie on the
+    opponent's phase. Acting-color moves cannot advance those boards or
+    overwrite their history. Branches only add boards, and inactive attack
+    sources are included by the canonical predicate. This does NOT use virtual
+    pass threats or the unsafe-while-Present-is-ours submission predicate.
+    """
+    if interrupted() or not engine.timeline_manager.timelines:
+        return None
+    threat = next(RoyalRules._iter_direct_threats_in(
+        engine.timeline_manager.timelines, engine.current_turn_color,
+    ), None)
+    return None if interrupted() else threat
+
+
 def prove_required_board_threat(
     engine: "FiveDEngine",
     interrupted: Callable[[], bool],
@@ -31,14 +51,16 @@ def prove_required_board_threat(
     None means unproven, never no legal Action. The certificate requires:
     * branching cannot introduce or activate an earlier active Present;
     * the King and entire attack path already exist on the opponent's phase;
-    * no piece on ANY movable board can geometrically capture the attacker.
+    * no piece on ANY movable board can legally capture the attacker.
 
-    Ignoring occupancy and local King safety overapproximates legal captures.
     Every new playable successor during this Action belongs to the opponent,
     including on new branches. Thus acting-color capture sources can only
-    disappear. Existing opponent-phase boards are immutable. Together these
-    facts cover all move orders and future branching destinations. A virtual
-    pass threat alone is NEVER sufficient evidence for this certificate.
+    disappear. Source/target occupancy and board-local King safety stay fixed
+    until either board advances (which consumes the capture opportunity).
+    Capture rays between original boards stay inside existing lane extrema;
+    guarded allocation outside those extrema cannot fill a missing ray board.
+    Existing opponent-phase boards are immutable. A virtual pass threat alone
+    is NEVER sufficient evidence for this certificate.
     """
     if interrupted():
         return None
@@ -108,9 +130,14 @@ def prove_required_board_threat(
             if position is None:
                 return None
             for x, y, piece in position.get_all_pieces(color):
-                if RoyalRules._attack_geometry_matches(
+                if not RoyalRules._attack_geometry_matches(
                     piece, Square5D(source_board, x, y), target,
                 ):
+                    continue
+                moves = engine.get_legal_moves_from_square(position, x, y)
+                if interrupted():
+                    return None
+                if any(move.destination == target for move in moves):
                     capturable = True
                     break
             if capturable:

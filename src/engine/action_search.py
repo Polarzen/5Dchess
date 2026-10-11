@@ -19,7 +19,7 @@ import time
 from typing import TYPE_CHECKING
 
 from src.engine.action import ActionRules
-from src.engine.action_proof import prove_required_board_threat
+from src.engine.action_proof import prove_direct_threat, prove_required_board_threat
 from src.engine.move_generator import Move
 from src.utils.constants import ChessColor, GameState, PieceType
 
@@ -262,27 +262,33 @@ class ActionSearch:
         if self._budget_exhausted(depth):
             return None
 
+        def proof_interrupted():
+            if (
+                self.max_seconds is not None
+                and time.monotonic() - self._started_at >= self.max_seconds
+            ):
+                self._termination_reason = "time_budget"
+            return self._termination_reason is not None
+
+        proof = prove_direct_threat(state, proof_interrupted)
+        if proof_interrupted():
+            return None
+        if proof is not None:
+            self._explored_states += 1
+            return None
+
         key = self._state_key(state)
         if key in self._failed_states:
             return None
 
         self._explored_states += 1
-
         if depth == 0:
-            def proof_interrupted():
-                if (
-                    self.max_seconds is not None
-                    and time.monotonic() - self._started_at >= self.max_seconds
-                ):
-                    self._termination_reason = "time_budget"
-                return self._termination_reason is not None
-
             proof = prove_required_board_threat(state, proof_interrupted)
-            if proof_interrupted():
-                return None
-            if proof is not None:
-                self._failed_states.add(key)
-                return None
+        if proof_interrupted():
+            return None
+        if proof is not None:
+            self._failed_states.add(key)
+            return None
 
         movable = ActionRules.movable_boards(
             action,

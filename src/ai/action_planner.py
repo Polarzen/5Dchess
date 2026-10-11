@@ -17,7 +17,7 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
-from src.engine.action_proof import prove_required_board_threat
+from src.engine.action_proof import prove_direct_threat, prove_required_board_threat
 from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
@@ -787,6 +787,19 @@ class ActionPlanner:
 
         if tracker.check(depth, depth_limit, local_deadline):
             return found_completion
+
+        # A direct immutable threat is cheaper to prove than to serialize this
+        # whole multiverse for the transposition key. Charge the inspected state
+        # once; no failed-state cache is needed for this independently proved leaf.
+        if self.budget == _PRODUCTION_HYBRID_BUDGET:
+            proof = prove_direct_threat(
+                state, lambda: tracker.check_time(local_deadline),
+            )
+            if tracker.check_time(local_deadline):
+                return found_completion
+            if proof is not None:
+                tracker.explored_states += 1
+                return False
 
         # Reuse the engine ActionSearch equivalence relation, whose regression
         # tests prove that Position.move_number and commuting Action Move order
