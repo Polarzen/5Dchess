@@ -30,11 +30,44 @@ remain unchanged; all executable moves and optional sources remain searchable.
 The captured 26-board Easy recovery and 14-board seed 42 recovery both have
 canonical complete candidates within the unchanged primary budget.
 
-Focused checks: 17 passed. Full suite: 514 passed, 2 skipped, one existing
-telemetry warning. Seeds 51/53/55 pass with zero failures/recoveries in
-24.969 / 7.359 / 9.796 seconds; controls 42/43 and Arena are pending. New evidence
-records a source fingerprint and the original model SHA-256 to prevent mixing
-acceptance results from different implementations.
+Implementation `02e2abd6`: focused checks 17 passed; full suite 514 passed,
+2 skipped, one existing telemetry warning. Seeds 51/53/55 and controls 42/43
+all pass with zero failures/recoveries in 24.969 / 7.359 / 9.796 / 34.875 /
+165.672 seconds. Illegal/stale/unexpected failures are also zero.
+[CI 38125405239](https://github.com/Polarzen/5Dchess/actions/runs/38125405239)
+and [training CI 38125407568](https://github.com/Polarzen/5Dchess/actions/runs/38125407568)
+both passed. Easy20 passes the strict no-recovery gate: 17 wins / 2 draws /
+1 loss, zero planning/illegal/stale/unexpected failures, zero recoveries,
+one proven terminal adjudication, and 278.563 seconds. Medium20 also has zero
+planning/illegal/stale/unexpected failures and zero recoveries, in 138.172
+seconds; the model loses all 20 games. This passes the reliability gate but
+does not establish competitive playing strength.
+
+The first Hard20 attempt was stopped after game 13 completed: game 12 needed
+secondary search at Actions 50 and 58. Its partial run is diagnostic evidence,
+not a completed Hard20 result. Two captured positions show that the exact
+five-second profile can time out while depth-first enumeration finds candidates.
+Alpha-beta previously selected that profile accidentally when the remaining
+time rounded to exactly five seconds. The follow-up explicitly selects stable
+depth-first ordering for minimax and shares its original absolute deadline;
+the default Easy/neural strategy is unchanged. Fresh validation is in progress.
+The minimax follow-up passes 9 focused regressions and the full suite:
+523 passed, 2 skipped, one existing telemetry warning (207.80 seconds).
+The fixed seeds and all three Arena tiers are being revalidated before any
+results from the new implementation are accepted.
+
+Zero recovery here means no Action required a witness from the secondary
+search. Easy20 game 3 / Action 37 still timed out in the primary planner and
+was then proved terminal by the existing secondary ActionSearch (budget:
+15 seconds / 4096 states / depth 64). This is counted as one terminal
+adjudication, not an Action recovery. It does not establish that every terminal
+determination completes within the five-second primary budget.
+
+New evidence in `reliability_phase2` of `planner-validation-20261011.json`
+records raw source fingerprints and the original model SHA-256. Early fixed
+runs preceded a three-line comment clarification; their exact previous bytes
+were reconstructed and Python AST equality checked. No executable source
+changed between these runs and the implementation commit.
 
 ## Previous completed local gate
 

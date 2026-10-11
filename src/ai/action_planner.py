@@ -309,8 +309,9 @@ class ActionSearchResult:
 
 
 class _BudgetTracker:
-    def __init__(self, budget: ActionSearchBudget):
+    def __init__(self, budget: ActionSearchBudget, deadline: float | None = None):
         self.budget = budget
+        self.deadline = deadline
         self.started_at = time.monotonic()
         self.explored_states = 0
         self.explored_actions = 0
@@ -323,10 +324,14 @@ class _BudgetTracker:
         """Stop on the global deadline or an optional local phase deadline."""
         if self.termination_reason is not None:
             return True
-        if self.budget.max_seconds is None and local_deadline is None:
+        if (
+            self.budget.max_seconds is None
+            and local_deadline is None
+            and self.deadline is None
+        ):
             return False
         now = time.monotonic()
-        if (
+        if (self.deadline is not None and now >= self.deadline) or (
             self.budget.max_seconds is not None
             and now - self.started_at >= self.budget.max_seconds
         ):
@@ -627,11 +632,28 @@ def _prepare_required_legal_moves(
 class ActionPlanner:
     """Enumerate complete legal Actions without mutating the caller."""
 
-    def __init__(self, budget: ActionSearchBudget | None = None):
+    def __init__(
+        self,
+        budget: ActionSearchBudget | None = None,
+        *,
+        strategy: str = "auto",
+        deadline: float | None = None,
+    ):
+        if strategy not in {"auto", "depth_first"}:
+            raise ValueError("strategy must be auto or depth_first")
         self.budget = budget or ActionSearchBudget()
+        # Minimax can explicitly keep the same candidate ordering as its
+        # remaining wall budget changes. The default admission stays unchanged.
+        self._strategy = strategy
+        self._deadline = deadline
+        self._cooperative_checks = strategy == "depth_first"
         self._tracker: _BudgetTracker | None = None
         self._search_telemetry: list[dict[str, Any]] = []
         self._defense_order_active = False
+
+    @property
+    def _uses_production_strategy(self) -> bool:
+        return self._strategy == "auto" and self.budget == _PRODUCTION_HYBRID_BUDGET
 
     def search(self, engine: "FiveDEngine") -> ActionSearchResult:
         """Search all bounded complete Action witnesses from ``engine``."""
@@ -643,13 +665,16 @@ class ActionPlanner:
         state = engine.clone_for_simulation()
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
-        tracker = _BudgetTracker(self.budget)
+        tracker = _BudgetTracker(self.budget, self._deadline)
         self._tracker = tracker
         candidates: list[tuple[MoveSpec, ...]] = []
         failed_states: set[tuple] = set()
 
-        if self.budget != _PRODUCTION_HYBRID_BUDGET:
-            self._dfs(state, (), 0, tracker, candidates, failed_states)
+        if not self._uses_production_strategy:
+            self._dfs(
+                state, (), 0, tracker, candidates, failed_states,
+                cooperative_checks=self._cooperative_checks,
+            )
             termination_reason = tracker.termination_reason
             if termination_reason is None and tracker.depth_cutoffs:
                 termination_reason = "move_depth_budget"
@@ -932,7 +957,7 @@ class ActionPlanner:
         # A direct immutable threat is cheaper to prove than to serialize this
         # whole multiverse for the transposition key. Charge the inspected state
         # once; no failed-state cache is needed for this independently proved leaf.
-        if self.budget == _PRODUCTION_HYBRID_BUDGET:
+        if self._uses_production_strategy:
             proof = prove_direct_threat(
                 state, lambda: tracker.check_time(local_deadline),
             )
@@ -957,7 +982,7 @@ class ActionPlanner:
 
         tracker.explored_states += 1
 
-        if depth == 0 and self.budget == _PRODUCTION_HYBRID_BUDGET:
+        if depth == 0 and self._uses_production_strategy:
             proof = prove_required_board_threat(
                 state, lambda: tracker.check_time(local_deadline),
             )
@@ -1002,7 +1027,7 @@ class ActionPlanner:
         prioritized_specs = set()
         if (
             depth == 0 and required and (len(required) > 2 or depth_limit == 1)
-            and self.budget == _PRODUCTION_HYBRID_BUDGET
+            and self._uses_production_strategy
             and state.timeline_manager.timelines
         ):
             defense_order = _required_defense_order(
@@ -1159,7 +1184,7 @@ class ActionPlanner:
 
         elif (
             len(required) > 2
-            and self.budget == _PRODUCTION_HYBRID_BUDGET
+            and self._uses_production_strategy
             and self._defense_order_active
         ):
             prepared = defense_order if defense_order is not None else _required_defense_order(
@@ -1173,9 +1198,9 @@ class ActionPlanner:
                     board for board in ordered_boards if board not in required
                 )
 
-        # MRV preparation is admitted only for the exact production hybrid
-        # envelope; every other budget keeps the established board ordering.
-        elif len(required) > 2 and self.budget == _PRODUCTION_HYBRID_BUDGET:
+        # MRV preparation is admitted only for the selected production hybrid
+        # strategy; explicit depth-first searches keep their board ordering.
+        elif len(required) > 2 and self._uses_production_strategy:
             prepared = _prepare_required_legal_moves(
                 state,
                 required,

@@ -193,7 +193,14 @@ class AlphaBetaAI(AIPlayer):
             max_move_depth=self.budget.max_move_depth,
             max_seconds=remaining_seconds,
         )
-        result = ActionPlanner(node_budget).search(engine)
+        # Remaining time may equal the configured limit on a coarse clock or
+        # be slightly smaller on a fine clock. Keep minimax candidate ordering
+        # independent of that equality, and share its original absolute deadline
+        # so cloning/preparation cannot restart the global wall budget.
+        deadline = None if self._timeout is None else self._start_time + self._timeout
+        result = ActionPlanner(
+            node_budget, strategy="depth_first", deadline=deadline,
+        ).search(engine)
         self._states_used += result.explored_states
         if result.termination_reason:
             self._budget_reason = self._budget_reason or result.termination_reason
