@@ -26,6 +26,45 @@ class RequiredBoardThreatProof:
 @dataclass(frozen=True, slots=True)
 class RequiredBoardMobilityProof:
     board: BoardCoord
+    forced_source_threat: RoyalThreat | None = None
+
+
+def _forced_incoming_source_threat(engine, incoming, interrupted):
+    """Certify a sole arrival source which every arrival makes irreparable.
+
+    Only used at full capacity with an immobile required destination. No new
+    acting-phase board can appear. Consuming the sole source any other way
+    removes every arrival; consuming it by an arrival must expose a direct
+    attacker on its successor, against a King/path already immutable here.
+    """
+    if not incoming or len({move.source.board for move in incoming}) != 1:
+        return None
+    if hasattr(engine, '_replay_origin'):
+        return None
+    view = RoyalRules(engine.timeline_manager.timelines).board_view
+    first_threat = None
+    for move in incoming:
+        if interrupted():
+            return None
+        child = engine.clone_for_simulation()
+        if not child.execute_action_move(move) or interrupted():
+            return None
+        threat = prove_direct_threat(child, interrupted)
+        if (
+            threat is None
+            or threat.attacker.board != move.source.board.next()
+            or view.resolve(threat.king.board) is None
+        ):
+            return None
+        if PieceMovementRules.is_slider(threat.piece.piece_type) and any(
+            view.resolve(square.board) is None
+            for square in PathRules.intermediate_squares(
+                threat.piece.piece_type, threat.attacker, threat.king,
+            )
+        ):
+            return None
+        first_threat = first_threat or threat
+    return None if interrupted() else first_threat
 
 
 def _branches_cannot_defer_required_boards(engine: "FiveDEngine") -> bool:
@@ -62,7 +101,7 @@ def prove_required_board_immobile(
     engine: "FiveDEngine",
     interrupted: Callable[[], bool],
 ) -> RequiredBoardMobilityProof | None:
-    """Prove a required board has neither a present nor a future advancement.
+    """Prove a required board has no safe present or future advancement.
 
     Current incoming/outgoing moves are checked canonically. Original acting-
     phase boards and local safety remain fixed until consumed. New playable
@@ -74,7 +113,9 @@ def prove_required_board_immobile(
     and Rooks whose first L-ray square toward new lanes is already blocked or
     missing on an original lane. At full timeline capacity there can be no new
     destinations, so all piece types may be checked. Otherwise other pieces
-    conservatively reject the certificate.
+    conservatively reject the certificate. At capacity, a sole incoming source
+    can also be rejected if every arrival creates an independently proved
+    irreversible threat with a King/path already immutable in this state.
     """
     if interrupted() or not engine.timeline_manager.timelines:
         return None
@@ -118,22 +159,33 @@ def prove_required_board_immobile(
             return None
         if legal_by_board[board]:
             continue
-        incoming = False
+        incoming = []
+        at_capacity = len(manager.timelines) >= manager.max_timelines
         for source in ActionRules.movable_boards(action, manager.timelines):
             if interrupted():
                 return None
-            if source not in legal_by_board:
+            if source in legal_by_board:
+                source_moves = legal_by_board[source]
+            else:
                 source_position = rules.board_view.resolve(source)
                 if source_position is None:
                     return None
-                legal_by_board[source] = engine.get_legal_moves(source_position)
+                targeted = getattr(engine, 'get_legal_moves_to_boards', None)
+                source_moves = (
+                    targeted(source_position, {board}) if targeted is not None
+                    else engine.get_legal_moves(source_position)
+                )
             if interrupted():
                 return None
-            if any(move.destination.board == board for move in legal_by_board[source]):
-                incoming = True
+            incoming.extend(move for move in source_moves if move.destination.board == board)
+            if incoming and not at_capacity:
                 break
         if not incoming and not interrupted():
             return RequiredBoardMobilityProof(board)
+        if at_capacity:
+            threat = _forced_incoming_source_threat(engine, incoming, interrupted)
+            if threat is not None:
+                return RequiredBoardMobilityProof(board, threat)
     return None
 
 

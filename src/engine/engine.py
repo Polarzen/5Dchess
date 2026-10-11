@@ -282,7 +282,7 @@ class FiveDEngine:
         candidates = required or movable
         return self._resolve_position(candidates[0])
 
-    def get_legal_moves(self, position: Position = None) -> list[Move]:
+    def get_legal_moves(self, position: Position = None, *, destination_boards=None) -> list[Move]:
         """获取当前 Action 可走棋盘上的合法 Move。"""
         if self.game_state != GameState.PLAYING:
             return []
@@ -300,14 +300,22 @@ class FiveDEngine:
         ):
             return []
 
-        generator = MoveGenerator(position, self.timeline_manager.timelines)
+        generator = MoveGenerator(
+            position, self.timeline_manager.timelines,
+            allow_branching=len(self.timeline_manager.timelines) < self.timeline_manager.max_timelines,
+            destination_boards=destination_boards,
+        )
         validator = MoveValidator(self.timeline_manager.timelines)
         pseudo_moves = generator.generate_all()
-        if len(self.timeline_manager.timelines) >= self.timeline_manager.max_timelines:
-            # Execution cannot allocate another timeline at capacity. Exclude
-            # those transitions before spending work on board-local safety.
-            pseudo_moves = [move for move in pseudo_moves if not move.is_branching]
         return validator.filter_legal_moves(position, pseudo_moves)
+
+    def get_legal_moves_to_boards(self, position: Position, boards) -> list[Move]:
+        """Canonical legal-Move subset landing on the requested boards.
+
+        Restrict destinations before geometry/path generation; all retained
+        moves still pass the same generator and local safety validator.
+        """
+        return self.get_legal_moves(position, destination_boards=boards)
 
     def get_legal_moves_from_square(
         self,
@@ -331,11 +339,12 @@ class FiveDEngine:
         ):
             return []
 
-        generator = MoveGenerator(position, self.timeline_manager.timelines)
+        generator = MoveGenerator(
+            position, self.timeline_manager.timelines,
+            allow_branching=len(self.timeline_manager.timelines) < self.timeline_manager.max_timelines,
+        )
         validator = MoveValidator(self.timeline_manager.timelines)
         pseudo_moves = generator.generate_from_square(x, y)
-        if len(self.timeline_manager.timelines) >= self.timeline_manager.max_timelines:
-            pseudo_moves = [move for move in pseudo_moves if not move.is_branching]
         return validator.filter_legal_moves(position, pseudo_moves)
 
     def execute_action_move(self, move: Move) -> bool:

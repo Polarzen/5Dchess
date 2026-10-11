@@ -46,6 +46,7 @@ def _timeline(timeline_id: int, *positions, owner=None):
 @pytest.mark.parametrize('fixture', [
     'easy20_king_escape_state', 'control43_active_rewind_state',
     'easy20_two_fixed_attackers_state', 'seed53_uncapturable_threat_state',
+    'seed43_twenty_seven_required_state', 'seed43_twenty_eight_required_state',
 ])
 def test_integer_prefilter_preserves_full_canonical_threat_enumeration(fixture):
     from src.data.archive import GameArchive

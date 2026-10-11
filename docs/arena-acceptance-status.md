@@ -4,7 +4,44 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: remove recovery dependency, then Medium/Hard
+## Current follow-up: late seed 43 positions
+
+The latest committed implementation is `e90bfe46`. Its 523-test suite and both
+[CI](https://github.com/Polarzen/5Dchess/actions/runs/38127749935) and
+[Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38127752371) pass.
+Seeds 51/53/55/42 have zero failures and recoveries, but the fresh control 43
+game reaches different late positions and ends with one neural planning
+failure and six Action recoveries (281.469 seconds). The current no-recovery
+acceptance gate therefore remains open; no Arena tier has been rerun on this
+implementation. Earlier passes below are not relabeled as current results.
+
+The next uncommitted follow-up addresses the captured positions with targeted
+canonical destination generation, optional arrivals to an immobile required
+board, and a conservative full-capacity certificate for a sole arrival source
+whose every arrival creates an irreversible direct threat. White/Black small
+positions are compared against exhaustive search, including alternate-source,
+attacker-removal, spare-capacity, and interruption escapes.
+
+Large-board defense tries captures from other boards in the established
+defense-board priority, then lazily generates required-board progress before
+other historical destinations. Using canonical source order for that capture
+prefix regressed the older 19-required-board fixture; the priority correction
+handles both that fixture and the new 27-required-board fixture. Royal geometry
+uses primitive cache keys with the same exact geometry and path predicates.
+A separate defect discarded an already-proved two-board completion when
+preparing later candidates timed out; complete candidates are now retained
+immediately. A deterministic clock regression covers that loss of evidence.
+
+All seven new captured states now either return a canonically replayable
+candidate (Actions 94/95/100/101/103/104) or prove terminal (Action 105), with
+the unchanged primary budget in the earlier snapshot probe. The first full
+suite exposed the capture-order regression above (540 passed, one failed).
+After correcting that priority, the full suite passes: **541 passed, 2 skipped,
+one existing telemetry warning**, in 226.71 seconds. Fresh fixed-seed and Arena
+validation remain pending. A virtual-copy optimization was investigated but
+is not included.
+
+## Earlier capacity and minimax follow-ups
 
 The next acceptance phase is in progress. It must resolve the Easy recovery
 dependency and seed 42 before proceeding to Medium20 and Hard20 with the same

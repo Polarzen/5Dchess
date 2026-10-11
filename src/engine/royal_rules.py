@@ -59,10 +59,23 @@ class RoyalRules:
         return self._king_squares_in(self.timelines, color)
 
     @staticmethod
-    @lru_cache(maxsize=262_144)
     def _attack_delta_matches(
         piece_type: PieceType,
         color: ChessColor,
+        dx: int,
+        dy: int,
+        dt: int,
+        dl: int,
+    ) -> bool:
+        return RoyalRules._attack_delta_values_match(
+            piece_type.value, color == ChessColor.WHITE, dx, dy, dt, dl,
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=262_144)
+    def _attack_delta_values_match(
+        piece_type: str,
+        white: bool,
         dx: int,
         dy: int,
         dt: int,
@@ -74,10 +87,11 @@ class RoyalRules:
         source→King displacement.  Caching only this occupancy-independent part
         avoids recomputing millions of identical integer predicates while path
         blocking remains validated against the current multiverse below.
+        Primitive keys avoid repeated Enum hashing in the attacker/King product.
         """
-        if piece_type == PieceType.PAWN:
-            spatial_forward = -1 if color == ChessColor.WHITE else 1
-            timeline_forward = -1 if color == ChessColor.WHITE else 1
+        if piece_type == PieceType.PAWN.value:
+            spatial_forward = -1 if white else 1
+            timeline_forward = -1 if white else 1
             return (
                 (
                     abs(dx) == 1
@@ -109,15 +123,15 @@ class RoyalRules:
         max_magnitude = max(adx, ady, adt, adl)
         magnitude_sum = adx + ady + adt + adl
 
-        if piece_type == PieceType.ROOK:
+        if piece_type == PieceType.ROOK.value:
             return dimensions == 1
-        if piece_type == PieceType.BISHOP:
+        if piece_type == PieceType.BISHOP.value:
             return dimensions == 2 and magnitude_sum == 2 * max_magnitude
-        if piece_type == PieceType.QUEEN:
+        if piece_type == PieceType.QUEEN.value:
             return magnitude_sum == dimensions * max_magnitude
-        if piece_type == PieceType.KING:
+        if piece_type == PieceType.KING.value:
             return max_magnitude == 1
-        if piece_type == PieceType.KNIGHT:
+        if piece_type == PieceType.KNIGHT.value:
             return (
                 dimensions == 2
                 and max_magnitude == 2
@@ -257,13 +271,15 @@ class RoyalRules:
             turn, lane = board.coord.turn, board.coord.timeline
             for x, y, piece in board.position.get_all_pieces(by_color):
                 source = Square5D(board.coord, x, y)
+                piece_code = piece.piece_type.value
+                white = by_color == ChessColor.WHITE
                 for king, king_x, king_y, king_turn, king_lane in kings:
                     # Both endpoints already have the attacker's phase. Use the
                     # same exact geometry predicate on pre-extracted integers;
                     # most pairs fail without repeated Square5D property calls.
                     # Surviving pairs still use the canonical path predicate.
-                    if not cls._attack_delta_matches(
-                        piece.piece_type, by_color, king_x - x, king_y - y,
+                    if not cls._attack_delta_values_match(
+                        piece_code, white, king_x - x, king_y - y,
                         king_turn - turn, king_lane - lane,
                     ):
                         continue
