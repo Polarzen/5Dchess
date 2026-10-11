@@ -1674,5 +1674,91 @@
       ],
       "failure_archive": "hard20-fix6/game-16-action-118-snapshot-29.json.gz"
     }
+  },
+  "reliability_phase2_fix7": {
+    "status": "fixed_gate_failed_seed42",
+    "implementation_commit": "17d9d1fadb310c47669e5b8ff0c339aedbb7baa5",
+    "local_suite": {
+      "passed": 566,
+      "skipped": 2,
+      "warnings": 1,
+      "seconds": 271.5
+    },
+    "fixed_seeds": [
+      {
+        "seed": 51,
+        "source_commit": "17d9d1fadb310c47669e5b8ff0c339aedbb7baa5",
+        "source_fingerprint": "68853dae0d02ecaf7d17516e012eaf66c28533266a7a0a093501a729f45cdbd8",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 23.530999999988126,
+        "games": 1,
+        "wins": 0,
+        "draws": 1,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0
+      },
+      {
+        "seed": 53,
+        "source_commit": "17d9d1fadb310c47669e5b8ff0c339aedbb7baa5",
+        "source_fingerprint": "68853dae0d02ecaf7d17516e012eaf66c28533266a7a0a093501a729f45cdbd8",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 7.344000000011874,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0
+      },
+      {
+        "seed": 55,
+        "source_commit": "17d9d1fadb310c47669e5b8ff0c339aedbb7baa5",
+        "source_fingerprint": "68853dae0d02ecaf7d17516e012eaf66c28533266a7a0a093501a729f45cdbd8",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 9.51500000001397,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0
+      },
+      {
+        "seed": 42,
+        "source_commit": "17d9d1fadb310c47669e5b8ff0c339aedbb7baa5",
+        "source_fingerprint": "68853dae0d02ecaf7d17516e012eaf66c28533266a7a0a093501a729f45cdbd8",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 91.8289999999979,
+        "games": 1,
+        "wins": 0,
+        "draws": 0,
+        "losses": 1,
+        "planning_failure_count": 1,
+        "planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0
+      }
+    ],
+    "seed43_and_arenas": "not run because seed42 failed",
+    "failure_archive": "fix7-42/failure-68.json.gz",
+    "remote_ci": {
+      "run_id": 38140184768,
+      "conclusion": "success"
+    },
+    "remote_training_ci": {
+      "run_id": 38140187745,
+      "conclusion": "success"
+    }
   }
 }

@@ -4,7 +4,38 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: skip forced multi-Move prefixes in the short probe
+## Current follow-up: preserve threatened King boards during arrivals
+
+Implementation `17d9d1fa` passes 566 tests (2 skipped) and both
+[CI](https://github.com/Polarzen/5Dchess/actions/runs/38140184768) and
+[Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38140187745).
+Seeds 51/53/55 pass, but control 42 reaches a new 20-required-board position
+at Action 68 and ends with one neural planning failure, zero recoveries,
+and zero illegal/stale/unexpected errors (91.829 seconds). The batch stops;
+seed 43 and all Arena tiers were not rerun on that implementation.
+
+The arrival prefix used the threatened King's board to advance an immobile
+neighbor, consuming the board's royal-defense opportunity. The resulting
+partial Action has a conservative required-board threat certificate; other
+arrival sources preserve an escape. The follow-up orders those other sources
+first only for immobile-board arrivals. Moves of the threatened King itself
+and captures of a known attacker retain their original priority; unrelated
+departures from that board are deferred and remain searchable. The established
+later capture-defense order is unchanged. No proof rule,
+model, recovery path or search budget is changed.
+
+The diagnostic prototype returns 24 candidates in 4.078 seconds for the new
+position, with an 11-Move first Action. The older two-immobile-board and
+19-required-board snapshots also retain canonical candidates. Focused
+validation initially passes 34 tests, but the first full suite exposes one
+old arrival regression (566 passed, one failed): deferring a whole threatened
+source also delays its King escape. The refined per-Move order preserves that
+escape, passes four critical captured regressions and two candidate-set/source
+immutability checks. The final full suite passes 569 tests, with 2 skipped
+and one existing telemetry warning, in 237.70 seconds. Fresh fixed-seed and
+Arena gates remain pending.
+
+## Earlier follow-up: skip forced multi-Move prefixes in the short probe
 
 Implementation `51921ee2` passes 562 tests (2 skipped), all five fixed seeds,
 Easy20 (W16 D3 L1, 192.688 seconds) and Medium20 (W0 D0 L20, 93.422 seconds),

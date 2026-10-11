@@ -91,6 +91,7 @@ def test_captured_forced_arrival_is_proven_terminal():
     'seed43_quiet_large_state', 'seed43_immobile_arrival_large_state',
     'seed53_three_required_defense_state',
     'seed42_two_immobile_required_state', 'seed42_threatened_rewind_source_state',
+    'seed42_twenty_required_arrival_defense_state',
 ])
 def test_captured_frontier_keeps_complete_candidates_in_primary_budget(fixture):
     engine = _captured(fixture)
@@ -106,6 +107,37 @@ def test_captured_frontier_keeps_complete_candidates_in_primary_budget(fixture):
     assert engine_state_signature(engine) == before
     assert planner.search(FiveDEngine()).candidates
     assert not planner._arrival_targets
+
+
+@pytest.mark.parametrize('fixture', [
+    'seed42_twenty_required_arrival_defense_state',
+    'seed43_immobile_arrival_large_state',
+])
+def test_arrival_defense_order_retains_every_canonical_arrival(fixture):
+    import src.ai.action_planner as planning
+
+    engine = _captured(fixture)
+    before = engine_state_signature(engine)
+    required = set(engine.get_required_action_boards())
+    tracker = planning._BudgetTracker(planning.ActionSearchBudget(max_seconds=30))
+    order = planning._required_defense_order(
+        engine, required, tracker, None, continue_strategy=True,
+    )
+    movable = ActionRules.movable_boards(engine.current_action, engine.timeline_manager.timelines)
+    sources = order[0] + tuple(board for board in movable if board not in required)
+    targets = {board for board in required
+               if not engine.get_legal_moves(engine._resolve_position(board))}
+    assert targets
+    expected = [move for board in sources
+                for move in engine.get_legal_moves_to_boards(engine._resolve_position(board), targets)]
+    actual = list(planning._immobile_arrival_moves(
+        engine, sources, targets, order[1], order[3], order[4], tracker, None,
+    ))
+    assert len(actual) == len(expected) > 0
+    assert {planning.MoveSpec.from_move(move) for move in actual} == {
+        planning.MoveSpec.from_move(move) for move in expected
+    }
+    assert engine_state_signature(engine) == before
 
 
 def _forced_source(color, *, alternate=False, attacker=True):

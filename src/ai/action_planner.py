@@ -466,6 +466,40 @@ def _large_frontier_moves(state, position, required, key, tracker, local_deadlin
     yield from (move for move in remaining if MoveSpec.from_move(move) not in seen)
 
 
+def _immobile_arrival_moves(state, sources, targets, key, capture_targets, threatened_kings, tracker, local_deadline):
+    """Keep King escapes, then other sources, before unrelated departures.
+
+    Advancing a threatened King's board with another piece can consume its
+    defense. Moving that King or capturing a known attacker may solve the
+    threat and the arrival at once, so preserve those Moves in the established
+    source order. Deferred arrivals remain canonical Moves on this parent.
+    """
+    threatened_sources = {square.board for square in threatened_kings}
+    deferred = []
+    for board in sources:
+        if tracker.check_time(local_deadline):
+            return
+        position = state._resolve_position(board)
+        if position is None:
+            continue
+        moves = sorted(_legal_moves_into(state, position, targets), key=key)
+        if tracker.check_time(local_deadline):
+            return
+        for move in moves:
+            if (
+                move.source.board in threatened_sources
+                and move.source not in threatened_kings
+                and move.destination not in capture_targets
+            ):
+                deferred.append(move)
+            else:
+                yield move
+    for move in deferred:
+        if tracker.check_time(local_deadline):
+            return
+        yield move
+
+
 # Quiet frontiers use lazy generation only at this size. Smaller frontiers
 # retain MRV unless a concrete required-board attacker needs defense first.
 _LARGE_DEFENSE_MIN_REQUIRED = 17
@@ -575,7 +609,7 @@ def _required_defense_order(state, required, tracker, local_deadline, *, continu
             *_required_move_sort_key(move, required),
         )
 
-    return boards, move_key, prefer_rewinds, frozenset(captures)
+    return boards, move_key, prefer_rewinds, frozenset(captures), frozenset(kings)
 
 
 def _safe_king_moves_first(state, moves, tracker, local_deadline):
@@ -1197,29 +1231,26 @@ class ActionPlanner:
                 arrival_sources = defense_order[0] + tuple(
                     board for board in ordered_boards if board not in required
                 )
-                for board in arrival_sources:
-                    if tracker.check_time(local_deadline):
+                arrivals = _immobile_arrival_moves(
+                    state, arrival_sources, immobile, defense_order[1],
+                    defense_order[3], defense_order[4], tracker, local_deadline,
+                )
+                for move in arrivals:
+                    if tracker.check(depth, depth_limit, local_deadline):
                         return found_completion
-                    position = state._resolve_position(board)
-                    if position is None:
+                    if skip_probe_move(move):
                         continue
-                    moves = sorted(_legal_moves_into(state, position, immobile), key=defense_order[1])
-                    for move in moves:
-                        if tracker.check(depth, depth_limit, local_deadline):
-                            return found_completion
-                        if skip_probe_move(move):
-                            continue
-                        child = state.clone_for_simulation()
-                        if not child.execute_action_move(move):
-                            continue
-                        spec = MoveSpec.from_move(move)
-                        prioritized_specs.add(spec)
-                        if self._dfs(
-                            child, path + (spec,), depth + 1, tracker, candidates, failed_states,
-                            depth_limit=depth_limit, candidate_keys=candidate_keys,
-                            local_deadline=local_deadline, cooperative_checks=cooperative_checks,
-                        ):
-                            found_completion = True
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                    spec = MoveSpec.from_move(move)
+                    prioritized_specs.add(spec)
+                    if self._dfs(
+                        child, path + (spec,), depth + 1, tracker, candidates, failed_states,
+                        depth_limit=depth_limit, candidate_keys=candidate_keys,
+                        local_deadline=local_deadline, cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
 
         if len(required) > 2 and self._defense_order_active and depth_limit != 1:
             if defense_order is None:
@@ -1438,7 +1469,7 @@ class ActionPlanner:
             if prepared is _PREPARATION_INTERRUPTED:
                 return found_completion
             if prepared is not None:
-                required_order, move_sort_key, _, _ = prepared
+                required_order, move_sort_key, _, _, _ = prepared
                 ordered_boards = required_order + tuple(
                     board for board in ordered_boards if board not in required
                 )
