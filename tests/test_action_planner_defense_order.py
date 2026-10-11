@@ -217,3 +217,63 @@ def test_late_rewind_move_generation_is_not_a_terminal_proof(monkeypatch):
     assert not result.candidates and result.termination_reason == 'time_budget'
     assert result.failed_state_cache_hits == 0
     assert engine_state_signature(engine) == before
+
+
+def _three_required_at_capacity(*, empty=False):
+    engine = FiveDEngine(max_timelines=3)
+    manager = engine.timeline_manager
+    manager.timelines = {}
+    for lane in (-1, 0, 1):
+        position = Position.initial(timeline_id=lane)
+        if empty:
+            position.board = [[''] * 8 for _ in range(8)]
+        manager.timelines[lane] = Timeline(lane, positions={0: position},
+            owner=None if lane == 0 else (ChessColor.WHITE if lane > 0 else ChessColor.BLACK))
+    manager._next_positive_id = 2
+    manager._next_negative_id = -2
+    manager.refresh_activity()
+    engine.current_action = ActionRules.begin(ChessColor.WHITE, manager.timelines)
+    return engine
+
+
+def test_impossible_one_move_probe_is_skipped_but_multi_move_actions_remain():
+    engine = _three_required_at_capacity()
+    before = engine_state_signature(engine)
+    for board in engine.get_required_action_boards():
+        for move in engine.get_legal_moves(engine._resolve_position(board)):
+            child = engine.clone_for_simulation()
+            assert child.execute_action_move(move)
+            assert not child.can_submit_action()
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert result.candidates and len(result.candidates[0]) > 1
+    probe, deep = planner.search_telemetry
+    assert probe['structurally_skipped'] and probe['states_delta'] == 0
+    assert probe['depth_cutoffs_delta'] == 0 and deep['unique_candidates_delta'] > 0
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def test_skipped_probe_does_not_turn_proved_terminal_into_depth_exhaustion():
+    engine = _three_required_at_capacity(empty=True)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert not result.candidates and result.termination_reason is None
+    assert result.explored_states == 1
+    assert planner.search_telemetry[0]['structurally_skipped']
+
+
+@pytest.mark.parametrize('fixture', ['hard20_rewind_four_state', 'hard20_rewind_three_state'])
+def test_real_active_rewinds_remain_eligible_for_the_single_move_probe(fixture):
+    engine = _captured(fixture)
+    before = engine_state_signature(engine)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert not planner.search_telemetry[0]['structurally_skipped']
+    assert result.candidates and len(result.candidates[0]) == 1
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before

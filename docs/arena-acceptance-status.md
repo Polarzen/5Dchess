@@ -4,7 +4,28 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: avoid historical copies in internal royal queries
+## Current follow-up: skip structurally impossible single-Move probes
+
+Implementation `aa916b87` passes the local suite (590 passed, 2 skipped), all
+five fixed seeds and Easy20 (W16 D3 L1, 197.547 seconds), with zero failures
+or Action recoveries. Training CI `38147636546` passes. CI `38147634092` fails
+one captured 23-required-board test: no candidate in five seconds, 15 states;
+510 tests pass and 6 skip. Medium and Hard are not started on this version.
+
+The production single-Move probe cannot succeed with more than two required
+boards when the existing allocation/activity certificate proves those boards
+cannot be deferred by branching. A canonical Move advances at most two old
+boards. The planner now skips only that structurally impossible probe and
+keeps the original global budget for deep search. No failed-state or artificial
+depth-cutoff evidence is recorded. Real active rewinds remain eligible; the
+explicit minimax strategy is unchanged. Telemetry identifies the skipped phase.
+
+The focused probe/MRV/defense suite passes 42 tests, including canonical
+one-Move exhaustion followed by a multi-Move witness, a proved terminal state,
+and actual active-rewind escapes. The new captured primary-budget regression
+passes locally. Fresh full-suite, CI and fixed/Arena acceptance are pending.
+
+## Earlier follow-up: avoid historical copies in internal royal queries
 
 Implementation `4cadbfc1` passes 577 tests (2 skipped), all five fixed seeds,
 Easy20 (W16 D3 L1, 189.437 seconds) and Medium20 (W0 D0 L20, 119.938 seconds),

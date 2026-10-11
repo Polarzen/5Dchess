@@ -18,6 +18,7 @@ from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
 from src.engine.action_proof import (
+    _branches_cannot_defer_required_boards,
     fixed_successor_attackers, move_exposes_fixed_attacker,
     prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
 )
@@ -766,18 +767,29 @@ class ActionPlanner:
         probe_deadline = tracker.started_at + 1.0
         tracker.phase_interrupted = False
         self._in_probe = True
-        self._dfs(
-            state,
-            (),
-            0,
-            tracker,
-            candidates,
-            failed_states,
-            depth_limit=probe_depth_limit,
-            candidate_keys=candidate_keys,
-            local_deadline=probe_deadline,
-            cooperative_checks=True,
+        probe_skipped = (
+            self._strategy == "auto" and probe_depth_limit == 1
+            and len(ActionRules.required_boards(state._ensure_current_action(), state.timeline_manager.timelines)) > 2
+            and _branches_cannot_defer_required_boards(state)
         )
+        # A Move advances at most two existing boards. When allocation/activity
+        # proves every required board must advance, a one-Move probe cannot
+        # complete an Action with three or more required boards. Keep the whole
+        # original budget for deep search; no failed-state/cache evidence is
+        # created by skipping this impossible shallow phase.
+        if not probe_skipped:
+            self._dfs(
+                state,
+                (),
+                0,
+                tracker,
+                candidates,
+                failed_states,
+                depth_limit=probe_depth_limit,
+                candidate_keys=candidate_keys,
+                local_deadline=probe_deadline,
+                cooperative_checks=True,
+            )
         self._in_probe = False
         if self._strategy == "probe_then_depth_first":
             # The probe's ordering hints must not replace minimax's established
@@ -808,11 +820,12 @@ class ActionPlanner:
             cutoffs_before=probe_cutoffs_before,
             candidates_after=len(candidate_keys),
         )
+        self._search_telemetry[-1]["structurally_skipped"] = probe_skipped
         tracker.phase_interrupted = False
 
         run_fallback = (
             probe_global_reason is None
-            and (probe_interrupted or probe_cutoffs_delta > 0)
+            and (probe_skipped or probe_interrupted or probe_cutoffs_delta > 0)
         )
         if run_fallback:
             fallback_cutoffs_before = tracker.depth_cutoffs
