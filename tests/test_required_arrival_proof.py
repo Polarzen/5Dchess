@@ -90,11 +90,13 @@ def test_captured_forced_arrival_is_proven_terminal():
     'seed43_twenty_seven_required_state', 'seed43_twenty_eight_required_state',
     'seed43_quiet_large_state', 'seed43_immobile_arrival_large_state',
     'seed53_three_required_defense_state',
+    'seed42_two_immobile_required_state', 'seed42_threatened_rewind_source_state',
 ])
 def test_captured_frontier_keeps_complete_candidates_in_primary_budget(fixture):
     engine = _captured(fixture)
     before = engine_state_signature(engine)
-    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
     assert 0 < len(result.candidates) <= 24
     assert result.explored_states <= 1024
     assert 0 < len(result.candidates[0]) <= 32
@@ -102,6 +104,8 @@ def test_captured_frontier_keeps_complete_candidates_in_primary_budget(fixture):
     apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
     assert child.action_history[-1].submitted
     assert engine_state_signature(engine) == before
+    assert planner.search(FiveDEngine()).candidates
+    assert not planner._arrival_targets
 
 
 def _forced_source(color, *, alternate=False, attacker=True):

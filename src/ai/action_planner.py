@@ -681,6 +681,7 @@ class ActionPlanner:
         self._tracker: _BudgetTracker | None = None
         self._search_telemetry: list[dict[str, Any]] = []
         self._defense_order_active = False
+        self._arrival_targets = frozenset()
 
     @property
     def _uses_production_strategy(self) -> bool:
@@ -690,6 +691,7 @@ class ActionPlanner:
         """Search all bounded complete Action witnesses from ``engine``."""
         self._search_telemetry = []
         self._defense_order_active = False
+        self._arrival_targets = frozenset()
         if engine.game_state != GameState.PLAYING:
             return ActionSearchResult((), 0, "game_not_playing")
 
@@ -1081,7 +1083,10 @@ class ActionPlanner:
             # Optional sources can rewind without advancing a threatened
             # required board. Prepare one source at a time so large frontiers
             # do not consume the whole probe before its first execution.
-            for board in sorted(ordered_boards, key=lambda source: source in required):
+            threatened_sources = {square.board for square in defense_order[3]}
+            for board in sorted(ordered_boards, key=lambda source: (
+                source in required, source in threatened_sources,
+            )):
                 if tracker.check_time(local_deadline):
                     return found_completion
                 position = state._resolve_position(board)
@@ -1117,23 +1122,34 @@ class ActionPlanner:
         # Move that lands directly on a required board is also completion-relevant:
         # inspect only those optional Moves before ordinary required-board
         # branches.  Other optional Moves remain after required Moves as before.
-        if depth == 0 and len(required) > 2 and self._defense_order_active and depth_limit != 1:
+        if len(required) > 2 and self._defense_order_active and depth_limit != 1:
+            if defense_order is None:
+                defense_order = _required_defense_order(
+                    state, required, tracker, local_deadline, continue_strategy=True,
+                )
+            if defense_order is _PREPARATION_INTERRUPTED:
+                return found_completion
             # A kingless required board may have no outgoing Move at all.
             # Advance it by arrival before other defenses consume its sources.
-            # This is ordering only: retain every other legal Move below.
-            immobile = set()
-            for board in defense_order[0]:
+            # Keep the root's ordering hints until each board is advanced. A
+            # second immobile board must not lose its arrivals after the first.
+            # Hints never prune Moves; branches may change future mobility.
+            if depth == 0:
+                immobile = set()
+                for board in defense_order[0]:
+                    if tracker.check_time(local_deadline):
+                        return found_completion
+                    position = state._resolve_position(board)
+                    if (
+                        position is not None
+                        and position.find_king(state.current_turn_color) is None
+                        and not state.get_legal_moves(position)
+                    ):
+                        immobile.add(board)
                 if tracker.check_time(local_deadline):
                     return found_completion
-                position = state._resolve_position(board)
-                if (
-                    position is not None
-                    and position.find_king(state.current_turn_color) is None
-                    and not state.get_legal_moves(position)
-                ):
-                    immobile.add(board)
-            if tracker.check_time(local_deadline):
-                return found_completion
+                self._arrival_targets = frozenset(immobile)
+            immobile = self._arrival_targets & required
             if immobile:
                 arrival_sources = defense_order[0] + tuple(
                     board for board in ordered_boards if board not in required

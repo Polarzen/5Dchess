@@ -4,7 +4,32 @@ This document is the durable status for the Planner reliability work around
 PR #24. The current baseline is `70a5f495`; durable baseline run
 `34745200932` remains the acceptance reference.
 
-## Current follow-up: preserve defenses and arrival sources
+## Current follow-up: retain arrival priority and safe rewind sources
+
+Implementation `7f65cbe1` passes 544 local tests (2 skipped, one telemetry
+warning; 223.36 seconds) and both [CI](https://github.com/Polarzen/5Dchess/actions/runs/38133043598)
+and [Training CI](https://github.com/Polarzen/5Dchess/actions/runs/38133045806).
+Seed 53 passes with zero failures/recoveries in 7.187 seconds. Seed 42 reaches
+two new positions and finishes with one neural failure and one neural recovery
+in 174.516 seconds. The gate stops there; seeds 43/51/55 and all Arena tiers
+were not run on this implementation.
+
+The new follow-up keeps root immobile-board arrival priorities through
+descendants until those boards advance. This prevents the second immobile
+board from losing its incoming sources after the first is handled. The
+one-Move rewind probe also tries sources without a known virtual attacker
+before sources that would expose that attacker. Both are ordering changes;
+all legal moves remain available and no timeout is treated as terminal.
+
+Captured seed 42 Action 72 now yields 21 candidates (first Action: 14 Moves),
+and Action 80 yields 24 one-Move candidates in 0.656 seconds. Both first
+candidates replay canonically and leave their sources unchanged. Captured
+regressions also check that planner arrival hints reset for a fresh search.
+The full suite passes **546 tests, with 2 skipped and one existing telemetry
+warning**, in 222.13 seconds. The fresh fixed gate is running. No completion
+cache, Royal copy optimization, model change, or budget increase is included.
+
+## Earlier follow-up: preserve defenses and arrival sources
 
 Implementation `19ecc4d8` passes the full local suite (541 passed, 2 skipped,
 one telemetry warning) and both [CI](https://github.com/Polarzen/5Dchess/actions/runs/38131254706)
@@ -28,7 +53,7 @@ was added. Captured seed 42 Actions 76/77/78 return replayable candidates under
 the primary budget; seed 43 Actions 80/87 have captured replay regressions.
 A new seed 53 three-required-board regression covers the final admission.
 The final full suite passes **544 tests, with 2 skipped and one existing
-telemetry warning**, in 223.36 seconds. The fresh fixed gate is running.
+telemetry warning**, in 223.36 seconds. The fresh gate later failed on seed 42 as recorded above.
 Copy optimizations remain experiments only; no Royal virtual-copy change is
 included.
 

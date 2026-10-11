@@ -1127,5 +1127,102 @@
     },
     "arena": "No Arena tier started for this implementation",
     "note": "Raw source fingerprints preserved. Seed43 started before commit but uses the same tested implementation bytes."
+  },
+  "reliability_phase2_fix4": {
+    "implementation_commit": "7f65cbe1d1c3eccd2e72e0b3dadb3af24aa76b8e",
+    "status": "fixed_gate_failed",
+    "local_suite": {
+      "passed": 544,
+      "skipped": 2,
+      "warnings": 1,
+      "seconds": 223.36
+    },
+    "remote_ci": {
+      "run_id": 38133043598,
+      "conclusion": "success"
+    },
+    "remote_training_ci": {
+      "run_id": 38133045806,
+      "conclusion": "success"
+    },
+    "fixed_seeds": [
+      {
+        "seed": 53,
+        "source_commit": "19ecc4d8d98c0f213014d1f7cbc630f50e2dc43b",
+        "source_fingerprint": "ea144b5f714dcdd3c6bfe4e6430cf3f3fa498847853f8bc3f6a7041cb6146177",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 7.187000000005355,
+        "games": 1,
+        "wins": 1,
+        "draws": 0,
+        "losses": 0,
+        "planning_failure_count": 0,
+        "neural_planning_failure_count": 0,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 0,
+        "neural_planner_recovery_count": 0,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": null
+      },
+      {
+        "seed": 42,
+        "source_commit": "19ecc4d8d98c0f213014d1f7cbc630f50e2dc43b",
+        "source_fingerprint": "ea144b5f714dcdd3c6bfe4e6430cf3f3fa498847853f8bc3f6a7041cb6146177",
+        "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
+        "seconds": 174.51600000000326,
+        "games": 1,
+        "wins": 0,
+        "draws": 0,
+        "losses": 1,
+        "planning_failure_count": 1,
+        "neural_planning_failure_count": 1,
+        "baseline_planning_failure_count": 0,
+        "planner_recovery_count": 1,
+        "neural_planner_recovery_count": 1,
+        "baseline_planner_recovery_count": 0,
+        "illegal_action_count": 0,
+        "stale_failure_count": 0,
+        "unexpected_failure_count": 0,
+        "proven_terminal_adjudication_count": 0,
+        "first_failure": {
+          "game_id": 1,
+          "game_index": 0,
+          "action_index": 80,
+          "ply": 258,
+          "player": "white",
+          "state_signature_sha256": "ec140f7a8692457b04d9fbb2412429aa69ae3a0ab3da4e0c858c82d1a047c022",
+          "timeline_count": 30,
+          "candidate_count": 0,
+          "chosen_index": null,
+          "logit": null,
+          "plan_move_count": null,
+          "canonical_move_specs": [],
+          "failure_stage": "planning",
+          "exception_class": "ActionPlanningError",
+          "exception_qualified_class": "src.ai.action_planner.ActionPlanningError",
+          "message": "unable to plan a complete Action: time_budget (incomplete=True)",
+          "traceback": "Traceback (most recent call last):\n  File \"D:\\code\\5D\u8c61\u68cb\\src\\training\\arena.py\", line 485, in evaluate_arena\n    plan = neural.plan_action(engine)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\code\\5D\u8c61\u68cb\\src\\training\\agent.py\", line 95, in plan_action\n    result, decision = self.score_candidates(engine)\n                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\code\\5D\u8c61\u68cb\\src\\training\\agent.py\", line 61, in score_candidates\n    raise ActionPlanningError(\nsrc.ai.action_planner.ActionPlanningError: unable to plan a complete Action: time_budget (incomplete=True)\n",
+          "planning_reason": "time_budget",
+          "planning_incomplete": true,
+          "explored_states": 82,
+          "explored_actions": 0,
+          "plan_metadata": null,
+          "plan_start_signature_sha256": null
+        }
+      }
+    ],
+    "not_run": [
+      "seed43",
+      "seed51",
+      "seed55",
+      "Easy20",
+      "Medium20",
+      "Hard20"
+    ],
+    "note": "Batch stopped after seed42 F1/R1; no later gate results claimed. Source bytes match implementation even when raw run metadata precedes commit."
   }
 }
