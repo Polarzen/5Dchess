@@ -48,6 +48,7 @@ def _timeline(timeline_id: int, *positions, owner=None):
     'easy20_king_escape_state', 'control43_active_rewind_state',
     'easy20_two_fixed_attackers_state', 'seed53_uncapturable_threat_state',
     'seed43_twenty_seven_required_state', 'seed43_twenty_eight_required_state',
+    'hard20_twenty_three_required_state', 'outcome_action_92_white',
 ])
 def test_integer_prefilter_preserves_full_canonical_threat_enumeration(fixture):
     from src.data.archive import GameArchive
@@ -74,6 +75,20 @@ def test_integer_prefilter_preserves_full_canonical_threat_enumeration(fixture):
                         if RoyalRules._attacks_prevalidated_square_with_view(piece, source, king, view):
                             reference.append(RoyalThreat(piece, source, king))
             assert tuple(RoyalRules._iter_direct_threats_in(timelines, color)) == tuple(reference)
+
+
+@pytest.mark.parametrize('piece', list(PieceType))
+@pytest.mark.parametrize('color', list(ChessColor))
+def test_spatial_prefilter_retains_every_geometric_attack(piece, color):
+    for dx in range(-7, 8):
+        for dy in range(-7, 8):
+            possible = RoyalRules._spatial_delta_can_attack(piece.value, color == ChessColor.WHITE, dx, dy)
+            if possible:
+                continue
+            # Include long pure-time/lane rays as well as all short leapers.
+            for dt in range(-9, 10):
+                for dl in range(-9, 10):
+                    assert not RoyalRules._attack_delta_matches(piece, color, dx, dy, dt, dl)
 
 
 @pytest.mark.parametrize('fixture', [

@@ -18,6 +18,7 @@ from src.ai.base import AIPlayer
 from src.ai.evaluator import Evaluator
 from src.engine.move_generator import Move
 from src.engine.move_validator import MoveValidator
+from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.utils.constants import AIDifficulty, ChessColor, GameState
 
 
@@ -242,17 +243,25 @@ class AlphaBetaAI(AIPlayer):
 
     def _search_state(self, engine, depth: int, alpha: float, beta: float) -> float:
         self._nodes_searched += 1
+        # Canonical submission already classified this boundary. A known result
+        # remains exact even at the horizon or after the planning deadline.
+        if engine.game_state == GameState.CHECKMATE:
+            return self._mate_score(engine)
+        if engine.game_state in {GameState.STALEMATE, GameState.DRAW}:
+            return 0.0
         if depth <= 0 or self._deadline_reached():
             return self.evaluator.evaluate_engine(engine, self.color)
 
         result = self._search_candidates(engine)
         if not result.candidates:
-            if result.termination_reason and result.termination_reason != "game_not_playing":
+            if result.termination_reason:
                 return self.evaluator.evaluate_engine(engine, self.color)
-            # A completed no-action search is a genuine Action terminal.
-            if engine.current_turn_color == self.color:
-                return -100000.0
-            return 100000.0
+            # A complete no-action proof still needs the canonical distinction
+            # between checkmate and stalemate. Reuse it without another search.
+            outcome = OutcomeRules.classify_proven_no_legal_action(
+                engine, explored_states=result.explored_states,
+            )
+            return self._mate_score(engine) if outcome.kind == OutcomeKind.CHECKMATE else 0.0
 
         maximizing = engine.current_turn_color == self.color
         best = float("-inf") if maximizing else float("inf")
@@ -277,6 +286,10 @@ class AlphaBetaAI(AIPlayer):
         if not searched:
             return self.evaluator.evaluate_engine(engine, self.color)
         return best
+
+    def _mate_score(self, engine) -> float:
+        # After submission the player due to act is the checkmated side.
+        return -100000.0 if engine.current_turn_color == self.color else 100000.0
 
     @staticmethod
     def _move_priority(move: Move) -> float:

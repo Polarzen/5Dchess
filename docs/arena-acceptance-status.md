@@ -4,6 +4,48 @@ This document is the durable status for the Planner reliability work around
 PR #24. The original baseline was `70a5f495`; durable baseline run
 `34745200932` is retained as a historical reference. Current acceptance is below.
 
+## Terminal scoring and CI follow-up (2026-10-12)
+
+Medium/Hard previously assigned a win to stalemate below the root, and used
+ordinary material scores for confirmed checkmate at a depth/time boundary.
+They now score known checkmate before either cutoff and score draws as zero.
+A completed no-action proof uses the canonical checkmate/stalemate classifier;
+an incomplete search still receives a heuristic score, never a fabricated win.
+
+Against the scoring implementation at `8989fce5`, the identical 16 bounded
+tactical decisions improve from **6 to 16 immediate mates**. Two constructed
+losses (Black Rxa2 allowing Qg7 mate, and its file reflection) become safe
+defenses; exhaustive canonical replies prove neither new choice permits an
+immediate mate. Candidate limits, time/state budgets and rules are identical
+between versions. This establishes those tactical improvements, not an Elo
+or general full-game win-rate increase. The neural model remains unchanged.
+Reproduce with `scripts/validate_ai_tactics.py --baseline-ref
+8989fce51e7effff8aa163b7a1cc25e75800d980 --output <report.json>`; the durable
+record is [here](ai-terminal-scoring-validation-20261012.json).
+
+The first remote ordinary CI at `8989fce5` failed on the captured 23-required-
+board position (13 states, no candidate within 5 seconds); training CI passed.
+Profiling traced most cost to repeated attacker/historical-King comparisons.
+Royal queries now reuse spatially possible targets for equal pieces/squares
+within one query, retaining target order and the exact time/lane/path checks.
+Only pure geometry is globally cached; no mutable board or result is cached.
+Exhaustive displacement checks and canonical threat-list comparisons cover the
+optimization. No budget, safety check or acceptance threshold is relaxed.
+
+The tutorial's two additional workflow lines remain a local patch because
+GitHub rejected the OAuth credential's missing `workflow` scope. Application
+code and tests are pushed; existing CI is explicitly dispatched on this branch.
+All three JavaScript regressions are run locally, including the tutorial.
+
+Final local regression for this scoring/scan follow-up: **730 passed, 2 skipped**,
+one existing telemetry warning, 131.36 seconds. Compilation and all three Node
+regressions passed. The restarted service completed a normal Medium PvE Action
+and returned control to the human player. The captured CI fixture now produces
+all 24 candidates locally in 3.437 seconds (14-Move first witness); the isolated
+before sample reached 15 candidates in 5.063 seconds. Instrumented samples,
+the original CI failure and the bounded Arena smoke are retained in
+[the performance record](ci-performance-validation-20261012.json).
+
 ## Outcome evaluation follow-up (2026-10-12)
 
 Four exact post-submission positions reproduced the 3-second outcome-search

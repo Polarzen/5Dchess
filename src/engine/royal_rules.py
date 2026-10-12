@@ -162,6 +162,20 @@ class RoyalRules:
         )
 
     @staticmethod
+    @lru_cache(maxsize=4096)
+    def _spatial_delta_can_attack(piece_code: str, white: bool, dx: int, dy: int) -> bool:
+        """Necessary spatial condition, using the canonical 4D geometry.
+
+        Equal-step sliders need only the existing spatial magnitudes, or one
+        when both are zero. King/Pawn use one and Knight uses one/two. These
+        representatives therefore cover every possible temporal/lane completion.
+        Actual displacements and occupancy are still checked for each target.
+        """
+        steps = {0, -1, 1, -2, 2, dx, -dx, dy, -dy}
+        return any(RoyalRules._attack_delta_values_match(piece_code, white, dx, dy, dt, dl)
+                   for dt in steps for dl in steps)
+
+    @staticmethod
     def _attacks_prevalidated_square_with_view(
         piece: Piece,
         source: Square5D,
@@ -255,6 +269,14 @@ class RoyalRules:
         if not kings:
             return
 
+        # Many historical Kings share a square. Reuse only a query-local list
+        # of spatially possible targets across equal pieces on different lanes;
+        # preserve exact original target order and recheck time/lane/path below.
+        # Extended rule classes retain their unfiltered geometry contract.
+        spatial_squares = {(entry[1], entry[2]) for entry in kings}
+        target_lists = {}
+        white = by_color == ChessColor.WHITE
+
         # Playable boards on inactive timelines are included deliberately: they
         # are optional moves and therefore can still be used to capture a King.
         # ``get_all_pieces`` validates each source against exactly this board,
@@ -266,8 +288,16 @@ class RoyalRules:
             for x, y, piece in board.position.get_all_pieces(by_color):
                 source = Square5D(board.coord, x, y)
                 piece_code = piece.piece_type.value
-                white = by_color == ChessColor.WHITE
-                for king, king_x, king_y, king_turn, king_lane in kings:
+                targets = kings
+                if cls is RoyalRules:
+                    target_key = (piece_code, x, y)
+                    if target_key not in target_lists:
+                        possible = {(kx, ky) for kx, ky in spatial_squares
+                                    if cls._spatial_delta_can_attack(piece_code, white, kx-x, ky-y)}
+                        target_lists[target_key] = tuple(
+                            entry for entry in kings if (entry[1], entry[2]) in possible)
+                    targets = target_lists[target_key]
+                for king, king_x, king_y, king_turn, king_lane in targets:
                     # Both endpoints already have the attacker's phase. Use the
                     # same exact geometry predicate on pre-extracted integers;
                     # most pairs fail without repeated Square5D property calls.
