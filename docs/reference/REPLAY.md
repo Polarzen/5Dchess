@@ -84,39 +84,32 @@ Replay 会从 Replay Origin 重建每一步精确快照，并在 v2 文件加载
 
 v1 没有显式 Action / Submit 信息，因此读取时会通过旧 auto-submit 行为推断 Action 边界。新文件统一写 v2，不再继续生成 v1。
 
-## MySQL canonical schema
+## 项目内的 `saves` 存档
 
-数据库 baseline schema 已同步到 v2：
+在线房间在创建时和每次成功提交行动后，将完整棋局保存到项目的 `saves/<存档ID>.json`。更新版本时，停止服务后复制整个 `saves` 文件夹即可保留记录；也可通过 `FIVE_D_CHESS_SAVE_DIR` 指定目录。普通启动不连接数据库，依赖中不再包含 MySQL 驱动或 SQLAlchemy。
+
+在房主本机网址的菜单选择 **存档与回放**，列表按保存时间显示所有可读取的存档：
+
+- **继续对局**：恢复最终局面并生成新房间码，重新邀请对手；已结束的棋局不能续局。
+- **观看回放**：严格重建原始起点、每步走子与提交边界，然后从开局观看。支持上一手、下一手、播放/暂停、跳转和直接到最后；不改变原文件，不创建房间，也不要求对手在线。
+- **其他棋谱（.5dpgn）**：进入原有文件加载入口，继续兼容 v1/v2 棋谱。
+
+存档列表、续局和读取存档回放只对本机入口开放，公网及局域网访客不能读取。正在运行的在线房间必须先退出，才能切换存档。当前仅在线对局自动保存；同屏和人机对局仍使用手动导出的棋谱。
+
+### 文件结构与完整性
 
 ```text
-games
-├── total_actions
-└── archive_version
-
-timelines
-├── timeline_row_id      # DB 内部主键
-├── lane_id              # canonical signed L，可为负数
-├── parent_lane_id
-└── owner
-
-actions
-├── game_id
-├── action_index
-├── color
-├── starting_present_json
-├── submitted
-└── move_count
-
-moves
-├── action_index / move_index
-├── source_timeline / source_turn / source_side / x / y
-├── destination_timeline / destination_turn / destination_side / x / y
-├── branching / cross-timeline flags
-└── created_timeline / capture / promotion / notation
+<save_id>.json
+├── payload
+│   ├── version = 1           # 自动存档封装版本
+│   ├── save_id / saved_at
+│   └── game                  # 上文的 GameArchive canonical v2
+│       ├── replay_origin
+│       ├── move_history / action_history
+│       └── 最终完整局面
+└── sha256                    # payload 的完整性校验
 ```
 
-数据库中的 `timeline_row_id` 与规则里的 `lane_id` 已分离，因此 `L-1`、`L-2` 等 Black-created timeline 可以正常持久化。
+存档不包含玩家身份令牌。写入使用同目录临时文件、落盘和原子替换，失败时保留上一份完整文件。存档只包含已提交的行动；中途未提交的走子需重走。无法读取的文件会保留并在列表提示数量；历史无法精确重建时拒绝进入回放，保留当前棋局。
 
-`from_time / to_time` 暂时只作为兼容 / debug hint 保留，不再是新存储格式的主语义。
-
-> **数据库兼容说明：** `.5dpgn` v1 有读取兼容层；旧版 MySQL v1 schema 没有足够的 Action / signed-L 信息进行无损自动迁移，因此当前不伪造自动迁移。已有旧数据库需要根据实际数据选择重建 v2 schema 或单独编写迁移流程。
+旧版未接入主流程的数据库连接器、异步写入器及建表文件已移除；已有外部数据库不会被读取、迁移或修改。

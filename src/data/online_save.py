@@ -85,4 +85,4 @@ class OnlineSaveStore:
             except (OSError, ValueError, KeyError, TypeError):
                 unreadable += 1
         entries.sort(key=lambda item: item["saved_at"], reverse=True)
-        return {"saves": entries[:20], "unreadable": unreadable}
+        return {"saves": entries, "unreadable": unreadable}

@@ -12,7 +12,6 @@ from src.data.archive import (
     square_from_dict,
     square_to_dict,
 )
-from src.data.db import DatabaseManager, db
 from src.data.models import (
     ActionRecord,
     GameRecord,
@@ -21,5 +20,4 @@ from src.data.models import (
     PositionRecord,
     TimelineRecord,
 )
-from src.data.async_writer import AsyncDBWriter, async_writer
 from src.data.pgn_parser import FiveDPGN

@@ -18,7 +18,7 @@
 ## 规则与实现参考
 
 - [规则与引擎](reference/ENGINE.md)：坐标、走子、时间线、行动与终局。
-- [棋谱与存储](reference/REPLAY.md)：`.5dpgn`、回放和数据库。
+- [棋谱与存储](reference/REPLAY.md)：`saves` 续局、回放和 `.5dpgn`。
 - [AI 行为](reference/AI.md)：搜索预算、难度和训练边界。
 
 ## 验证与历史

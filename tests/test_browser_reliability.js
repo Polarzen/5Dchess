@@ -88,6 +88,9 @@ function loadClient(includeP2P = false) {
             filename: 'p2p.js',
         });
     }
+    vm.runInContext(fs.readFileSync('src/web/static/js/replay_controls.js', 'utf8'), context, {
+        filename: 'replay_controls.js',
+    });
     return context;
 }
 
@@ -653,7 +656,7 @@ async function testSavedGameRestoreOwnershipAndTerminalInstructions() {
         enterP2PGame = () => { __entered++; };
         api = () => { __posts++; return new Promise(resolve => { __restoreResolve = resolve; }); };`, context);
     const pending = vm.runInContext('restoreSavedP2PGame()', context);
-    await vm.runInContext('restoreSavedP2PGame()', context);
+    await vm.runInContext('replaySavedP2PGame()', context);
     assert.equal(vm.runInContext('__posts', context), 1);
     vm.runInContext(`invalidateSession(); __restoreResolve({success: true});`, context);
     await pending;
@@ -679,7 +682,59 @@ async function testLocalHostInviteNeverCopiesLoopbackURL() {
     assert.equal(vm.runInContext('__copied', context), 'https://game.trycloudflare.com/?room=ABC123');
 }
 
+async function testSavedReplaySelectionAndPlaybackOwnership() {
+    const context = loadClient(true);
+    vm.runInContext(`api = async () => ({saves: [{save_id: 'finished', game_state: 'DRAW',
+        saved_at: '2026-10-12T12:00:00Z', action_counter: 2}], unreadable: 0});`, context);
+    await vm.runInContext('openSavedP2PGames()', context);
+    assert.equal(context.document.getElementById('p2p-restore-btn').disabled, true);
+    assert.equal(context.document.getElementById('p2p-replay-btn').disabled, false);
+    vm.runInContext(`__path = null; showToast = () => {}; scrollToCurrent = () => {};
+        api = async path => { __path = path; return {mode: 'replay', current_index: 0,
+            total_moves: 2, game_state: 'PLAYING', turn: 'white', boards: [], action: {}}; };`, context);
+    await vm.runInContext('replaySavedP2PGame()', context);
+    assert.equal(vm.runInContext('__path', context), '/api/p2p/replay');
+    assert.equal(vm.runInContext('mode', context), 'replay');
+    assert.equal(vm.runInContext('p2pPlayerToken', context), null);
+    assert.equal(vm.runInContext('p2pRecoveryOwner', context), null);
+    assert.match(context.document.getElementById('replay-position').textContent, /第 0 \/ 2 手/);
+    // Captured timer callbacks cannot advance another UI session.
+    const timers = [];
+    context.setTimeout = callback => { timers.push(callback); return timers.length; };
+    context.clearTimeout = () => {};
+    vm.runInContext(`__posts = 0; gameState.is_playing = true;
+        api = () => { __posts++; return new Promise(resolve => { __tickResolve = resolve; }); };
+        renderReplayPanel();`, context);
+    const staleTimer = timers.at(-1);
+    const pending = vm.runInContext("replayAction('tick')", context);
+    await vm.runInContext("replayAction('tick')", context);
+    assert.equal(vm.runInContext('__posts', context), 1);
+    vm.runInContext(`invalidateSession(); gameState = {is_playing: true, current_index: 0, total_moves: 2};
+        __tickResolve({mode: 'replay', current_index: 1, total_moves: 2, is_playing: true});`, context);
+    await pending;
+    staleTimer();
+    assert.equal(vm.runInContext('gameState.current_index', context), 0);
+    assert.equal(vm.runInContext('__posts', context), 1);
+    vm.runInContext(`api = async () => ({error: 'offline'});`, context);
+    await vm.runInContext("replayAction('tick')", context);
+    assert.equal(vm.runInContext('gameState.is_playing', context), false);
+    vm.runInContext(`__jumpPayload = null; api = async (path, method, payload) => {
+        __jumpPayload = payload; return {...gameState, current_index: payload.index}; };`, context);
+    context.document.getElementById('replay-jump-index').value = '3';
+    await vm.runInContext('replayJump()', context);
+    assert.equal(vm.runInContext('__jumpPayload', context), null);
+    context.document.getElementById('replay-jump-index').value = '1';
+    await vm.runInContext('replayJump()', context);
+    assert.equal(vm.runInContext('__jumpPayload.action', context), 'jump');
+    assert.equal(vm.runInContext('gameState.current_index', context), 1);
+    let overlaysRemoved = 0;
+    context.document.getElementById('game-over-overlay').remove = () => { overlaysRemoved++; };
+    vm.runInContext(`gameState.game_state = 'DRAW'; checkGameOver();`, context);
+    assert.equal(overlaysRemoved, 1);
+}
+
 (async () => {
+    await testSavedReplaySelectionAndPlaybackOwnership();
     await testReconnectCountdownAndSameVersionRecoveryControls();
     await testSavedGameRestoreOwnershipAndTerminalInstructions();
     await testLocalHostInviteNeverCopiesLoopbackURL();

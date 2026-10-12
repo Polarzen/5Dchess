@@ -113,7 +113,8 @@ def test_failed_initial_save_does_not_create_half_room(monkeypatch):
 ])
 def test_recovery_and_listing_never_allow_public_or_forwarded_host(remote, host, headers):
     client = app.test_client()
-    for path, method in [('/api/p2p/saves', 'GET'), ('/api/p2p/restore', 'POST')]:
+    for path, method in [('/api/p2p/saves', 'GET'), ('/api/p2p/restore', 'POST'),
+                         ('/api/p2p/replay', 'POST')]:
         result = client.open(path, method=method, json={'save_id': 'a' * 32},
                              headers={'Host': host, **headers}, environ_overrides={'REMOTE_ADDR': remote})
         assert result.status_code == 403

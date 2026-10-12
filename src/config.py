@@ -1,26 +1,10 @@
 """
 时线棋局 - 全局配置
 """
-import os
 from pathlib import Path
 
 # 项目根目录
 ROOT_DIR = Path(__file__).resolve().parent.parent
-
-# 数据库配置
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", 3306)),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", ""),
-    "database": os.getenv("DB_NAME", "chess_5d"),
-    "charset": "utf8mb4",
-    "autocommit": False,
-}
-
-# 异步写入配置
-ASYNC_WRITE_INTERVAL = 0.5          # 批量写入间隔(秒)
-ASYNC_QUEUE_MAXSIZE = 10000         # 队列最大容量
 
 # 游戏配置
 DEFAULT_MAX_TIMELINES = 32          # 最大活跃时间线数

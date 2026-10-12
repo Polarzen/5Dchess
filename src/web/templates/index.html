@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时线棋局 · 多时间线国际象棋</title>
     <link rel="stylesheet" href="/static/css/style.css?v=10">
-    <link rel="stylesheet" href="/static/css/p2p.css?v=1">
+    <link rel="stylesheet" href="/static/css/p2p.css?v=2">
 </head>
 <body>
 <div id="app">
@@ -41,8 +41,8 @@
             </button>
             <button class="menu-card" onclick="openSavedP2PGames()">
                 <span class="menu-icon">↻</span>
-                <strong>恢复在线对局</strong>
-                <small>房主本机操作 · 继续存档并重新邀请对手</small>
+                <strong>存档与回放</strong>
+                <small>选择存档 · 继续对局或观看回放 · 房主本机操作</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'easy')">
                 <span class="menu-icon">♞</span>
@@ -58,11 +58,6 @@
                 <span class="menu-icon">♛</span>
                 <strong>人机 · 困难</strong>
                 <small>人机对弈</small>
-            </button>
-            <button class="menu-card" onclick="startGame('replay')">
-                <span class="menu-icon">↺</span>
-                <strong>棋谱回放</strong>
-                <small>棋谱回放 · 多时间线概览</small>
             </button>
         </div>
         <p id="p2p-recovery-note" role="status"></p>
@@ -146,13 +141,19 @@
 
                 <section id="replay-panel" class="panel-card hidden">
                     <h2>棋谱回放</h2>
+                    <p id="replay-position" role="status"></p>
                     <div class="button-grid">
-                        <button class="side-btn" onclick="replayAction('start')">⏮</button>
-                        <button class="side-btn" onclick="replayAction('backward')">◀</button>
-                        <button class="side-btn" onclick="replayAction('toggle')">▶ / ⏸</button>
-                        <button class="side-btn" onclick="replayAction('forward')">▶</button>
-                        <button class="side-btn" onclick="replayAction('end')">⏭</button>
-                        <button class="side-btn" onclick="replayJump()">跳转</button>
+                        <button class="side-btn" data-replay-action="start" onclick="replayAction('start')">回到开局</button>
+                        <button class="side-btn" data-replay-action="backward" onclick="replayAction('backward')">上一手</button>
+                        <button id="replay-toggle" class="side-btn" data-replay-action="toggle" onclick="replayAction('toggle')">播放</button>
+                        <button class="side-btn" data-replay-action="forward" onclick="replayAction('forward')">下一手</button>
+                        <button class="side-btn" data-replay-action="end" onclick="replayAction('end')">跳到最后</button>
+                    </div>
+                    <div class="replay-jump-row">
+                        <label for="replay-jump-index">步数</label>
+                        <input id="replay-jump-index" type="number" min="0" step="1" value="0" inputmode="numeric"
+                               onkeydown="event.stopPropagation(); if (event.key === 'Enter') replayJump()">
+                        <button class="side-btn" data-replay-action="jump" onclick="replayJump()">跳转</button>
                     </div>
                     <button class="side-btn full" onclick="replayLoadFile()">加载 .5dpgn</button>
                 </section>
@@ -181,17 +182,20 @@
 </dialog>
 <div id="toast" role="status"></div>
 <dialog id="p2p-save-dialog" aria-labelledby="p2p-save-title">
-    <h2 id="p2p-save-title">恢复在线对局</h2>
+    <h2 id="p2p-save-title">存档与回放</h2>
     <p id="p2p-save-detail" role="status"></p>
-    <label for="p2p-save-list">最近 20 份在线棋局存档</label>
-    <select id="p2p-save-list"></select>
+    <label for="p2p-save-list">在线棋局存档（最近保存的在前）</label>
+    <select id="p2p-save-list" onchange="updateSavedGameActions()"></select>
     <div class="save-actions">
         <button class="ghost-btn" onclick="document.getElementById('p2p-save-dialog').close()">取消</button>
-        <button id="p2p-restore-btn" class="tool-btn" onclick="restoreSavedP2PGame()" disabled>恢复并生成新房间码</button>
+        <button id="p2p-restore-btn" class="tool-btn" onclick="restoreSavedP2PGame()" disabled>继续对局</button>
+        <button id="p2p-replay-btn" class="tool-btn" onclick="replaySavedP2PGame()" disabled>观看回放</button>
     </div>
+    <p><button class="ghost-btn" onclick="openLegacyReplay()">其他棋谱（.5dpgn）</button></p>
 </dialog>
 <script src="/static/js/game.js?v=10"></script>
-<script src="/static/js/p2p.js?v=6"></script>
+<script src="/static/js/p2p.js?v=7"></script>
+<script src="/static/js/replay_controls.js?v=1"></script>
 <script src="/static/js/p2p_invite.js?v=2"></script>
 <script src="/static/js/tutorial.js?v=1"></script>
 </body>

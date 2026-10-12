@@ -1,5 +1,5 @@
 """
-5D Chess - 数据层测试
+5D Chess - 文件存储与记录模型测试
 """
 import pytest
 import sys
@@ -73,22 +73,6 @@ class TestFiveDPGN:
         })
         assert success
         assert filepath.exists()
-
-
-class TestAsyncWriter:
-    def test_singleton(self):
-        from src.data.async_writer import AsyncDBWriter
-        w1 = AsyncDBWriter()
-        w2 = AsyncDBWriter()
-        assert w1 is w2
-
-    def test_queue_operations(self):
-        from src.data.async_writer import AsyncDBWriter
-        writer = AsyncDBWriter()
-        writer.write_move({"test": "data"})
-        writer.write_position({"test": "data"})
-        # 不启动worker，仅测试入队
-        assert writer._queue.qsize() >= 2
 
 
 if __name__ == "__main__":

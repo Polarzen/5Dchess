@@ -667,10 +667,27 @@ def replay_step():
         "end": instance.jump_to_end,
         "toggle": instance.toggle_play,
     }
-    if action == "jump":
-        instance.jump_to(int(data.get("index", 0)))
+    if action == "tick":
+        # A delayed/retried playback tick must not skip a visible Move.
+        if instance.is_playing and data.get("expected_index") == instance.current_index:
+            instance.step_forward()
+        if instance.current_index >= len(instance.steps):
+            instance.is_playing = False
+    elif action == "jump":
+        try:
+            index = int(data.get("index", 0))
+        except (ValueError, TypeError):
+            return jsonify({"error": "请输入有效的回放步数"}), 400
+        instance.is_playing = False
+        instance.jump_to(index)
     elif action in handlers:
+        if action != "toggle":
+            instance.is_playing = False
         handlers[action]()
+        if instance.current_index >= len(instance.steps):
+            instance.is_playing = False
+    else:
+        return jsonify({"error": "未知回放操作"}), 400
     return jsonify({"success": True, **get_game_state()})
 
 

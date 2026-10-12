@@ -9,7 +9,7 @@
 推荐：
 
 - Python 3.11
-- MySQL 8.0（数据库存储 / CI integration）
+- 不需要数据库：在线自动存档与回放使用项目内的 `saves/*.json`。
 
 安装依赖：
 
@@ -37,11 +37,9 @@ python src/main.py --web
 
 ## 持续集成
 
-面向 `main` 或整合分支 `feat/local-ai-training-v2` 的 Pull Request，以及这两个分支的更新，会运行 Python 3.11 + MySQL 8.0 CI，验证：
+面向 `main` 或整合分支 `feat/local-ai-training-v2` 的 Pull Request，以及这两个分支的更新，会运行 Python 3.11 CI，验证：
 
 ```text
-MySQL 8.0 service
-        ↓
 pip install -r requirements.txt
         ↓
 python -m compileall -q src
@@ -70,6 +68,8 @@ P2P launcher / client / invite checks
 full pytest
 └── python -m pytest -q
 ```
+
+当前 CI 配置仍保留历史 MySQL service，但应用与测试均不再使用它；清理该工作流需要 GitHub `workflow` 授权，不影响本地运行。`test_saved_replay.py` 在拒绝 SQL 导入与网络连接的独立进程中验证启动和回放。
 
 P2P 回归覆盖房间创建 / 加入、8 秒 player lease、10 分钟 reconnect grace、隧道中断后棋局和双方身份恢复、长对局活动续期、无效 token 不续期、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup、对手离线时暂停 Move / Submit Action、room-code-only 邀请 URL、非法 query 降级以及 Hotseat / Online 模式隔离。
 
@@ -120,15 +120,13 @@ src/
 │   ├── archive.py
 │   ├── pgn_parser.py
 │   ├── models.py
-│   ├── async_writer.py
-│   └── db.py
+│   └── online_save.py
 ├── gui/                  # legacy Pygame prototype
 ├── training/             # optional local / cloud training tools
 ├── ai/
 └── main.py
 
-sql/
-└── schema.sql
+saves/                   # 运行时生成，不入库、不随 ZIP 分发
 ```
 
 脚本说明见 [scripts/README.md](../../scripts/README.md)，发布打包见 [RELEASING.md](RELEASING.md)。

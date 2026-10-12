@@ -83,7 +83,7 @@ function Initialize-LauncherPython {
     $importProbe = @'
 import sys
 try:
-    import flask, numpy, sqlalchemy, mysql.connector, pygame
+    import flask, numpy, pygame
 except Exception:
     sys.exit(1)
 '@
@@ -95,7 +95,7 @@ except Exception:
         if ($LASTEXITCODE -ne 0) { throw '依赖安装失败。请检查网络后重新双击启动；已下载的内容可复用。' }
         & $python -I -X utf8 -m pip --isolated check | Out-Host
         if ($LASTEXITCODE -ne 0) { throw '依赖不兼容，请保留日志并反馈。' }
-        & $python -I -X utf8 -c 'import flask, numpy, sqlalchemy, mysql.connector, pygame' | Out-Host
+        & $python -I -X utf8 -c 'import flask, numpy, pygame' | Out-Host
         if ($LASTEXITCODE -ne 0) { throw '依赖导入失败，请保留日志并反馈。' }
         [IO.File]::WriteAllText($stamp, $requirementsHash)
     }

@@ -7,13 +7,17 @@
 #p2p-save-dialog::backdrop { background: #211c3866; }
 #p2p-save-dialog select { width: 100%; padding: 10px; margin: 12px 0; }
 #p2p-save-dialog p { line-height: 1.7; }
-#p2p-save-dialog .save-actions { display: flex; gap: 12px; justify-content: flex-end; }
+#p2p-save-dialog .save-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+#replay-panel { order: -1; }
+#replay-panel .button-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.replay-jump-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.replay-jump-row input { min-width: 0; width: 72px; flex: 1; padding: 8px; }
 @media (max-width: 980px) {
-    #side-panel:has(#p2p-connection:not(.hidden)) {
+    #side-panel:has(#p2p-connection:not(.hidden)), #side-panel:has(#replay-panel:not(.hidden)) {
         grid-template-columns: none;
         grid-auto-flow: column;
         grid-auto-columns: 260px;
         grid-template-rows: minmax(0, 1fr);
     }
-    #p2p-connection { overflow-y: auto; }
+    #p2p-connection, #replay-panel { overflow-y: auto; }
 }

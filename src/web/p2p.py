@@ -21,7 +21,7 @@ from flask import g, jsonify, request
 from src.data.online_save import OnlineSaveStore
 from src.engine import FiveDEngine
 from src.engine.multiverse import MultiverseBoardView
-from src.modes import PvPMode
+from src.modes import PvPMode, ReplayMode
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
 
@@ -49,6 +49,8 @@ _ERROR_MESSAGES = {
     "save_unavailable": "存档不存在或已损坏；未改变当前棋局。请检查项目 saves 目录。",
     "host_required": "恢复存档需由房主在本机 127.0.0.1 页面操作。",
     "action_conflict": "棋局已更新，请重新同步后再操作。",
+    "game_finished": "这份棋局已结束，请选择观看回放。",
+    "replay_unavailable": "存档历史无法完整重建，未改变当前棋局。请保留原文件。",
 }
 
 _room_lock = threading.RLock()
@@ -398,7 +400,34 @@ def register_p2p_routes(
                 engine, saved = save_store().load(save_id)
             except (OSError, ValueError, KeyError, TypeError):
                 return _error("save_unavailable", 409)
+            if engine.game_state != GameState.PLAYING:
+                return _error("game_finished", 409)
             return open_room(engine, save_id, saved)
+
+    @flask_app.route("/api/p2p/replay", methods=["POST"])
+    def p2p_replay_saved_game():
+        if not is_local_host():
+            return _error("host_required", 403)
+        data, error = request_object()
+        if error:
+            return error
+        with _room_lock:
+            if _room is not None:
+                return _error("room_full", 409)
+            try:
+                engine, saved = save_store().load(data.get("save_id"))
+            except (OSError, ValueError, KeyError, TypeError):
+                return _error("save_unavailable", 409)
+            # Build and verify all snapshots before replacing any live session.
+            candidate = ReplayMode()
+            try:
+                candidate.load_from_engine(engine, strict=True)
+                candidate.start()
+            except (ValueError, KeyError, TypeError):
+                return _error("replay_unavailable", 409)
+            game_session.update({"mode": "replay", "mode_instance": candidate,
+                                 "ai_difficulty": "medium", "player_color": None})
+            return jsonify({"success": True, "saved": saved, **get_game_state()})
 
     @flask_app.route("/api/p2p/join", methods=["POST"])
     def p2p_join_room():

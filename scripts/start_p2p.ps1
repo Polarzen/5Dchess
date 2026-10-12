@@ -15,7 +15,7 @@ Set-Location $ProjectRoot
 . (Join-Path $PSScriptRoot 'p2p_common.ps1')
 
 $pythonExecutable = Resolve-P2PPython -ProjectRoot $ProjectRoot -PythonPath $PythonPath
-& $pythonExecutable -X utf8 -c "import sys; assert sys.version_info >= (3, 11); import flask, numpy, sqlalchemy, mysql.connector; print('Python dependencies OK: ' + sys.executable)"
+& $pythonExecutable -X utf8 -c "import sys; assert sys.version_info >= (3, 11); import flask, numpy; print('Python dependencies OK: ' + sys.executable)"
 if ($LASTEXITCODE -ne 0) { throw 'Dependencies missing. Run scripts/setup_p2p.ps1.' }
 if (-not $LanOnly) {
     $cloudflaredExecutable = Resolve-P2PCloudflared -ProjectRoot $ProjectRoot -CloudflaredPath $CloudflaredPath
