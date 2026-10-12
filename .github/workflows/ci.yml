@@ -66,8 +66,10 @@ jobs:
           node --check src/web/static/js/game.js
           node --check src/web/static/js/p2p.js
           node --check src/web/static/js/p2p_invite.js
+          node --check src/web/static/js/tutorial.js
           node tests/test_browser_reliability.js
           node tests/test_p2p_invite.js
+          node tests/test_tutorial_browser.js
 
       - name: Run Action loop regression tests
         run: >-
