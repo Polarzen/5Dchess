@@ -300,7 +300,9 @@ def test_p2p_powershell_passes_selected_port_to_both_processes():
     script = open("scripts/start_p2p.ps1", encoding="utf-8-sig").read()
     assert '"--select-port"' in script
     assert '"--port", [string]$Port' in script
-    assert '"http://127.0.0.1:$Port"' in script
+    common = open("scripts/p2p_common.ps1", encoding="utf-8-sig").read()
+    assert '"http://127.0.0.1:$Port"' in common
+    assert '-Port $Port -Protocol $TunnelProtocol' in script
     assert '$LaunchId = [Guid]::NewGuid().ToString("N")' in script
     assert '$env:FIVE_D_P2P_LAUNCH_ID = $LaunchId' in script
     assert 'Remove-Item Env:FIVE_D_P2P_LAUNCH_ID' in script

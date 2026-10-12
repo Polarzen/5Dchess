@@ -82,7 +82,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -Tun
 
 启动器先通过 `run_p2p_server.py --select-port` 取得具体端口，再严格传给网站和 Tunnel，避免二者指向不同端口。启动前的端口探测不构成预留；最终绑定发生竞争会报错，需要重新启动。
 
-网站使用 `debug=False`，不会启动开发调试器或重载进程。启动器用一次性的 launch identity 和实际服务 PID 确认就绪，兼容 Windows 虚拟环境解释器的子进程；identity 只经环境传递，不写入 URL。网站就绪最多等 30 秒，隧道首次连接最多等 90 秒。服务或隧道退出、启动超时或按 Ctrl+C 时会清理本次启动的进程。错误信息给出对应日志路径。
+网站使用 `debug=False`，不会启动开发调试器或重载进程。启动器用一次性的 launch identity 和实际服务 PID 确认就绪，兼容 Windows 虚拟环境解释器的子进程；identity 只经环境传递，不写入 URL。网站就绪最多等 30 秒，每次隧道启动最多等 90 秒。
+
+申请临时网址遇到超时、网络中断或接口 429/5xx，且尚未取得网址时，启动器默认最多尝试 3 次（首次失败后等 2 秒，再次失败后等 4 秒），期间本地网站继续运行。可通过 `-TunnelAttempts 1` 关闭重试，或设置为 1–5 次。每次尝试分别写入 `logs/p2p/*-tunnel-attempt-N-error.log`，保留之前的错误。配置、证书等错误不自动重试；已经取得网址或成功连接后的退出也不自动重建，以免更换邀请链接。达到重试上限、服务退出、启动超时或按 Ctrl+C 时会清理本次启动的进程。
 
 ### 手动启动
 
@@ -147,6 +149,20 @@ https://example.trycloudflare.com/?room=ABC123
 - Quick Tunnel 是临时公网入口，不等同于完整账号系统或长期生产部署。需要长期运行时，请使用 Named Tunnel、访问策略和适合部署环境的日志/密钥管理。
 
 ## 常见检查
+
+### 启动提示 Cloudflare Tunnel 已退出
+
+先看终端给出的原因与日志。若出现以下错误，表示向 Cloudflare **申请网址** 的 HTTPS 请求超时，此时本地 Flask 通常已正常启动：
+
+```text
+failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": context deadline exceeded
+```
+
+新版启动器会自动做上述有限次数重试，命令不变，无需重新安装。若每次都失败，可稍后重试或换一个可访问该接口的网络（例如手机热点）。自动重试能处理短暂波动，不能保证修复持续不可达的外部服务。
+
+`-TunnelProtocol http2` 用于已取得网址后连接 Cloudflare 隧道的阶段，不能延长或改变申请网址这一步。所固定的 cloudflared 2026.10.0 在[官方实现](https://github.com/cloudflare/cloudflared/blob/2026.10.0/cmd/cloudflared/tunnel/quick_tunnel.go)中把申请请求超时设为 15 秒；启动器的 90 秒等待上限不会覆盖它。
+
+局域网玩家仍可使用 `-LanOnly`；异地玩家需要公网入口恢复后才能加入，局域网模式不能替代异地连接。
 
 ### 点棋子后落点显示很慢
 

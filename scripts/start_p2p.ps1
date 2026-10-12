@@ -5,7 +5,8 @@ param(
     [ValidateRange(1, 65535)][int]$Port = 5050,
     [string]$PythonPath,
     [string]$CloudflaredPath,
-    [ValidateSet('auto', 'http2', 'quic')][string]$TunnelProtocol = 'auto'
+    [ValidateSet('auto', 'http2', 'quic')][string]$TunnelProtocol = 'auto',
+    [ValidateRange(1, 5)][int]$TunnelAttempts = 3
 )
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -47,8 +48,6 @@ New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 $logStem = Join-Path $logDirectory ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 $serverLog = $logStem + '-server.log'
 $serverErrorLog = $logStem + '-server-error.log'
-$tunnelLog = $logStem + '-tunnel.log'
-$tunnelErrorLog = $logStem + '-tunnel-error.log'
 
 Write-Host "[时线棋局] P2P Flask 监听 0.0.0.0:$Port；本机访问 http://127.0.0.1:$Port (debug=False)"
 Write-Host "[时线棋局] 服务日志：$serverErrorLog"
@@ -130,35 +129,18 @@ try {
         foreach ($address in $addresses) { Write-Host "[时线棋局] 局域网地址：http://$($address.IPAddress):$Port" }
         Write-Host '[时线棋局] 双方打开房主的局域网地址；房主创建在线房间，再复制邀请链接。'
     } else {
-        Write-Host "[时线棋局] 正在创建 Cloudflare Quick Tunnel；日志：$tunnelErrorLog"
-        $tunnel = Start-Process `
-            -FilePath $cloudflaredExecutable `
-            -ArgumentList @('tunnel', '--no-autoupdate', '--protocol', $TunnelProtocol, "--url", "http://127.0.0.1:$Port") `
-            -WorkingDirectory $ProjectRoot `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $tunnelLog `
-            -RedirectStandardError $tunnelErrorLog `
-            -PassThru
+        Connect-P2PQuickTunnel -Executable $cloudflaredExecutable -ProjectRoot $ProjectRoot `
+            -Port $Port -Protocol $TunnelProtocol -LogStem $logStem -Server $server `
+            -Tunnel ([ref]$tunnel) -MaxAttempts $TunnelAttempts
     }
 
-    $tunnelReady = $false
-    $tunnelDeadline = (Get-Date).AddSeconds(90)
     while ($true) {
         if ($server.HasExited) {
             throw "Flask 服务已退出；正在关闭 Cloudflare Tunnel。"
         }
         if ($tunnel) {
-            if ($tunnel.HasExited) { throw "Cloudflare Tunnel 已退出；查看日志：$tunnelErrorLog" }
-            if (-not $tunnelReady) {
-                $tunnelOutput = [string](Get-Content -LiteralPath $tunnelErrorLog -Raw -ErrorAction SilentlyContinue)
-                $urlMatch = [regex]::Match($tunnelOutput, 'https://[a-z0-9-]+\.trycloudflare\.com')
-                if ($urlMatch.Success -and $tunnelOutput.Contains('Registered tunnel connection')) {
-                    $tunnelReady = $true
-                    Write-Host "[时线棋局] 公网地址：$($urlMatch.Value)"
-                    Write-Host '[时线棋局] 房主也从此公网地址打开游戏，创建在线房间后复制邀请链接给对手。'
-                } elseif ((Get-Date) -gt $tunnelDeadline) {
-                    throw "Tunnel 在 90 秒内未连接。可尝试 -TunnelProtocol http2。查看日志：$tunnelErrorLog"
-                }
+            if ($tunnel.HasExited) {
+                throw "Cloudflare Tunnel 已退出（退出码 $($tunnel.ExitCode)）；查看日志：$logStem-tunnel-attempt-*-error.log"
             }
         }
         Start-Sleep -Milliseconds 500

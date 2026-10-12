@@ -272,7 +272,7 @@ https://example.trycloudflare.com/?room=ABC123
 & 'D:\p2p\cloudflared\cloudflared.exe' tunnel --url http://127.0.0.1:<actual-port>
 ```
 
-局域网联机时，双方打开 `http://<房主局域网IP>:<实际端口>`，再创建/加入房间。6 位房间码只在这个房主的网站中有效，不能单独代替网址。使用启动器时按 **Ctrl+C** 会停止网站和隧道；日志在 `logs/p2p/`，不提交到 Git。公网隧道连接失败可重试 `-TunnelProtocol http2`。
+局域网联机时，双方打开 `http://<房主局域网IP>:<实际端口>`，再创建/加入房间。6 位房间码只在这个房主的网站中有效，不能单独代替网址。使用启动器时按 **Ctrl+C** 会停止网站和隧道；日志在 `logs/p2p/`，不提交到 Git。申请 Cloudflare 临时网址超时会自动最多尝试 3 次；可用 `-TunnelAttempts 1` 关闭重试。已取得网址但隧道连接失败时，可尝试 `-TunnelProtocol http2`；它不改变申请网址的 HTTPS 请求。详见[启动故障排查](docs/P2P_CLOUDFLARE.md#启动提示-cloudflare-tunnel-已退出)。
 
 `scripts/start_p2p.ps1` 会先调用 Python 的机器可读端口选择模式，再把同一个
 具体端口严格传给 P2P Flask 服务和 `cloudflared tunnel --url`；不会从普通日志中
