@@ -178,6 +178,30 @@ def test_p2p_room_two_clients_complete_one_move_each():
     assert after_black["move_counter"] == 2
 
 
+@pytest.mark.parametrize('with_history', [False, True])
+def test_source_lookup_matches_full_board_without_generating_other_pieces(monkeypatch, with_history):
+    host, guest, _created, _joined, host_auth, guest_auth = _pair()
+    if with_history:
+        _move_pawn(host, host_auth, 6, 4)
+        _move_pawn(guest, guest_auth, 1, 3)
+    state = host.post('/api/p2p/state', json=host_auth).json
+    board = next(b for b in state['boards'] if b['is_movable'])
+    full = host.post('/api/p2p/legal_moves', json={**host_auth, 'board': board['coord']}).json
+    assert full['state_version'] == state['p2p']['state_version']
+    engine = _game_session['mode_instance'].engine
+
+    def forbid_full_board(*args, **kwargs):
+        raise AssertionError('Selecting one square must not generate the whole board')
+
+    monkeypatch.setattr(engine, 'get_legal_moves', forbid_full_board)
+    for y in range(8):
+        for x in range(8):
+            response = host.post('/api/p2p/legal_moves', json={**host_auth, 'board': board['coord'], 'x': x, 'y': y})
+            assert response.status_code == 200
+            assert response.json['moves'] == [m for m in full['moves'] if m['source']['x'] == x and m['source']['y'] == y]
+            assert response.json['state_version'] == full['state_version']
+
+
 def test_black_heartbeat_prevents_timeout(isolated_p2p):
     host, guest, _, _, host_auth, guest_auth = _pair()
     isolated_p2p.advance(7)

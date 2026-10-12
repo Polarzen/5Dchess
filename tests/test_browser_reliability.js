@@ -249,7 +249,8 @@ async function testSameVersionPollPreservesSelection() {
         legalMoves = [{ destination: { board: { key: '0:0' }, x: 4, y: 4 } }];
         __clears = 0;
         clearSelection = () => { __clears += 1; };
-        updateAll = () => {};
+        __redraws = 0;
+        updateAll = () => { __redraws += 1; };
         api = async () => ({ mode: 'p2p', game_state: 'PLAYING', turn: 'white', boards: [], action: {},
             p2p: { state_version: 5, opponent_connected: true } });
         p2pPollRetryAt = 0;
@@ -258,6 +259,67 @@ async function testSameVersionPollPreservesSelection() {
     assert.equal(vm.runInContext('__clears', context), 0);
     assert.equal(vm.runInContext('selectedSource.boardKey', context), '0:0');
     assert.equal(vm.runInContext('legalMoves.length', context), 1);
+    assert.equal(vm.runInContext('__redraws', context), 0);
+}
+
+async function testP2PLegalPrefetchReusesRequestAndInvalidates() {
+    const context = loadClient(true);
+    vm.runInContext(`
+        mode = 'p2p'; p2pRoomCode = 'ABC123'; p2pPlayerToken = 'token';
+        __board = {key: '0:0', coord: {key: '0:0'}, is_movable: true, is_required: true};
+        gameState = {mode: 'p2p', game_state: 'PLAYING', turn: 'white', player_color: 'white',
+            boards: [__board], action: {}, p2p: {state_version: 1, can_act: true, opponent_connected: true}};
+        __calls = 0;
+        api = () => { __calls++; return new Promise(resolve => { __resolveMoves = resolve; }); };
+        prefetchP2PLegalMoves(); prefetchP2PLegalMoves();
+        __selection = p2pMovesForSelection(__board, 4, 6);
+    `, context);
+    assert.equal(vm.runInContext('__calls', context), 1, 'click joins background request');
+    vm.runInContext(`__resolveMoves({state_version: 1, moves: [
+        {source: {board: {key: '0:0'}, x: 4, y: 6}},
+        {source: {board: {key: '0:0'}, x: 1, y: 7}}
+    ]});`, context);
+    const first = await vm.runInContext('__selection', context);
+    assert.equal(first.moves.length, 1);
+    const nextPiece = await vm.runInContext('p2pMovesForSelection(__board, 1, 7)', context);
+    assert.equal(nextPiece.moves.length, 1);
+    assert.equal(vm.runInContext('__calls', context), 1, 'another piece uses the cached board');
+
+    vm.runInContext(`gameState.p2p.state_version = 2; prefetchP2PLegalMoves();
+        __selection = p2pMovesForSelection(__board, 4, 6);
+        __resolveMoves({state_version: 3, moves: []});`, context);
+    assert.equal(vm.runInContext('__calls', context), 2);
+    assert.match((await vm.runInContext('__selection', context)).error, /棋局已更新/);
+    assert.equal(vm.runInContext('currentP2PLegalCache().size', context), 0, 'wrong version not cached');
+
+    // Legacy servers omit state_version; targeted fallback remains compatible.
+    vm.runInContext(`__selection = p2pMovesForSelection(__board, 4, 6);
+        __resolveMoves({moves: [{source: {board: {key: '0:0'}, x: 4, y: 6}}]});`, context);
+    assert.equal((await vm.runInContext('__selection', context)).moves.length, 1);
+    assert.equal(vm.runInContext('__calls', context), 3);
+    await vm.runInContext('p2pMovesForSelection(__board, 4, 6)', context);
+    assert.equal(vm.runInContext('__calls', context), 3, 'same-square fallback cached');
+}
+
+async function testP2PLegalPrefetchCannotCrossRoomOrRetainFailure() {
+    const context = loadClient(true);
+    vm.runInContext(`
+        mode = 'p2p'; p2pRoomCode = 'ABC123'; p2pPlayerToken = 'old-token';
+        gameState = {game_state: 'PLAYING', turn: 'white', p2p: {state_version: 1}};
+        __board = {key: '0:0', coord: {key: '0:0'}};
+        api = () => new Promise(resolve => { __oldResolve = resolve; });
+        __oldRequest = requestP2PLegalMoves(__board);
+        invalidateSession(); p2pRoomCode = 'DEF456';
+        api = async () => ({moves: [], state_version: 1});
+        __newRequest = requestP2PLegalMoves(__board);
+    `, context);
+    await vm.runInContext('__newRequest', context);
+    vm.runInContext('__oldResolve({moves: [], state_version: 1});', context);
+    assert.ok((await vm.runInContext('__oldRequest', context)).error);
+    assert.equal(vm.runInContext('currentP2PLegalCache().size', context), 1, 'late old-room reply cannot clear new cache');
+    vm.runInContext(`gameState.p2p.state_version = 2; api = async () => ({error:'timeout'});`, context);
+    assert.ok((await vm.runInContext('requestP2PLegalMoves(__board)', context)).error);
+    assert.equal(vm.runInContext('currentP2PLegalCache().size', context), 0);
 }
 
 async function testMutationCommitRejectsOlderRefresh() {
@@ -552,6 +614,8 @@ function testHistoryUsesBoardCoordinatesWithLegacyFallback() {
     await testMutationReleaseRerendersControls();
     await testP2PLoadWrapperIgnoresEventOverride();
     await testSameVersionPollPreservesSelection();
+    await testP2PLegalPrefetchReusesRequestAndInvalidates();
+    await testP2PLegalPrefetchCannotCrossRoomOrRetainFailure();
     await testMutationCommitRejectsOlderRefresh();
     await testManualRefreshCompletesPendingAIRetry();
     await testRecoveryRetirementCannotClearNewOwner();

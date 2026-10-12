@@ -19,6 +19,9 @@ let p2pRecoveryOwner = null;
 let p2pRecoveryTimerOwner = null;
 let p2pRoomOperation = null;
 let p2pLeaveOwner = null;
+let p2pLegalCacheIdentity = null;
+let p2pLegalCache = new Map();
+let p2pPrefetchAttempt = null;
 
 const baseRefreshState = refreshState;
 const baseSubmitAction = submitAction;
@@ -76,6 +79,65 @@ function stopP2PPolling() {
     // A late poll finally must never clear a newer poll's busy flag.
     p2pPollOwner = null;
     p2pPollInFlight = false;
+    p2pLegalCache.clear();
+    p2pLegalCacheIdentity = null;
+    p2pPrefetchAttempt = null;
+}
+
+function currentP2PLegalCache() {
+    const identity = JSON.stringify([sessionGeneration, p2pRoomCode, stateFingerprint()]);
+    if (identity !== p2pLegalCacheIdentity) {
+        p2pLegalCacheIdentity = identity;
+        p2pLegalCache = new Map();
+        p2pPrefetchAttempt = null;
+    }
+    return p2pLegalCache;
+}
+
+function requestP2PLegalMoves(board, square = null) {
+    const cache = currentP2PLegalCache();
+    const key = square ? `${board.key}:${square.x}:${square.y}` : board.key;
+    if (cache.has(key)) return cache.get(key);
+    const context = captureSession();
+    const fingerprint = stateFingerprint();
+    const version = gameState?.p2p?.state_version;
+    const pending = api('/api/p2p/legal_moves', 'POST', p2pCredentials({
+        board: board.coord, ...(square || {}),
+    })).then(result => {
+        if (!isCurrentSession(context) || stateFingerprint() !== fingerprint ||
+            (Number.isFinite(result?.state_version) && result.state_version !== version)) {
+            return { error: '棋局已更新，请重新选择棋子' };
+        }
+        return result;
+    }).catch(() => ({ error: '无法读取合法走子，请稍后重试' })).then(result => {
+        if (isErrorResult(result)) cache.delete(key);
+        return result;
+    });
+    cache.set(key, pending);
+    return pending;
+}
+
+function prefetchP2PLegalMoves() {
+    if (mode !== 'p2p' || !gameState?.p2p?.can_act || mutationOwner || selectionOwner) return;
+    const boards = gameState.boards || [];
+    const board = boards.find(b => b.is_movable && b.is_required) || boards.find(b => b.is_movable);
+    if (!board) return;
+    currentP2PLegalCache();
+    if (p2pPrefetchAttempt === board.key) return;
+    p2pPrefetchAttempt = board.key;
+    // One board, once per accepted state. Reuse this in-flight request if the
+    // player clicks before it finishes; other boards use source-only lookups.
+    void requestP2PLegalMoves(board);
+}
+
+async function p2pMovesForSelection(board, x, y) {
+    const cachedBoard = currentP2PLegalCache().get(board.key);
+    if (!cachedBoard) return requestP2PLegalMoves(board, { x, y });
+    const result = await cachedBoard;
+    if (isErrorResult(result)) return result;
+    return { ...result, moves: (result.moves || []).filter(move =>
+        move.source.x === x && move.source.y === y && move.source.board.key === board.key
+    ) };
 }
 
 function startP2PPolling() {
@@ -126,8 +188,13 @@ function applyP2PState(result, context = captureSession(), owner = null, options
         && Number.isFinite(incomingVersion)
         && currentVersion === incomingVersion;
     gameState = result;
+    if (options.preserveSelection && sameVersion) {
+        prefetchP2PLegalMoves();
+        return true;
+    }
     if (!options.preserveSelection || !sameVersion) clearSelection(false);
     updateAll();
+    prefetchP2PLegalMoves();
     return true;
 }
 
@@ -244,6 +311,7 @@ function enterP2PGame(result) {
     switchToScreen('game-screen');
     updateAll();
     startP2PPolling();
+    prefetchP2PLegalMoves();
     requestAnimationFrame(scrollToCurrent);
 }
 
@@ -379,11 +447,7 @@ selectSource = async function(board, x, y) {
     const owner = { id: ++operationSequence, context, readId, fingerprint: stateFingerprint() };
     selectionOwner = owner;
     try {
-        const result = await api('/api/p2p/legal_moves', 'POST', p2pCredentials({
-            board: board.coord,
-            x,
-            y,
-        }));
+        const result = await p2pMovesForSelection(board, x, y);
         if (selectionOwner !== owner || !isCurrentSession(context)
             || readId !== stateReadSequence || stateFingerprint() !== owner.fingerprint) return;
         if (isErrorResult(result)) {

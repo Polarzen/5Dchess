@@ -441,14 +441,15 @@ def register_p2p_routes(
                 if position is None:
                     return _error("invalid_request", 400)
 
-                moves = engine.get_legal_moves(position)
                 if data.get("x") is not None and data.get("y") is not None:
                     x, y = int(data["x"]), int(data["y"])
-                    moves = [
-                        move for move in moves
-                        if (move.source.x, move.source.y) == (x, y)
-                    ]
-                return jsonify({"moves": [move_payload(move) for move in moves]})
+                    moves = engine.get_legal_moves_from_square(position, x, y)
+                else:
+                    moves = engine.get_legal_moves(position)
+                return jsonify({
+                    "moves": [move_payload(move) for move in moves],
+                    "state_version": _room["version"],
+                })
             except (TypeError, ValueError):
                 return _error("invalid_request", 400)
             except Exception:
