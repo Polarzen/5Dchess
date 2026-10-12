@@ -135,8 +135,9 @@ https://example.trycloudflare.com/?room=ABC123
 - 房间码用于定位房间；每位玩家另有随机 bearer `player_token`。令牌保存在该玩家浏览器的 `localStorage`，因此刷新或短暂断线后，客户端会自动提交同一房间码和令牌，在 reconnect grace 内恢复原来的颜色。
 - 房主创建房间后固定为 White；第一位加入者固定为 Black。没有第二位玩家时不能开始走子。
 - 客户端每 1.2 秒轮询 `/api/p2p/state`；该轮询同时作为连接 heartbeat。轮询请求不会并发重叠，瞬时失败会沿用后续轮询周期重试；终态的认证 / 房间错误会停止轮询并清理本地会话。
-- player lease 超时为 8 秒。状态接口和界面区分 `not_connected`（等待第二位玩家）与 `offline`（已有席位但暂时离线 / reconnecting）；座位暂时离线后，仍保留 30 秒 reconnect grace。观察到连接状态变化时，房间 `state_version` 会递增。
+- player lease 超时为 8 秒。状态接口和界面区分 `not_connected`（等待第二位玩家）与 `offline`（已有席位但暂时离线 / reconnecting）；座位暂时离线后，仍保留 10 分钟 reconnect grace，让隧道恢复时能继续原棋局。观察到连接状态变化时，房间 `state_version` 会递增。
 - lease 加 grace 都耗尽后，Black 座位释放，可以由新的加入者占用；stale host cleanup 会使失联房主的旧房间过期，不再阻塞创建新房间。
+- 保留期限从各玩家最后一次通过认证的活动算起，正常心跳持续续期；房间和身份没有固定的对局时长上限。无效令牌或仅访问主页不会续期。棋局保存在服务内存中，服务重启后不能恢复。
 - White 显式返回菜单会关闭整个房间；Black 显式返回菜单会立即释放 Black 座位。
 - 对手离线时，不能走子、提交 Action 或进行其他局面 mutation；重新连接并恢复在线状态后才能继续。
 
@@ -168,6 +169,12 @@ failed to read quick-tunnel response: context deadline exceeded (Client.Timeout 
 `-TunnelProtocol http2` 用于已取得网址后连接 Cloudflare 隧道的阶段，不能延长或改变申请网址这一步。所固定的 cloudflared 2026.10.0 在[官方实现](https://github.com/cloudflare/cloudflared/blob/2026.10.0/cmd/cloudflared/tunnel/quick_tunnel.go)中把申请请求超时设为 15 秒；启动器的 90 秒等待上限不会覆盖它。
 
 局域网玩家仍可使用 `-LanOnly`；异地玩家需要公网入口恢复后才能加入，局域网模式不能替代异地连接。
+
+### 长对局提示“房间已过期”或“身份失效”
+
+这是游戏的房间 / 身份校验提示。旧版在最后一次心跳后约 38 秒便清理失联房间或座位，隧道一次较长的重连就可能触发。新版仍在 8 秒后暂停离线对局，但额外保留 10 分钟重连时间。短暂中断时保留原页面，客户端会自动重试；刷新也可使用同一浏览器、同一网址保存的身份恢复。
+
+这项保护要求房主服务仍在运行，且未主动退出房间。超过保留期或重启服务后，已经清理的棋局无法恢复，需要新建房间并重新邀请。更新后端代码后须重启服务才会生效；请等当前对局结束再重启。
 
 ### 点棋子后落点显示很慢
 

@@ -23,7 +23,9 @@ from src.utils.logger import logger
 
 _ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 PLAYER_LEASE_SECONDS = 8.0
-RECONNECT_GRACE_SECONDS = 30.0
+# A tunnel reconnect can take minutes. Keep seats and the in-memory game
+# through that outage, while the short lease still pauses offline play.
+RECONNECT_GRACE_SECONDS = 10 * 60.0
 _EXPIRED_ROOM_LIMIT = 64
 _ERROR_MESSAGES = {
     "room_not_found": "房间不存在",

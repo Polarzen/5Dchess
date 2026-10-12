@@ -282,7 +282,7 @@ URL；显式传入 `--port N` 则是严格的内部绑定参数。端口探测�
 
 邀请 URL **只包含 room code**。房间码用于定位房间，不是认证凭据；`player_token` 永远不会被写入 query string、hash、pathname、邀请链接或邀请 toast。token 继续只保存在现有 P2P `localStorage` 会话中，并由认证后的 `/api/p2p/*` 请求使用。URL 中的 `room` 会统一转成大写并只接受恰好 6 位 ASCII 字母或数字；非法长度、特殊字符或 HTML/script payload 会被安全忽略并退回普通手动加入流程。页面用 `textContent` 显示邀请房间码，不把 URL 参数拼进 HTML。
 
-浏览器将每位玩家的 bearer `player_token` 与房间码保存在本地；刷新或短暂断线后，客户端会自动使用同一房间码和令牌重连，在 grace 期限内恢复原来的颜色。如果当前 URL 是邀请链接，自动恢复只会使用与该邀请房间相同的已保存 token；一个没有 token 的新浏览器仅仅打开 `?room=...` 不会自动占用席位。客户端每 1.2 秒轮询房间状态，这个轮询同时作为连接 heartbeat。服务端在 8 秒 player lease 超时后把座位视为暂时离线，并保留 30 秒 reconnect grace；界面区分“等待对手加入”（座位尚未占用）与“对手暂时离线 / reconnecting”（座位仍保留、等待 heartbeat 恢复）。观察到连接状态变化时递增 `state_version`。超过 lease+grace 后，黑方座位释放；stale host cleanup 会使失联的房主房间过期，不再阻塞新房间创建。
+浏览器将每位玩家的 bearer `player_token` 与房间码保存在本地；刷新或短暂断线后，客户端会自动使用同一房间码和令牌重连，在 grace 期限内恢复原来的颜色。如果当前 URL 是邀请链接，自动恢复只会使用与该邀请房间相同的已保存 token；一个没有 token 的新浏览器仅仅打开 `?room=...` 不会自动占用席位。客户端每 1.2 秒轮询房间状态，这个轮询同时作为连接 heartbeat。服务端在 8 秒 player lease 超时后把座位视为暂时离线，并保留 10 分钟 reconnect grace；界面区分“等待对手加入”（座位尚未占用）与“对手暂时离线 / reconnecting”（座位仍保留、等待 heartbeat 恢复）。观察到连接状态变化时递增 `state_version`。超过 lease+grace 后，黑方座位释放；stale host cleanup 会使失联的房主房间过期，不再阻塞新房间创建。该期限从各玩家最后一次通过认证的活动算起；正常心跳会持续续期，对局没有固定的时长上限。房间和棋局仍保存在服务内存中，停止或重启服务会丢失。
 
 对局规则与生命周期：
 
@@ -553,7 +553,7 @@ full pytest
 └── python -m pytest -q
 ```
 
-P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup、对手离线时暂停 Move / Submit Action、room-code-only 邀请 URL、非法 query 降级以及 Hotseat / Online 模式隔离。
+P2P 回归覆盖房间创建 / 加入、8 秒 player lease、10 分钟 reconnect grace、隧道中断后棋局和双方身份恢复、长对局活动续期、无效 token 不续期、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup、对手离线时暂停 Move / Submit Action、room-code-only 邀请 URL、非法 query 降级以及 Hotseat / Online 模式隔离。
 
 同样的分支和 PR 还会运行 **Local AI Training v2 CI**（CPU 训练 smoke）与 **Planner Regression**。
 Planner 使用仓库内的故障局面和 canonical 回放测试，不依赖会过期的模型 Artifact；它验证规划正确性、预算和终局证明，不代表完整对局棋力。

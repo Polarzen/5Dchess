@@ -111,12 +111,12 @@ def test_both_online_players_receive_same_nonterminal_repetition_advisory():
     assert host_state['game_state'] == guest_state['game_state'] == 'PLAYING'
 
 
-def _move_pawn(client, auth, source_y, destination_y):
+def _move_pawn(client, auth, source_y, destination_y, x=4):
     state = client.post("/api/p2p/state", json=auth).get_json()
     board = next(board for board in state["boards"] if board["playable"])
     legal_response = client.post(
         "/api/p2p/legal_moves",
-        json={**auth, "board": board["coord"], "x": 4, "y": source_y},
+        json={**auth, "board": board["coord"], "x": x, "y": source_y},
     )
     assert legal_response.status_code == 200
     move = next(
@@ -235,7 +235,7 @@ def test_black_timeout_reconnect_grace_and_release(isolated_p2p):
 
     # Keep WHITE alive while BLACK passes the lease+grace boundary.
     assert host.post("/api/p2p/state", json=host_auth).status_code == 200
-    isolated_p2p.advance(30)
+    isolated_p2p.advance(p2p_module.RECONNECT_GRACE_SECONDS)
     assert host.post("/api/p2p/state", json=host_auth).status_code == 200
     isolated_p2p.advance(9)
     released = host.post("/api/p2p/state", json=host_auth).get_json()
@@ -282,6 +282,77 @@ def test_stale_host_cleanup_expires_room_and_allows_create(isolated_p2p):
     stale = host.post("/api/p2p/state", json=auth)
     assert stale.status_code == 410
     assert stale.get_json()["code"] == "room_expired"
+
+
+@pytest.mark.parametrize("recovery_route", ["/api/p2p/state", "/api/p2p/join"])
+@pytest.mark.parametrize("outage_seconds", [78, 300])
+def test_tunnel_outage_preserves_played_game_and_both_identities(
+    isolated_p2p, recovery_route, outage_seconds,
+):
+    from src.ai.action_planner import engine_state_signature
+
+    host, guest, created, _, host_auth, guest_auth = _pair()
+    _move_pawn(host, host_auth, 6, 4)
+    before = _move_pawn(guest, guest_auth, 1, 3)
+    instance = _game_session["mode_instance"]
+    signature = engine_state_signature(instance.engine)
+    isolated_p2p.advance(outage_seconds)
+
+    # The first incoming request after a tunnel outage must not clear either
+    # player's seat. A room-code-only visitor cannot take the absent seat.
+    intruder = app.test_client().post(
+        "/api/p2p/join", json={"room_code": created["room_code"]},
+    )
+    assert intruder.status_code == 409
+    assert intruder.json["code"] == "room_full"
+    guest_recovered = guest.post(recovery_route, json=guest_auth)
+    assert guest_recovered.status_code == 200
+    assert guest_recovered.json["player_color"] == "black"
+    assert guest_recovered.json["p2p"]["opponent_status"] == "offline"
+    blocked = guest.post("/api/p2p/submit", json=guest_auth)
+    assert blocked.status_code == 409
+    assert blocked.json["code"] == "opponent_offline"
+
+    host_recovered = host.post(recovery_route, json=host_auth)
+    assert host_recovered.status_code == 200
+    assert host_recovered.json["player_color"] == "white"
+    assert host_recovered.json["p2p"]["can_act"] is True
+    assert host_recovered.json["p2p"]["room_code"] == created["room_code"]
+    assert _game_session["mode_instance"] is instance
+    assert engine_state_signature(instance.engine) == signature
+    assert host_recovered.json["boards"] == before["boards"]
+    assert host_recovered.json["move_counter"] == before["move_counter"] == 2
+    assert host_recovered.json["action_counter"] == before["action_counter"] == 2
+    assert guest.post("/api/p2p/state", json=guest_auth).json["p2p"]["opponent_status"] == "connected"
+
+    # Continue the same game after reconnect, using the original credentials.
+    continued = _move_pawn(host, host_auth, 6, 4, x=3)
+    assert continued["move_counter"] == 3
+    assert continued["action_counter"] == 3
+
+
+def test_long_game_retention_renews_with_authenticated_activity(isolated_p2p):
+    host, guest, created, _, host_auth, guest_auth = _pair()
+    # Forty minutes of intermittent connectivity must not act as a fixed
+    # room/token lifetime. Each absence is shorter than the reconnect window.
+    for _ in range(8):
+        isolated_p2p.advance(300)
+        assert host.post("/api/p2p/state", json=host_auth).status_code == 200
+        assert guest.post("/api/p2p/state", json=guest_auth).status_code == 200
+    state = host.post("/api/p2p/state", json=host_auth).json
+    assert state["p2p"]["room_code"] == created["room_code"]
+    assert state["p2p"]["can_act"] is True
+
+
+def test_invalid_token_cannot_keep_an_abandoned_room_alive(isolated_p2p):
+    host, _, _, _, host_auth, _ = _pair()
+    isolated_p2p.advance(p2p_module.RECONNECT_GRACE_SECONDS)
+    invalid = host.post("/api/p2p/state", json={**host_auth, "player_token": "wrong-token"})
+    assert invalid.status_code == 401
+    isolated_p2p.advance(p2p_module.PLAYER_LEASE_SECONDS + 1)
+    expired = host.post("/api/p2p/state", json=host_auth)
+    assert expired.status_code == 410
+    assert expired.json["code"] == "room_expired"
 
 
 def test_opponent_offline_blocks_mutation_and_malformed_errors_have_no_traceback(isolated_p2p):
