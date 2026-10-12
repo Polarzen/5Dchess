@@ -20,7 +20,17 @@ Quick Tunnel 可以把房主的本地 Web 地址临时发布为 `https://*.trycl
 
 只有房主需要项目、Python 和 `cloudflared`；加入者使用浏览器即可，无需下载软件。同一局域网联机不需要 Cloudflare。
 
-### 首次安装（房主）
+### 下载 ZIP 后一键启动（推荐）
+
+Windows 10/11 x64 用户先将整个 ZIP 解压，再双击根目录的 `本地.bat` 或 `远程.bat`，详细使用方法见 [使用说明.txt](../使用说明.txt)。首次会自动下载项目专用 Python 和依赖；远程入口固定使用 HTTP/2，并在 Cloudflare 确认连接后打开公网网页。只有房主需要下载项目。
+
+这些入口使用项目内 `.runtime/`，没有 D 盘或未安装 Python 也可用。Python 采用 [Python 官方文档列出的 NuGet 包](https://docs.python.org/3.11/using/windows.html#the-nuget-org-packages)，版本和 SHA-256 在 `scripts/p2p/python-runtime.json` 中固定；Cloudflare 沿用现有校验清单。组件完整解压并验证后才启用，首次下载或依赖安装失败会保留日志并停止，下次点击可重试。本地首次准备完成后不需要联网；远程模式始终依赖外部网络。
+
+同一项目的两个一键入口共用运行锁，阻止安装和服务重复启动；正常停止或进程退出后锁自动释放。端口选择沿用现有启动器。启动失败的窗口保留提示，日志在 `logs/launcher/`；网站及隧道日志在 `logs/p2p/`。启动器不修改防火墙、不要求管理员权限，也不注册系统服务。
+
+开发者可用 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch_windows.ps1 -Mode Local -Check` 只准备并检查环境；`-Mode Remote -Check` 还准备 Cloudflare，但不启动网站或公网隧道。`-NoBrowser` 可关闭自动打开浏览器。
+
+### 手动安装（已有 Python 的开发者）
 
 在项目根目录打开 PowerShell：
 
@@ -28,7 +38,7 @@ Quick Tunnel 可以把房主的本地 Web 地址临时发布为 `https://*.trycl
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1
 ```
 
-安装位置：
+以下手动安装脚本的默认位置（与上面的一键入口独立）：
 
 | 内容 | 位置 |
 | --- | --- |

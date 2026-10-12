@@ -75,6 +75,13 @@ function Get-P2PTunnelFailure {
     }
 }
 
+function Open-P2PBrowser {
+    param([string]$Url)
+    try { Start-Process -FilePath $Url | Out-Null } catch {
+        Write-Host "[时线棋局] 无法自动打开浏览器，请手动打开：$Url"
+    }
+}
+
 function Connect-P2PQuickTunnel {
     param(
         [string]$Executable,
@@ -84,7 +91,8 @@ function Connect-P2PQuickTunnel {
         [string]$LogStem,
         $Server,
         [ref]$Tunnel,
-        [ValidateRange(1, 5)][int]$MaxAttempts = 3
+        [ValidateRange(1, 5)][int]$MaxAttempts = 3,
+        [switch]$OpenBrowser
     )
     # The caller owns process cleanup even when Ctrl+C interrupts startup.
     # Never rotate a URL after it has been provisioned or shared with players.
@@ -140,6 +148,7 @@ function Connect-P2PQuickTunnel {
             if ($urlMatch.Success -and $registered) {
                 Write-Host "[时线棋局] 公网地址：$($urlMatch.Value)"
                 Write-Host '[时线棋局] 房主也从此公网地址打开游戏，创建在线房间后复制邀请链接给对手。'
+                if ($OpenBrowser) { Open-P2PBrowser -Url $urlMatch.Value }
                 return
             }
             if ((Get-Date) -gt $deadline) {

@@ -1,0 +1,2 @@
+# Keep batch CRLF bytes in Download ZIP as well as Windows checkouts.
+*.bat -text whitespace=cr-at-eol

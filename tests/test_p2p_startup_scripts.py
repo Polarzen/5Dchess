@@ -94,7 +94,7 @@ def test_tunnel_failure_classifies_only_transient_provisioning_errors(shell, log
     assert json.loads(result.stdout)['Retryable'] is retryable
 
 
-def tunnel_scenario(shell, tmp_path, plan, *, limit=3, action='', server_exited=False):
+def tunnel_scenario(shell, tmp_path, plan, *, limit=3, action='', server_exited=False, open_browser=False):
     """Exercise the real supervisor with fake processes and clock, no network.
 
     Logs are real files; retain the last process reference for caller cleanup.
@@ -105,6 +105,8 @@ $script:plan = ConvertFrom-Json -InputObject '{plan_json}'
 $script:created = [Collections.Generic.List[object]]::new()
 $script:clock = [datetime]'2026-10-12T00:00:00Z'
 $script:sleeps = [Collections.Generic.List[int]]::new()
+$script:browserUrls = [Collections.Generic.List[string]]::new()
+function Open-P2PBrowser {{ param($Url) $script:browserUrls.Add($Url) }}
 $script:server = [pscustomobject]@{{ HasExited = ${str(server_exited).lower()} }}
 function Get-Date {{ return $script:clock }}
 function Start-Sleep {{
@@ -134,11 +136,12 @@ $errorMessage = $null
 try {{
     & {{ Connect-P2PQuickTunnel -Executable 'fake-cloudflared' -ProjectRoot {quoted(ROOT)} `
         -Port 61234 -Protocol http2 -LogStem {quoted(tmp_path / 'startup')} `
-        -Server $script:server -Tunnel ([ref]$tunnel) -MaxAttempts {limit} }} 6>$null
+        -Server $script:server -Tunnel ([ref]$tunnel) -MaxAttempts {limit} -OpenBrowser:${str(open_browser).lower()} }} 6>$null
 }} catch {{ $errorMessage = $_.Exception.Message }}
 [pscustomobject]@{{
     Error = $errorMessage; Created = @($script:created.ToArray()); Sleeps = @($script:sleeps.ToArray())
     RetainedLog = $(if ($tunnel) {{ $tunnel.Log }} else {{ $null }})
+    BrowserUrls = @($script:browserUrls.ToArray())
     ServerExited = $script:server.HasExited
 }} | ConvertTo-Json -Depth 6 -Compress
 """)
@@ -210,6 +213,13 @@ def test_hung_startup_is_bounded_and_retains_process_for_cleanup(shell, tmp_path
     assert ('-TunnelProtocol http2' in result['Error']) == bool(log)
     assert len(result['Created']) == 1
     assert result['RetainedLog'] == result['Created'][0]['Log']
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('log,expected', [(PUBLIC_URL, []), (CONNECTED, [PUBLIC_URL])])
+def test_browser_opens_only_after_tunnel_is_usable(shell, tmp_path, log, expected):
+    result = tunnel_scenario(shell, tmp_path, [{'exited': False, 'log': log}], open_browser=True)
+    assert result['BrowserUrls'] == expected
 
 
 @pytest.mark.parametrize('shell', SHELLS)

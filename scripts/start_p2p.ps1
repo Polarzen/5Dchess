@@ -2,6 +2,7 @@
 param(
     [switch]$LanOnly,
     [switch]$Check,
+    [switch]$OpenBrowser,
     [ValidateRange(1, 65535)][int]$Port = 5050,
     [string]$PythonPath,
     [string]$CloudflaredPath,
@@ -128,10 +129,11 @@ try {
             Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' -and $_.AddressState -eq 'Preferred' }
         foreach ($address in $addresses) { Write-Host "[时线棋局] 局域网地址：http://$($address.IPAddress):$Port" }
         Write-Host '[时线棋局] 双方打开房主的局域网地址；房主创建在线房间，再复制邀请链接。'
+        if ($OpenBrowser) { Open-P2PBrowser -Url "http://127.0.0.1:$Port" }
     } else {
         Connect-P2PQuickTunnel -Executable $cloudflaredExecutable -ProjectRoot $ProjectRoot `
             -Port $Port -Protocol $TunnelProtocol -LogStem $logStem -Server $server `
-            -Tunnel ([ref]$tunnel) -MaxAttempts $TunnelAttempts
+            -Tunnel ([ref]$tunnel) -MaxAttempts $TunnelAttempts -OpenBrowser:$OpenBrowser
     }
 
     while ($true) {
