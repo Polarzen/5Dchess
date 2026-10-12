@@ -19,7 +19,7 @@ def _ephemeral_port() -> int:
 
 
 def test_default_selection_constants_and_preferred_free_port():
-    assert port_utils.DEFAULT_HOST == "127.0.0.1"
+    assert port_utils.DEFAULT_HOST == "0.0.0.0"
     assert port_utils.DEFAULT_PORT == 5050
     assert port_utils.DEFAULT_PORT_END == 5099
     preferred = _ephemeral_port()
@@ -138,7 +138,7 @@ def test_run_server_logs_actual_selected_url_and_uses_it(monkeypatch):
     app_module.run_server(port=61234, debug=False)
 
     assert app_calls == [{
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 61235,
         "debug": False,
         "use_reloader": False,
@@ -146,7 +146,7 @@ def test_run_server_logs_actual_selected_url_and_uses_it(monkeypatch):
     assert any("http://127.0.0.1:61235" in message for message in log_messages)
 
 
-def test_run_server_default_debug_and_p2p_strict_both_disable_reloader(monkeypatch):
+def test_run_server_default_and_p2p_strict_disable_debug_and_reloader(monkeypatch):
     app_module = importlib.import_module("src.web.app")
     calls: list[dict] = []
     monkeypatch.setattr(app_module, "select_port", lambda *args, **kwargs: 61239)
@@ -162,13 +162,13 @@ def test_run_server_default_debug_and_p2p_strict_both_disable_reloader(monkeypat
 
     assert calls == [
         {
-            "host": "127.0.0.1",
+            "host": "0.0.0.0",
             "port": 61239,
-            "debug": True,
+            "debug": False,
             "use_reloader": False,
         },
         {
-            "host": "127.0.0.1",
+            "host": "0.0.0.0",
             "port": 61240,
             "debug": False,
             "use_reloader": False,
@@ -199,7 +199,7 @@ def test_run_server_translates_bind_and_nonzero_exit_failures(monkeypatch, failu
         raise failure
 
     monkeypatch.setattr(app_module.app, "run", fail)
-    with pytest.raises(RuntimeError, match="http://127.0.0.1:61241") as raised:
+    with pytest.raises(RuntimeError, match="http://0.0.0.0:61241") as raised:
         app_module.run_server(port=61241, debug=False, launch_id="failure-id")
     assert "竞争" in str(raised.value)
 
@@ -274,7 +274,7 @@ def test_p2p_explicit_port_is_strict(monkeypatch):
     monkeypatch.setattr(server_module, "run_server", fake_run_server)
     assert server_module.main(["--port", "61237"]) == 0
     assert captured == {
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 61237,
         "debug": False,
         "strict_port": True,
@@ -297,7 +297,7 @@ def test_p2p_consumes_inherited_launch_identity_and_passes_it_keyword_only(monke
 
 
 def test_p2p_powershell_passes_selected_port_to_both_processes():
-    script = open("scripts/start_p2p.ps1", encoding="utf-8").read()
+    script = open("scripts/start_p2p.ps1", encoding="utf-8-sig").read()
     assert '"--select-port"' in script
     assert '"--port", [string]$Port' in script
     assert '"http://127.0.0.1:$Port"' in script
@@ -307,6 +307,8 @@ def test_p2p_powershell_passes_selected_port_to_both_processes():
     assert '"/__p2p/readiness"' in script
     assert '$httpHandler.UseProxy = $false' in script
     assert '$httpHandler.AllowAutoRedirect = $false' in script
-    assert '-NoNewWindow' in script
+    assert '-WindowStyle Hidden' in script
+    assert 'Test-P2PProcessOwnership -ProcessId' in script
+    assert 'taskkill.exe /PID $server.Id /T /F' in script
     assert 'if ($server.HasExited)' in script
     assert 'if ($tunnel.HasExited)' in script

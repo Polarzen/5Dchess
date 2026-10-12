@@ -203,12 +203,16 @@ python src/main.py
 http://127.0.0.1:5050
 ```
 
-Web 默认使用 `127.0.0.1`，首选端口为 `5050`；启动前会逐个探测并在
+Web 默认监听 `0.0.0.0`（所有 IPv4 网卡），默认关闭 Flask 调试模式，首选端口为 `5050`；启动前会逐个探测并在
 `5050-5099` 中选择第一个可绑定端口，因此实际 URL 以启动日志为准。也可用
 `--port N` 指定首选起点；这不是严格端口，程序会从 `N` 向上最多搜索 50 个
 候选（到 `65535` 为止）。搜索范围耗尽时会直接报错。无参数启动与
 `--web` 的端口行为相同；`--port` 在 CLI、Replay、PvP 或 PvE 模式下会被忽略并
 给出提示。
+
+同一局域网的其他机器访问 `http://<服务器的局域网IP>:<实际端口>`，例如
+`http://192.168.1.10:5050`。本机仍可使用 `127.0.0.1`；`0.0.0.0` 是监听地址，
+不要把它作为其他机器的访问地址。局域网访问无需 Cloudflare Tunnel。
 
 当前 Web 请求、AI 超时、P2P 轮询与重试行为见
 [`docs/WEB_RELIABILITY.md`](docs/WEB_RELIABILITY.md)。
@@ -235,13 +239,26 @@ Hotseat 只使用本地 `/api/game/*` canonical PvP 路径，不需要：
 
 在线 P2P 通过 Cloudflare Quick Tunnel 发布房主的 Web 服务；5D 引擎和对局状态始终由房主服务端权威维护。一个服务进程只开放一个房间和一个房间码：`White = host`（房主），`Black = joiner`（加入者）。
 
-Windows 下从项目根目录启动：
+只有房主需要安装项目和 Cloudflare；对手使用浏览器即可。Windows 下首次在项目根目录执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1
 ```
 
-脚本会启动 `debug=False` 的本地 Flask 服务，并创建临时的 `https://*.trycloudflare.com` Quick Tunnel。房主打开终端显示的 HTTPS 地址并点击“创建在线房间”后，顶部会出现“复制邀请链接”。点击后可直接得到类似：
+安装脚本把 Cloudflare 官方 `cloudflared.exe` 放到 `D:\p2p\cloudflared`，按仓库中的版本清单校验 SHA-256；项目依赖放在项目的 `.venv311` 中。已有 Python 3.11 会复用，不更改系统 PATH。没有 Python 3.11 时先安装它（新增软件可放到 `D:\p2p\Python311`），或给安装脚本传入 `-PythonPath`。
+
+```powershell
+# 只检查依赖，不启动网站
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -Check
+# 异地联机：网站 + Cloudflare 公网隧道
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
+# 同一局域网：只启动网站，无需 Cloudflare
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -LanOnly
+```
+
+启动器优先使用项目 `.venv311`，以 `0.0.0.0` 监听、关闭调试模式。默认从 `5050` 开始寻找空闲端口，也可用 `-Port 5099` 指定搜索起点。`0.0.0.0` 是监听地址，访问时用终端输出的实际地址。
+
+异地联机时，等待终端显示 `https://*.trycloudflare.com` 公网地址。**房主也应打开这个公网地址**并点击“创建在线房间”，再点击顶部“复制邀请链接”。得到类似：
 
 ```text
 https://example.trycloudflare.com/?room=ABC123
@@ -250,10 +267,12 @@ https://example.trycloudflare.com/?room=ABC123
 把这一条链接发给对手即可，不再需要把 Quick Tunnel URL 和 6 位房间码分两次发送。加入者打开邀请链接后，主页会识别合法 `room` 参数并显示“加入在线房间 ABC123”；只有加入者明确点击后才会尝试占用 Black 席位。没有邀请参数时，原来的手动输入 6 位房间码流程继续可用。需要手动分开启动时，可分别运行：
 
 ```powershell
-python scripts/run_p2p_server.py
+.\.venv311\Scripts\python.exe scripts/run_p2p_server.py
 # 使用上一个命令日志中的实际端口
-cloudflared tunnel --url http://127.0.0.1:<actual-port>
+& 'D:\p2p\cloudflared\cloudflared.exe' tunnel --url http://127.0.0.1:<actual-port>
 ```
+
+局域网联机时，双方打开 `http://<房主局域网IP>:<实际端口>`，再创建/加入房间。6 位房间码只在这个房主的网站中有效，不能单独代替网址。使用启动器时按 **Ctrl+C** 会停止网站和隧道；日志在 `logs/p2p/`，不提交到 Git。公网隧道连接失败可重试 `-TunnelProtocol http2`。
 
 `scripts/start_p2p.ps1` 会先调用 Python 的机器可读端口选择模式，再把同一个
 具体端口严格传给 P2P Flask 服务和 `cloudflared tunnel --url`；不会从普通日志中

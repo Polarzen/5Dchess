@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 from src.utils.logger import logger
 
-DEFAULT_WEB_HOST = "127.0.0.1"
+DEFAULT_WEB_HOST = "0.0.0.0"
 MAX_PORT = 65535
 
 

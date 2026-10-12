@@ -16,6 +16,8 @@ build/
 
 # 日志
 logs/
+# Optional legacy local Cloudflare binary; managed installation lives in D:\p2p.
+cloudflared.exe
 
 # 测试缓存
 .pytest_cache/

@@ -821,7 +821,7 @@ def _repetition_payload(engine):
 def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
-    debug: bool = True,
+    debug: bool = False,
     *,
     strict_port: bool = False,
     launch_id: str | None = None,
@@ -851,6 +851,11 @@ def run_server(
     _launch_readiness_id = launch_id
     actual_url = f"http://{host}:{selected_port}"
     logger.info(f"时线棋局 Web 服务器启动: {actual_url}")
+    if host == "0.0.0.0":
+        logger.info(
+            f"本机访问 http://127.0.0.1:{selected_port}；"
+            f"局域网访问 http://<本机局域网IP>:{selected_port}"
+        )
     try:
         app.run(
             host=host,

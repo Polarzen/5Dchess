@@ -6,61 +6,105 @@
 
 Quick Tunnel 可以把房主的本地 Web 地址临时发布为 `https://*.trycloudflare.com`，不需要公网 IP 或预先配置域名，适合开发、试玩和临时联机。需要长期固定地址时，应改用 Cloudflare Named Tunnel，并按照部署环境补充访问控制。
 
-本项目默认监听 `127.0.0.1`，首选端口为 `5050`。普通 Web 启动会在
+本项目默认监听 `0.0.0.0`（所有 IPv4 网卡），默认关闭 Flask 调试模式，首选端口为 `5050`。普通 Web 启动会在
 `5050-5099` 中逐个进行 TCP bind 探测并选择第一个可用端口；`--port N` 表示
 首选起点，仍会从 `N` 向上最多搜索 50 个候选（范围在 `65535` 处截断），不是
 严格绑定要求。实际选中的 URL 会在 Flask 启动前记录；如果 50 个候选都不可用，
 启动会报告包含完整搜索范围的错误。
 
-## Windows 启动
+同一局域网的玩家可以直接访问 `http://<房主的局域网IP>:<实际端口>`，
+在页面创建或加入在线房间，无需启动 Cloudflare。房主本机和 Cloudflare 转发目标仍使用
+`http://127.0.0.1:<实际端口>`；`0.0.0.0` 只用于监听。
 
-1. 安装项目依赖：
+## Windows 安装与启动
 
-   ```powershell
-   python -m pip install -r requirements.txt
-   ```
+只有房主需要项目、Python 和 `cloudflared`；加入者使用浏览器即可，无需下载软件。同一局域网联机不需要 Cloudflare。
 
-2. 安装 `cloudflared`，并确认 `cloudflared --version` 可以运行。也可以把 Cloudflare 官方 Windows 64-bit `cloudflared.exe` 放在项目根目录；启动脚本会优先使用 PATH 中的命令，否则查找根目录中的该文件。
+### 首次安装（房主）
 
-3. 在项目根目录运行：
+在项目根目录打开 PowerShell：
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
-   ```
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1
+```
 
-   脚本会先通过 `python scripts/run_p2p_server.py --select-port` 获取一个机器可读的具体端口，再以 `debug=False` 将该端口严格传给 `scripts/run_p2p_server.py` 和 Cloudflare Quick Tunnel。启动时脚本生成一次性的本地 launch identity，通过环境变量传给服务，并用不带 identity 的固定 readiness 路径核对响应中的 identity 与服务 PID；identity 不会进入 URL。终端出现 `https://*.trycloudflare.com` 地址后，房主先打开该地址并创建在线房间。脚本会在有界时间内等待该身份就绪端点，并在服务或 Tunnel 任一进程退出时清理另一个进程，不依赖固定睡眠或从日志猜测端口。
+安装位置：
 
-4. 房主点击“创建在线房间”后，顶部会出现“复制邀请链接”。点击后得到类似：
+| 内容 | 位置 |
+| --- | --- |
+| Cloudflare 软件 | `D:\p2p\cloudflared\cloudflared.exe` |
+| 项目 Python 依赖 | 项目内 `.venv311` |
+| 安装、启动、检查脚本 | 项目内 `scripts/` |
+| 官方版本及 SHA-256 清单 | `scripts/p2p/cloudflared-release.json` |
+| 运行日志 | 项目内 `logs/p2p/`（Git 忽略） |
 
-   ```text
-   https://example.trycloudflare.com/?room=ABC123
-   ```
+安装脚本下载清单中固定版本的官方 Windows amd64 程序，校验 SHA-256 后才安装；相同版本重复执行会复用。替换已有不同版本时会先保存备份。它不修改系统 PATH、不注册开机服务。Python 3.11 已安装时直接复用；尚未安装时，可先将 Python 3.11 安装到 `D:\p2p\Python311`，再运行：
 
-   把这一条邀请链接发给对手即可，不再需要另外发送 6 位房间码。邀请 URL **只包含 room code**，绝不包含 `player_token`。
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1 -PythonPath 'D:\p2p\Python311\python.exe'
+```
 
-5. 加入者打开邀请链接后，主页会识别合法的 `room` 参数并显示“加入在线房间 ABC123”。只有加入者明确点击该按钮后才会请求 Black 席位；页面加载本身不会为没有已保存 token 的浏览器自动占用席位。没有邀请参数时，原来的手动输入 6 位房间码流程仍然可用。`White = host`（房主），`Black = joiner`（加入者）。
+可用 `-SoftwareDirectory` 指定其他软件目录；后续启动需要用 `-CloudflaredPath` 指向其中的程序。常规启动优先使用项目 `.venv311`，然后 `.venv`；Cloudflare 优先查找 `D:\p2p\cloudflared`，再查项目根目录和 PATH。显式指定的路径不存在时直接报错，不会偷偷换用别的程序。
 
-6. 结束联机时，先由玩家在页面返回菜单；关闭运行 Quick Tunnel 的 PowerShell 后，临时地址失效，启动脚本也会停止本地 Flask 服务。
+### 异地联机
+
+```powershell
+# 只检查环境，不启动服务或隧道
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -Check
+# 启动网站和公网隧道
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
+```
+
+1. 等待终端显示 `公网地址：https://*.trycloudflare.com`。启动器确认 Cloudflare 已建立连接后才显示该地址。
+2. **房主也从这个 HTTPS 地址打开游戏**，点击“创建在线房间”。
+3. 点击顶部“复制邀请链接”，发送给对手，例如 `https://example.trycloudflare.com/?room=ABC123`。
+4. 对手打开链接，点击“加入在线房间 ABC123”。房主固定执白，对手执黑。
+5. 联机期间保持房主电脑、启动终端和双方页面运行。结束时在启动终端按 **Ctrl+C**；网站与隧道都会关闭，临时网址失效。不要靠强制结束 PowerShell 或直接关闭终端来代替正常停止。
+
+房间码是自动生成的 6 位字母或数字，只在该房主的网站服务中有效。手动加入时仍需先打开相同网址；房间码不能让另一个独立启动的网站自动找到房主。房间关闭、过期或服务重启后，应创建新房间并重新分享邀请。邀请链接只含房间码，不含玩家身份令牌。
+
+### 同一局域网
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -LanOnly
+```
+
+脚本显示本机地址和局域网候选地址。双方使用房主实际连接网络的 IPv4 地址，例如 `http://192.168.1.20:5050`。房主也从这个地址创建房间，复制的邀请链接才能供同网设备访问。`127.0.0.1` 仅供房主本机使用；不要在浏览器中填写监听地址 `0.0.0.0`。如果同网设备连不上，检查两台设备是否处于允许互访的同一网络，以及 Windows 防火墙是否允许该 Python 在专用网络接收入站连接。
+
+### 端口、就绪和停止
+
+```powershell
+# 从 5099 向上搜索最多 50 个空闲候选，隧道跟随实际选中的端口
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -Port 5099
+# 网络不支持 UDP/QUIC 时使用 HTTP/2 隧道
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -TunnelProtocol http2
+```
+
+启动器先通过 `run_p2p_server.py --select-port` 取得具体端口，再严格传给网站和 Tunnel，避免二者指向不同端口。启动前的端口探测不构成预留；最终绑定发生竞争会报错，需要重新启动。
+
+网站使用 `debug=False`，不会启动开发调试器或重载进程。启动器用一次性的 launch identity 和实际服务 PID 确认就绪，兼容 Windows 虚拟环境解释器的子进程；identity 只经环境传递，不写入 URL。网站就绪最多等 30 秒，隧道首次连接最多等 90 秒。服务或隧道退出、启动超时或按 Ctrl+C 时会清理本次启动的进程。错误信息给出对应日志路径。
 
 ### 手动启动
 
-不使用启动脚本时，在两个 PowerShell 窗口中分别运行：
+在两个终端分别运行，并分别按 Ctrl+C 停止：
 
 ```powershell
-python scripts/run_p2p_server.py
+.\.venv311\Scripts\python.exe scripts/run_p2p_server.py
+# 把网站日志中的实际端口填入下一条命令
+& 'D:\p2p\cloudflared\cloudflared.exe' tunnel --url http://127.0.0.1:<actual-port>
 ```
 
-命令会动态选择可用端口并在日志中记录实际 URL。把该日志中的端口填入：
+直接运行 `run_p2p_server.py` 会自动寻找端口；给它传入 `--port N` 则严格绑定 N。该 Python 参数与 PowerShell 启动器的 `-Port N`（搜索起点）含义不同。
+
+### 联机验收
+
+在刚启动、没有玩家对局的测试网站上执行：
 
 ```powershell
-cloudflared tunnel --url http://127.0.0.1:<actual-port>
+.\.venv311\Scripts\python.exe -X utf8 scripts/check_p2p.py --url https://example.trycloudflare.com --exercise-room
 ```
 
-若需要由外部启动器传入已经选定的端口，可使用
-`python scripts/run_p2p_server.py --port <actual-port>`；此参数是严格绑定，
-服务不会静默改用其他端口，以确保 Tunnel 和 Flask 指向同一监听端口。
-
-手动启动时也应保持 Flask 的非调试模式，不要把开发调试器发布到公网。
+该命令明确创建临时房间，模拟两个独立玩家，验证房间满员、非法身份、回合权限、双方走子和提交、同色重连及棋盘同步，最后关闭测试房间。令牌只在内存中使用，不打印或保存。已有房间时创建会失败，不会接管玩家的对局。可将 `--url` 换为本机或局域网地址验证相应路径。
 
 ## 邀请链接与认证边界
 
@@ -104,8 +148,12 @@ https://example.trycloudflare.com/?room=ABC123
 
 ## 常见检查
 
-- 找不到 `python`：安装 Python 3.11+ 并确保它在 PATH 中。
-- 找不到 `cloudflared`：将其加入 PATH，或把 `cloudflared.exe` 放到项目根目录后重新执行启动命令。
+- 找不到项目 Python 或缺少依赖：执行 `scripts/setup_p2p.ps1`；新安装的 Python 可通过 `-PythonPath` 指定。
+- 找不到 `cloudflared`：执行 `scripts/setup_p2p.ps1`，默认安装到 `D:\p2p\cloudflared`；自定义位置使用 `-CloudflaredPath`。
 - 创建房间提示已有在线房间：由原房主显式返回菜单关闭旧房间，或等待失联房间的 lease+grace 生命周期结束。
 - 邀请链接没有显示目标房间：确认 `?room=` 后是恰好 6 位 ASCII 字母或数字；非法参数会被安全忽略并回到手动输入流程。
 - 页面提示连接中断：确认房主进程和 Quick Tunnel 仍在运行，并重新打开同一 HTTPS 地址；浏览器中的房间码和令牌会用于同色恢复。
+
+官方参考：[Quick Tunnel 使用说明](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)、[cloudflared 下载](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/)。
+
+本次实际运行结果及验证范围见 [P2P 验收记录](P2P_ACCEPTANCE.md)。
