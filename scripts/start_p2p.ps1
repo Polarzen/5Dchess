@@ -140,7 +140,8 @@ try {
         }
         if ($tunnel) {
             if ($tunnel.HasExited) {
-                throw "Cloudflare Tunnel 已退出（退出码 $($tunnel.ExitCode)）；查看日志：$logStem-tunnel-attempt-*-error.log"
+                $exitCode = if ($null -eq $tunnel.ExitCode) { '未知' } else { [string]$tunnel.ExitCode }
+                throw "Cloudflare Tunnel 已退出（退出码 $exitCode）；查看日志：$logStem-tunnel-attempt-*-error.log"
             }
         }
         Start-Sleep -Milliseconds 500

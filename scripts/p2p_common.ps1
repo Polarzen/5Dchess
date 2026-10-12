@@ -44,7 +44,7 @@ function Get-P2PTunnelFailure {
     # Match provisioning errors only: a QUIC timeout after provisioning is a
     # different problem. Return fixed messages rather than echoing credentials
     # or other arbitrary configuration that may be present in a log.
-    $requestFailure = [regex]::Match($Output, '(?im)^.*failed to request quick Tunnel:[^\r\n]*').Value
+    $requestFailure = [regex]::Match($Output, '(?im)^.*failed to (?:request quick Tunnel|read quick-tunnel response):[^\r\n]*').Value
     if ($requestFailure -match '(?i)context deadline exceeded|timeout|timed out') {
         return [pscustomobject]@{
             Retryable = $true
@@ -101,6 +101,11 @@ function Connect-P2PQuickTunnel {
             -RedirectStandardOutput ($attemptStem + '.log') `
             -RedirectStandardError $errorLog `
             -PassThru
+        # Keep the process handle while it is alive. Windows PowerShell 5.1
+        # can otherwise lose ExitCode after a process obtained via Start-Process exits.
+        try { $null = $Tunnel.Value.Handle } catch [System.InvalidOperationException] {
+            # A process that already disappeared can still be diagnosed from its log.
+        }
         $deadline = (Get-Date).AddSeconds(90)
         while ($true) {
             if ($Server.HasExited) { throw 'Flask 服务已退出；停止创建 Cloudflare Tunnel。' }
@@ -129,7 +134,8 @@ function Connect-P2PQuickTunnel {
                     }
                     break
                 }
-                throw "Cloudflare Tunnel 已退出（尝试 $attempt/$MaxAttempts，退出码 $($process.ExitCode)）。$($failure.Message) 查看日志：$errorLog"
+                $exitCode = if ($null -eq $process.ExitCode) { '未知' } else { [string]$process.ExitCode }
+                throw "Cloudflare Tunnel 已退出（尝试 $attempt/$MaxAttempts，退出码 $exitCode）。$($failure.Message) 查看日志：$errorLog"
             }
             if ($urlMatch.Success -and $registered) {
                 Write-Host "[时线棋局] 公网地址：$($urlMatch.Value)"

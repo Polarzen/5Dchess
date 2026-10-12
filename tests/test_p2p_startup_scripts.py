@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -64,6 +65,10 @@ PROVISIONING_TIMEOUT = (
     'failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": '
     'context deadline exceeded (Client.Timeout exceeded while awaiting headers)'
 )
+RESPONSE_BODY_TIMEOUT = (
+    'failed to read quick-tunnel response: context deadline exceeded '
+    '(Client.Timeout or context cancellation while reading body)'
+)
 PUBLIC_URL = 'https://test-connection.trycloudflare.com'
 CONNECTED = PUBLIC_URL + '\nINF Registered tunnel connection'
 
@@ -71,6 +76,8 @@ CONNECTED = PUBLIC_URL + '\nINF Registered tunnel connection'
 @pytest.mark.parametrize('shell', SHELLS)
 @pytest.mark.parametrize('log,retryable', [
     (PROVISIONING_TIMEOUT, True),
+    (RESPONSE_BODY_TIMEOUT, True),
+    ('failed to read quick-tunnel response: unexpected EOF', True),
     ('failed to request quick Tunnel: connection reset by peer', True),
     ('quick tunnel provisioning failed with status 503', True),
     ('quick tunnel provisioning failed with status 429', True),
@@ -143,7 +150,7 @@ try {{
 def test_two_timeouts_retry_then_connect_without_restarting_origin(shell, tmp_path):
     result = tunnel_scenario(shell, tmp_path, [
         {'exited': True, 'log': PROVISIONING_TIMEOUT},
-        {'exited': True, 'log': PROVISIONING_TIMEOUT},
+        {'exited': True, 'log': RESPONSE_BODY_TIMEOUT},
         {'exited': False, 'log': CONNECTED},
     ])
     assert result['Error'] is None
@@ -165,7 +172,7 @@ def test_two_timeouts_retry_then_connect_without_restarting_origin(shell, tmp_pa
 @pytest.mark.parametrize('shell', SHELLS)
 @pytest.mark.parametrize('limit', [1, 3])
 def test_provisioning_failure_stops_at_attempt_limit_and_keeps_cause(shell, tmp_path, limit):
-    result = tunnel_scenario(shell, tmp_path, [{'exited': True, 'log': PROVISIONING_TIMEOUT}] * limit, limit=limit)
+    result = tunnel_scenario(shell, tmp_path, [{'exited': True, 'log': RESPONSE_BODY_TIMEOUT}] * limit, limit=limit)
     assert len(result['Created']) == limit
     assert f'{limit}/{limit}' in result['Error']
     assert 'api.trycloudflare.com' in result['Error']
@@ -222,3 +229,39 @@ def test_origin_exit_while_connecting_retains_tunnel_for_cleanup(shell, tmp_path
     assert 'Flask' in result['Error']
     assert len(result['Created']) == 1
     assert result['RetainedLog'] == result['Created'][0]['Log']
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_real_child_reports_body_timeout_and_preserves_exit_code(shell, tmp_path):
+    child_script = tmp_path / 'fake provisioning response.py'
+    child_script.write_text(
+        'import sys, time\ntime.sleep(0.3)\n'
+        f'print({RESPONSE_BODY_TIMEOUT!r}, file=sys.stderr, flush=True)\n'
+        'sys.exit(23)\n', encoding='utf-8',
+    )
+    result = run(shell, f"""
+function Start-Process {{
+    param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle,
+          $RedirectStandardOutput, $RedirectStandardError, [switch]$PassThru)
+    $PSBoundParameters['ArgumentList'] = @('-u', ('"' + {quoted(child_script)} + '"'))
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {{
+        $PSBoundParameters.Remove('WindowStyle') | Out-Null
+    }}
+    Microsoft.PowerShell.Management\\Start-Process @PSBoundParameters
+}}
+$tunnel = $null
+$message = $null
+try {{
+    & {{ Connect-P2PQuickTunnel -Executable {quoted(Path(sys.executable))} -ProjectRoot {quoted(ROOT)} `
+        -Port 61234 -Protocol auto -LogStem {quoted(tmp_path / 'real-child')} `
+        -Server ([pscustomobject]@{{HasExited=$false}}) -Tunnel ([ref]$tunnel) -MaxAttempts 1 }} 6>$null
+}} catch {{ $message = $_.Exception.Message }} finally {{
+    if ($tunnel -and -not $tunnel.HasExited) {{ Stop-Process -InputObject $tunnel -Force }}
+}}
+[pscustomobject]@{{ Error=$message; ExitCode=$tunnel.ExitCode }} | ConvertTo-Json -Compress
+""")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert 'api.trycloudflare.com' in payload['Error']
+    assert '23' in payload['Error']
+    assert payload['ExitCode'] == 23

@@ -156,9 +156,14 @@ https://example.trycloudflare.com/?room=ABC123
 
 ```text
 failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": context deadline exceeded
+failed to read quick-tunnel response: context deadline exceeded (Client.Timeout or context cancellation while reading body)
 ```
 
 新版启动器会自动做上述有限次数重试，命令不变，无需重新安装。若每次都失败，可稍后重试或换一个可访问该接口的网络（例如手机热点）。自动重试能处理短暂波动，不能保证修复持续不可达的外部服务。
+
+第一种是等待申请请求响应超时，第二种是读取响应内容超时；两者都发生在申请网址阶段，都会重试。若已经出现临时网址，但随后反复出现 `Failed to dial a quic connection`，则是隧道连接阶段的问题。自检中的 `UDP Connectivity FAIL`、`TCP Connectivity FAIL` 表示对应检测未连通，并不能单独确定是本机防火墙、网络出口还是上游链路造成。可先换手机热点对照；只有 UDP 不通时可以尝试 HTTP/2，但 TCP 也不通时仍可能失败。Cloudflare 隧道使用出站 7844 端口，QUIC 使用 UDP，HTTP/2 使用 TCP，详见[官方网络要求](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/)。
+
+在 PowerShell 7 窗口里执行 `powershell ...` 仍会启动 Windows PowerShell 5.1；要使用当前 PowerShell 7，可直接执行 `& .\scripts\start_p2p.ps1`（受当前执行策略约束），或将命令开头换成 `pwsh`。启动器支持两者；切换 PowerShell 版本不会修复网络连接问题。
 
 `-TunnelProtocol http2` 用于已取得网址后连接 Cloudflare 隧道的阶段，不能延长或改变申请网址这一步。所固定的 cloudflared 2026.10.0 在[官方实现](https://github.com/cloudflare/cloudflared/blob/2026.10.0/cmd/cloudflared/tunnel/quick_tunnel.go)中把申请请求超时设为 15 秒；启动器的 90 秒等待上限不会覆盖它。
 
