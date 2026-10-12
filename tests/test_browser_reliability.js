@@ -30,6 +30,7 @@ function loadClient(includeP2P = false) {
             if (!elements.has(id)) elements.set(id, element());
             return elements.get(id);
         },
+        querySelector() { return null; },
         querySelectorAll() { return []; },
         addEventListener() {},
         createElement() { return element(); },
@@ -489,6 +490,33 @@ async function testSuccessfulMoveRerendersAndEnablesSubmitButton() {
     assert.equal(context.document.getElementById('submit-action-btn').disabled, false);
 }
 
+function testArrivalUsesCreatedBranchAndExplainsUnsafeSubmission() {
+    const context = loadClient();
+    assert.equal(vm.runInContext(`moveArrivalBoardKey({is_branching: true, created_timeline: 3,
+        destination: {board: {key: '0:2', timeline: 0, time_point: 2}}})`, context), '3:3');
+    assert.equal(vm.runInContext(`moveArrivalBoardKey({is_branching: false,
+        destination: {board: {key: '-1:4', timeline: -1, time_point: 4}}})`, context), '-1:5');
+    vm.runInContext("gameState = {game_state: 'PLAYING'}", context);
+    assert.match(vm.runInContext("submissionHelp({required_boards: [], can_submit: false, submit_blocker: 'royal_safety'})", context), /王.*跨时空攻击/);
+    assert.match(vm.runInContext("submissionHelp({required_boards: [{}, {}], can_submit: false})", context), /2 张红框棋盘/);
+}
+
+function testRepetitionBannerShowsAndClearsWithoutChangingGame() {
+    const context = loadClient(true);
+    const banner = context.document.getElementById('repetition-warning');
+    let hidden;
+    banner.classList.toggle = (name, value) => { assert.equal(name, 'hidden'); hidden = value; };
+    vm.runInContext(`gameState = {game_state: 'PLAYING', repetition: {
+        kind: 'frontier_repetition', message: '检测到往返走棋；这不是自动和棋。'}};
+        renderRepetitionWarning();`, context);
+    assert.equal(hidden, false);
+    assert.match(banner.textContent, /不是自动和棋/);
+    assert.equal(vm.runInContext('gameState.game_state', context), 'PLAYING');
+    vm.runInContext('gameState.repetition = null; renderRepetitionWarning();', context);
+    assert.equal(hidden, true);
+    assert.equal(banner.textContent, '');
+}
+
 (async () => {
     await testRequestDeadline();
     await testAbortAwareAndBodyDeadlines();
@@ -508,6 +536,8 @@ async function testSuccessfulMoveRerendersAndEnablesSubmitButton() {
     await testLateP2PResponseCannotCrossRoomOrMode();
     await testDuplicateMoveAndSubmitUseOneMutationPost();
     await testSuccessfulMoveRerendersAndEnablesSubmitButton();
+    testArrivalUsesCreatedBranchAndExplainsUnsafeSubmission();
+    testRepetitionBannerShowsAndClearsWithoutChangingGame();
     console.log('Browser reliability tests passed');
 })().catch(error => {
     console.error(error);

@@ -38,15 +38,15 @@ def test_active_rewind_defers_uncapturable_required_attacker():
     assert engine_state_signature(engine) == before
 
 
-def test_active_rewind_with_one_required_board():
+def test_active_rewind_cannot_ignore_a_second_historical_king():
     engine = _captured('control43_active_rewind_state')
     before = engine_state_signature(engine)
     assert len(engine.get_required_action_boards()) == 1
     result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
-    assert result.candidates and len(result.candidates[0]) == 1
-    child = engine.clone_for_simulation()
-    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
-    assert child.action_history[-1].submitted
+    threats = RoyalRules(engine.timeline_manager.timelines).direct_threats_against(engine.current_turn_color)
+    assert any(t.king.timeline == 3 and (t.king.x, t.king.y) == (3, 1) for t in threats)
+    assert result.candidates == () and result.termination_reason is None
+    assert result.explored_states == 1
     assert engine_state_signature(engine) == before
 
 

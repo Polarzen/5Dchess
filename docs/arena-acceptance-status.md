@@ -4,7 +4,260 @@ This document is the durable status for the Planner reliability work around
 PR #24. The original baseline was `70a5f495`; durable baseline run
 `34745200932` is retained as a historical reference. Current acceptance is below.
 
-## Current local acceptance (2026-10-11)
+## Outcome evaluation follow-up (2026-10-12)
+
+Four exact post-submission positions reproduced the 3-second outcome-search
+limit: Actions 45, 72, 76 and 92, with 16–29 timelines. The last case has only
+one required board, but an optional source can rewind Present. A bounded root
+probe now tries historical branches that can complete the Action immediately,
+then retains the original complete search. Both paths share the unchanged
+3-second / 4096-state / depth-64 budget. Interrupted searches remain unknown;
+every witness still passes canonical execution and global royal-safe submission.
+
+All four archived positions now yield a legal one-Move witness in **0.078–0.156
+seconds / 2 states**. The final original-seed Easy confirmation completed
+**80 Actions / up to 24 timelines**, with zero outcome warnings, planning
+failures, recoveries, illegal Actions, stale failures or unexpected failures.
+This is finite-run evidence, not a guarantee that every possible position fits
+the budget. Exact archives, hashes and before/after measurements are preserved
+in [the outcome validation record](outcome-evaluation-validation-20261012.json).
+
+Final local regression: **683 passed, 2 skipped**, one telemetry warning,
+157.41 seconds. All three Node browser regressions passed. The restarted service
+passed interactive checks for all three tutorial lessons, explicit submission,
+player change, and preservation of an ongoing game when opening/closing the
+tutorial. Remote CI status is recorded separately for its exact commit.
+
+## AI repetition preference (2026-10-12, after timeout fix)
+
+AI selection now uses an opt-in annotation on complete Planner candidates.
+The existing read-only frontier identity includes every lane, relative board
+times, player, occupancy and special-move rights. A third occurrence within
+64 submitted Actions (including the candidate) triggers a soft preference.
+The history scan shares the existing search deadline; leaf annotations reuse
+already validated states without cloning, replay or outcome searches. Plain
+Planner callers retain their candidate order, cache and rule semantics.
+
+Easy chooses uniformly among nonrepeating candidates when available. Medium
+and Hard apply a root-only cost of 0.25 pawn, adjust the raw subtree alpha
+bound accordingly, and consider nonrepeating candidates first. Neural
+selection applies a `log(1.1)` policy-logit cost, retaining raw logits and
+scores. Sole candidates and sufficiently superior repetitions remain
+selectable. No automatic draw, model update or budget increase is introduced.
+
+Full regression: **672 passed, 2 skipped**, one existing telemetry warning,
+289.17 seconds. New coverage includes both planner strategies, multi-board
+frontiers, branch isolation, near-tie selection, superior/sole repetitions,
+raw score preservation, shared deadlines and the original timeout fixture
+with repetition tracking enabled.
+
+Hard20 (seed 42, alternating colors, original checkpoint and production
+5-second / 1024-state / 24-candidate budget) completed **714 Actions**:
+5 wins / 1 cap-limited draw / 14 losses, zero frontier repetition warnings,
+zero planning failures, recoveries, illegal Actions, stale failures or
+unexpected failures. All historical boards remained unchanged; source/model
+fingerprints were preserved. Runtime: 1407.453 seconds.
+
+Easy4 and Medium4 controls also passed. The complete matrix totals **28 games /
+1079 submitted Actions**, with zero planning failures, secondary recoveries,
+illegal Actions, stale failures, unexpected failures or frontier repetition
+warnings. Every run used the same source and model hashes.
+
+| Opponent | Wins / draws / losses | Actions | Repeat boundaries | Planning failures / recoveries | Seconds |
+| --- | --- | --- | --- | --- | --- |
+| Easy4 | 2 / 1 / 1 | 271 | 0 | 0 / 0 | 72.485 |
+| Medium4 | 0 / 0 / 4 | 94 | 0 | 0 / 0 | 18.328 |
+| Hard20 | 5 / 1 / 14 | 714 | 0 | 0 / 0 | 1407.453 |
+
+Easy reached 24 timelines and retained three inconclusive outcome-evaluation
+warnings, separately from planning failures. Two games overall reached the
+120-Action evaluation cap while PLAYING; these are not engine-declared draws.
+The scripted 200-Action Knight recurrence test also continues to pass, proving
+that repeated human Moves remain legal and that a Pawn advance clears the
+advisory. Full per-game records, source/model fingerprints and regression
+output are preserved in
+[`ai-repetition-validation-20261012.json`](ai-repetition-validation-20261012.json).
+
+Earlier Hard20 recorded four games and 56 boundaries with repetition warnings.
+The current run recorded none; the earlier source snapshot precedes the timeout
+follow-up, and wall-bounded searches can diverge, so this is finite-run context
+rather than exact-state causal replay. Game 14 still reached 120 Actions while
+PLAYING without a repetition warning. Matching complete frontiers is stricter
+than recognizing an individual piece shuffling while other lane times change;
+this preference does not guarantee that all visible back-and-forth disappears.
+
+## Planner timeout follow-up (2026-10-12)
+
+The production `auto` one-Move probe previously simulated ordinary Moves
+that could not advance every required board. Unlike the explicit Minimax
+probe, it did not apply the existing structural feasibility check. On a
+multi-board Present, those unsuccessful simulations could consume the probe
+slice before a legal historical branch was inspected, then the deep search
+could exhaust its remaining budget without finding an Action.
+
+Both probe entry paths now use that check. Non-branching Moves advance at
+most their source and destination boards; if required boards remain, that
+Move cannot complete a one-Move Action. Such Moves stay in the multi-Move
+fallback, with depth-cutoff evidence preserved. Branching Moves are retained
+because they can rewind Present. Rules, outcome classification, production
+budgets, model weights and the explicit Minimax strategy are unchanged.
+
+Fresh capture: Easy seed 54, White, Action index 108 / ply 121, eight required
+boards on eight timelines. Signature:
+`7b8c6159bf14740902d3c99f4d7d068522c5527f27953cc390f50c7f23576217`.
+The primary search failed after 5.047 seconds; the saved state reproduced
+zero candidates in 5.015 seconds before the fix. After the fix the same
+state produced 24 complete candidates in 0.610 seconds. All candidates
+passed canonical move resolution and Action submission. The original state
+was unchanged. The captured archive is preserved as
+`tests/fixtures/easy54_probe_starvation_state.json.gz`.
+
+Two new regressions pass: the captured timeout now yields complete Actions
+under the original primary budget, and a three-board position requiring
+multiple Moves still reaches the fallback rather than a false no-Action
+result. Full-suite confirmation passes: **649 passed, 2 skipped, one existing
+telemetry warning, 252.57 seconds**. Easy20 confirmation passes with the
+original checkpoint, seed 42, alternating colors and unchanged production
+budget: 15 wins / 3 cap-limited draws / 2 losses, 1212 submitted Actions,
+zero planning failures, zero secondary Action recoveries and zero
+illegal/stale/unexpected failures (322.500 seconds). Seeds 53 and 54 both
+finish normally. Medium4 and Hard4 controls also pass, with zero planning
+failures, secondary recoveries, illegal/stale/unexpected failures and primary
+terminal adjudications. The follow-up matrix totals **28 games / 1398
+submitted Actions**, reaches 24 timelines, and preserves every historical
+board. Both runs confirm unchanged source and model hashes.
+
+| Opponent | Wins / draws / losses | Submitted Actions | Planning failures / recoveries | Seconds |
+| --- | --- | --- | --- | --- |
+| Easy20 | 15 / 3 / 2 | 1212 | 0 / 0 | 322.500 |
+| Medium4 | 0 / 0 / 4 | 94 | 0 / 0 | 22.813 |
+| Hard4 | 0 / 0 / 4 | 92 | 0 / 0 | 159.265 |
+
+The three Easy draws are 120-Action evaluation caps while PLAYING. Eight
+Easy boundaries retain inconclusive outcome-evaluation warnings; these are
+separate from the zero primary planning failures and do not stop the games.
+Complete source fingerprints, before/after search telemetry, fixture hash,
+and every game result are in
+[`planner-timeout-fix-20261012.json`](planner-timeout-fix-20261012.json).
+
+The earlier 21-timeline seed-53 failure below had no exact-state archive;
+it is not claimed as an exact replay of this newly captured failure.
+
+## Earlier rule correction and tutorial (2026-10-12, before Planner follow-up)
+
+### Follow-up: castling safety and frontier recurrence
+
+Castling now validates its own King's origin and transit square against
+same-board attacks, in addition to existing final-position royal safety.
+Frontier recurrence is a nonterminal Web/P2P advisory after three matching
+submitted configurations within a 64-Action window. It preserves relative
+board times, every lane and all special-move rights; it never changes legal
+Moves, AI candidate ordering or game outcome. Detection derives from existing
+Action/history storage and survives archive restore without a schema change.
+
+The initial combined run has 646 passes, two skips and one new test error:
+the test referenced a nonexistent Web `is_spatial` field. The test now compares
+canonical source/destination board keys, and both warning-Web tests pass.
+Final combined confirmation after the serial long-game audit passes:
+**647 passed, 2 skipped, one existing telemetry warning, 257.31 seconds**.
+All three Node regressions, JavaScript syntax checks and source compilation
+also pass. No search budgets were changed. Durable source fingerprints,
+per-game results, the failed attempt and the isolated replay are recorded in
+[`rules-loop-validation-20261012.json`](rules-loop-validation-20261012.json).
+
+The real browser confirms the advisory after eight submitted Knight actions,
+continued play, and automatic clearing after a Pawn advance. The 200-Action
+canonical repetition stress also passes, preserving historical boards and
+clearing the warning on subsequent progress. Three tiers of 20 Arena games
+have finished with the original Stage 1 checkpoint and production budget;
+no prior-rule Arena results are reused for this follow-up. Source hashes
+remained unchanged throughout the run.
+
+| Opponent | Wins / draws / losses | Submitted Actions | Planning failures | Repeated-frontier games |
+| --- | --- | --- | --- | --- |
+| Easy20 | 14 / 4 / 2 | 1214 | 1 | 0 |
+| Medium20 | 0 / 0 / 20 | 470 | 0 | 0 |
+| Hard20 | 3 / 3 / 14 | 794 | 0 | 4 |
+
+All tiers have zero illegal Actions, stale plans, unexpected exceptions and
+Action recoveries. There were 24 castles and at most 21 timelines. Seven
+games reached the 120-Action evaluation cap while still PLAYING; their
+draw-like Arena scores are not engine draw adjudications. The scripted
+recurrence test and four Hard games demonstrate detection, not an AI policy
+that avoids returning positions.
+
+**The zero-failure long-game gate did not pass.** Easy game 11 (baseline seed
+53, neural White) stopped before Action index 106 at ply 135 on 21 timelines.
+The primary search exhausted its 5-second budget after 88 states with no
+candidate, and the existing larger recovery search was also inconclusive.
+The state signature is
+`387b16e9390e445edb00d20db885918472f746dea5f7bdec5f0c07edd979b510`.
+The failure is retained. An isolated Easy game with explicit seed 53 and
+neural White finished normally after 96 Actions, with no recovery or planning
+failure; it never reached the original Action-106 state. Bounded candidate
+search can change the subsequent trajectory, so this is not an exact-state
+reproduction and is not evidence of a fix. The original failing game was not
+archived: the audit's explicitly named `easy-last-game.json.gz` is game 20,
+not game 11. A future Planner repair needs an exact failing-state capture;
+do not weaken the search budgets or discard this failure.
+After the matrix finished, the audit harness was corrected to capture
+`<tier>-first-failure.json.gz` immediately inside the first-failure recorder,
+before another game replaces the active engine. This harness-only follow-up
+does not retroactively provide the missing game-11 archive. Engine and AI
+source remain identical to the completed matrix; its original source manifest
+is preserved, including the pre-follow-up audit-script hash.
+An injected-failure check verifies the first snapshot survives a subsequent
+game, restores to the exact captured state signature, and restores all Arena
+observer hooks afterward.
+The audit returned exit code 1 as required, with `source_unchanged: true`.
+This is not a claim that every rule edge case or large-state liveness is solved.
+
+The new royal-safety implementation enumerates every same-color King on a
+board and allows spatial moves on boards whose King has travelled away.
+The previous Arena scores below used the earlier rules and are historical;
+they are not acceptance evidence for this correction. The initial tutorial
+checkpoint had no new Arena matrix; the castling/recurrence follow-up above
+adds that validation. No larger training run has been started.
+
+Original captured snapshots and traces are preserved. Some earlier positive
+expectations accepted an attacked second King, or treated a kingless board as
+immobile. Regression expectations now follow the canonical rules:
+
+- `legacy_unsafe_king_witnesses.json` records formerly accepted witnesses for
+  hard20 four/six-required and seed43 immobile-arrival states. They must be
+  rejected atomically. The four-required snapshot also has a different safe
+  candidate under the default primary budget.
+- control43 active rewind, seed42 full capacity, seed53 large required and
+  seed43 required arrival have explicitly located immutable historical King
+  threats. Their original snapshots now assert certified rejection.
+- The f9f27 trace is replayed up to its first unsafe arrival (Action index 16,
+  Move index 1); the original trace remains unchanged. Completion searches
+  are tested on that last legal prefix.
+- Minimax clock/deep-phase tests use known safe four/six-board fixtures;
+  valid captured rewind/frontier cases retain their primary-budget replay
+  checks. Planner algorithms and production budgets are unchanged.
+
+Validation: all three Node regressions (browser reliability, P2P invite and
+tutorial) pass; source compilation and JavaScript syntax checks pass. Actual
+browser interaction covers all three lessons, remembered dismissal, local
+explicit submission and reopening/closing the tutorial during a pending
+Action. Web/P2P tests verify the live engine and room version are unchanged
+by tutorial loading, and branching responses use the recorded arrival lane.
+
+The first revised full-suite run had 613 passes, two skips and one 5-second
+timeout in `hard20_twenty_three_required_state` (14 explored states). That
+test passed independently without changing its budget or assertions. Final
+full-suite confirmation passes: **614 passed, 2 skipped, one existing telemetry
+warning, 287.15 seconds**. The same large-state test passes in that run. The
+initial timeout is retained here as evidence of a timing-sensitive large-state
+check; no clock or budget was relaxed to obtain the pass.
+
+Commands: `.venv311/Scripts/python.exe -u -X utf8 -m pytest -q --tb=short
+--show-capture=no --durations=8`, `python -m compileall -q src`, Node syntax
+checks for the changed JavaScript, and `node tests/test_browser_reliability.js`,
+`node tests/test_p2p_invite.js`, `node tests/test_tutorial_browser.js`.
+
+## Historical local acceptance (2026-10-11, before rule correction)
 
 Implementation `cb1c4b2426ca99be442755b91e4e5d11c7530a69` passes the complete local reliability gate:
 600 tests passed, 2 skipped, one existing telemetry warning (262.88 seconds);

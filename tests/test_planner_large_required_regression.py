@@ -6,14 +6,13 @@ import json
 from pathlib import Path
 
 from src.ai import (
-    AIActionPlan,
     ActionPlanner,
     ActionSearchBudget,
-    apply_action_plan,
     engine_state_signature,
 )
 from src.data.archive import GameArchive
 from src.engine.action import ActionRules
+from src.engine.action_proof import prove_direct_threat
 
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "seed53_large_required_state.json.gz"
@@ -37,7 +36,7 @@ def _large_required_engine():
     return engine
 
 
-def test_seed53_large_required_state_finds_action_under_production_budget():
+def test_seed53_large_required_state_cannot_hide_a_second_historical_king():
     engine = _large_required_engine()
     before = engine_state_signature(engine)
     action = engine._ensure_current_action()
@@ -57,10 +56,21 @@ def test_seed53_large_required_state_finds_action_under_production_budget():
     )
     assert len(required) == 14
     assert len(required) > 2
-    assert root_branch == 1639
+    # All same-board Kings are now checked; the old 1639 included unsafe arrivals.
+    assert root_branch == 1478
     assert root_branch > 1000
     assert engine.move_counter == 99
     assert len(engine.action_history) == 77
+
+    # The original fixture is retained: its second black King is already under
+    # an immutable attack on White's phase. A completion would be illegal even
+    # though many individual Moves remain locally legal.
+    proof = prove_direct_threat(engine, lambda: False)
+    assert proof is not None
+    assert proof.king.timeline == -7 and (proof.king.x, proof.king.y) == (3, 1)
+    assert proof.attacker.board == proof.king.board
+    assert (proof.attacker.x, proof.attacker.y) == (4, 3)
+    assert proof.king.side == engine.current_turn_color.opposite()
 
     result = ActionPlanner(ActionSearchBudget(
         max_states=1024,
@@ -70,18 +80,6 @@ def test_seed53_large_required_state_finds_action_under_production_budget():
     )).search(engine)
 
     assert engine_state_signature(engine) == before
-    assert result.explored_states < 1024
-    assert result.candidates
-
-    candidate = result.candidates[0]
-    plan = AIActionPlan(
-        color=engine.current_turn_color,
-        moves=candidate,
-        start_signature=before,
-    )
-    applied_engine = engine.clone_for_simulation()
-    applied = apply_action_plan(applied_engine, plan)
-    assert applied
-    assert applied_engine.action_history[-1].submitted
-    assert applied_engine.current_turn_color != engine.current_turn_color
-    assert engine_state_signature(engine) == before
+    assert result.explored_states == 1
+    assert result.termination_reason is None
+    assert not result.candidates

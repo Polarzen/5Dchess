@@ -1,9 +1,7 @@
-"""Deterministic regression for the real checkpoint Arena failure f9f27a86.
+"""The legacy f9f27 trace must reject its first unsafe second-King arrival.
 
-The fixture is the complete canonical Action trace captured by GitHub Actions
-run 33813126560. Replaying it does not depend on the model, RNG, wall-clock
-budgets, or direct engine mutation. Every Move is resolved from the engine's
-current canonical legal Move set and every Action is submitted normally.
+Keep the original trace unchanged. Search regressions use its last legal
+prefix: the old final position is no longer reachable under full royal safety.
 """
 from __future__ import annotations
 
@@ -23,6 +21,7 @@ from src.ai.action_planner import (
     MoveSpec,
     engine_state_signature,
     resolve_move_spec,
+    InvalidActionPlanError,
 )
 from src.engine import ActionRules, BoardCoord, FiveDEngine, Square5D
 from src.engine.action_search import ActionSearch
@@ -85,7 +84,13 @@ def build_failure_engine() -> FiveDEngine:
     trace = json.loads(TRACE_PATH.read_text(encoding="utf-8"))
     engine = FiveDEngine()
     for action_index, action_specs in enumerate(trace):
-        for raw in action_specs:
+        for move_index, raw in enumerate(action_specs):
+            if (action_index, move_index) == (16, 1):
+                assert raw['source'] == [1, 7, 'white', 4, 5]
+                assert raw['destination'] == [0, 6, 'white', 5, 4]
+                with pytest.raises(InvalidActionPlanError):
+                    resolve_move_spec(engine, _move_spec(raw))
+                return engine
             move = resolve_move_spec(engine, _move_spec(raw))
             assert engine.execute_action_move(move), (action_index, raw)
         assert engine.can_submit_action(), action_index
@@ -108,20 +113,20 @@ def _apply_candidate(engine: FiveDEngine, candidate) -> None:
     assert engine.submit_action()
 
 
-def test_captured_failure_trace_replays_exact_state(failure_engine):
+def test_captured_trace_stops_at_first_unsafe_king_arrival(failure_engine):
     required = ActionRules.required_boards(
         failure_engine._ensure_current_action(),
         failure_engine.timeline_manager.timelines,
     )
 
-    assert _state_signature_sha256(failure_engine) == TARGET_SHA
-    assert failure_engine.current_turn_color is ChessColor.BLACK
-    assert failure_engine.move_counter == 57
-    assert len(failure_engine.timeline_manager.timelines) == 12
-    assert len(required) == 2
+    assert _state_signature_sha256(failure_engine) != TARGET_SHA
+    assert failure_engine.current_turn_color is ChessColor.WHITE
+    assert failure_engine.move_counter == 17
+    assert len(failure_engine.current_action.moves) == 1
+    assert len(required) == 1
 
 
-def test_action_planner_finds_complete_two_board_candidate_without_mutating_caller(
+def test_action_planner_completes_valid_trace_prefix_without_mutating_caller(
     failure_engine,
 ):
     before = engine_state_signature(failure_engine)
@@ -140,7 +145,7 @@ def test_action_planner_finds_complete_two_board_candidate_without_mutating_call
     _apply_candidate(probe, result.candidates[0])
 
 
-def test_outcome_action_search_finds_same_one_move_witness_without_wall_clock(
+def test_outcome_action_search_completes_valid_prefix_without_wall_clock(
     failure_engine,
 ):
     before = engine_state_signature(failure_engine)
@@ -153,8 +158,11 @@ def test_outcome_action_search_finds_same_one_move_witness_without_wall_clock(
     assert engine_state_signature(failure_engine) == before
     assert result.has_legal_action, result
     assert result.termination_reason is None
-    assert len(result.witness) == 1
+    # Completion returns the entire Action, including the already-played prefix.
+    prefix = tuple(failure_engine.current_action.moves)
+    assert result.witness[:len(prefix)] == prefix
+    assert len(result.witness) == len(prefix) + 1
 
     probe = deepcopy(failure_engine)
-    specs = tuple(MoveSpec.from_move(move) for move in result.witness)
+    specs = tuple(MoveSpec.from_move(move) for move in result.witness[len(prefix):])
     _apply_candidate(probe, specs)

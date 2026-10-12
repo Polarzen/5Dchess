@@ -480,7 +480,7 @@ def register_p2p_routes(
                 _room["version"] += 1
                 return jsonify({
                     "success": True,
-                    "move": move_payload(move),
+                    "move": move_payload(engine.move_history[-1]),
                     **room_state_for(color),
                 })
             except (TypeError, ValueError):

@@ -8,7 +8,7 @@ import pytest
 from src.ai.action_planner import ActionPlanner, _PRODUCTION_HYBRID_BUDGET, engine_state_signature
 from src.data.archive import GameArchive
 from src.engine import ActionRules, ActionSearch, FiveDEngine, Position, Timeline
-from src.engine.action_proof import prove_required_board_immobile
+from src.engine.action_proof import prove_required_board_immobile, prove_direct_threat
 from src.engine.coordinates import BoardCoord
 from src.engine.move_generator import MoveGenerator
 from src.engine.move_validator import MoveValidator
@@ -46,20 +46,23 @@ def test_full_capacity_lists_exactly_the_executable_nonbranching_moves():
     assert engine_state_signature(engine) == before
 
 
-def test_capacity_certificate_proves_captured_seed42_stalemate():
+def test_captured_seed42_checks_second_king_instead_of_false_stalemate():
     engine = _captured()
     before = engine_state_signature(engine)
     proof = prove_required_board_immobile(engine, lambda: False)
-    assert proof is not None and proof.board.timeline == 10
+    assert proof is None
+    threat = prove_direct_threat(engine, lambda: False)
+    assert threat is not None
+    assert threat.king.board.timeline == -1 and (threat.king.x, threat.king.y) == (4, 2)
     result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
     assert not result.candidates and result.termination_reason is None
     assert result.explored_states == 1
-    assert OutcomeRules.evaluate(engine).kind == OutcomeKind.STALEMATE
+    assert OutcomeRules.evaluate(engine).kind == OutcomeKind.CHECKMATE
     assert engine_state_signature(engine) == before
 
 
 @pytest.mark.parametrize('color', list(ChessColor))
-def test_capacity_removes_future_destinations_exhaustively(monkeypatch, color):
+def test_capacity_does_not_remove_kingless_spatial_completion(monkeypatch, color):
     white = color == ChessColor.WHITE
     lane, time = (1, 0) if white else (-1, 1)
     own_rook, own_king, enemy_rook = ('R', 'K', 'r') if white else ('r', 'k', 'R')
@@ -84,11 +87,11 @@ def test_capacity_removes_future_destinations_exhaustively(monkeypatch, color):
     # A clear ray toward future lanes prevents a proof while branches are possible.
     assert prove_required_board_immobile(engine, lambda: False) is None
     manager.max_timelines = len(manager.timelines)
-    assert prove_required_board_immobile(engine, lambda: False) is not None
+    assert prove_required_board_immobile(engine, lambda: False) is None
     for name in ['prove_direct_threat', 'prove_required_board_threat', 'prove_required_board_immobile']:
         monkeypatch.setattr(f'src.engine.action_search.{name}', lambda *args: None)
     result = ActionSearch(max_states=None, max_depth=None, max_seconds=None).find_legal_action(engine)
-    assert not result.has_legal_action and not result.exhausted
+    assert result.has_legal_action and not result.exhausted
 
 
 def test_spare_capacity_still_allows_existing_branch_moves():
@@ -96,8 +99,9 @@ def test_spare_capacity_still_allows_existing_branch_moves():
     engine.timeline_manager.max_timelines += 1
     board = next(b for b in engine.get_required_action_boards() if b.timeline == 10)
     moves = engine.get_legal_moves(engine._resolve_position(board))
-    assert moves and all(move.is_branching for move in moves)
+    assert any(move.is_spatial for move in moves)
+    branch = next(move for move in moves if move.is_branching)
     child = engine.clone_for_simulation()
-    assert child.execute_action_move(moves[0])
+    assert child.execute_action_move(branch)
     assert len(child.timeline_manager.timelines) == len(engine.timeline_manager.timelines) + 1
     assert prove_required_board_immobile(engine, lambda: False) is None

@@ -77,15 +77,27 @@ def _immobile_engine(color=ChessColor.WHITE):
 
 
 @pytest.mark.parametrize('color', list(ChessColor))
-def test_immobile_board_matches_exhaustive_canonical_search(monkeypatch, color):
+def test_kingless_board_has_exhaustive_canonical_completion(monkeypatch, color):
     engine = _immobile_engine(color)
     before = engine_state_signature(engine)
+    proof = prove_required_board_immobile(engine, lambda: False)
+    assert proof is None
+    _disable_proofs(monkeypatch)
+    result = ActionSearch(max_states=None, max_depth=None, max_seconds=None).find_legal_action(engine)
+    assert result.has_legal_action and not result.exhausted
+    assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('color', list(ChessColor))
+def test_empty_required_board_still_has_exhaustive_immobility_proof(monkeypatch, color):
+    engine = _immobile_engine(color)
+    time = 0 if color == ChessColor.WHITE else 1
+    engine.timeline_manager.timelines[0].positions[time] = _position(0, time, [])
     proof = prove_required_board_immobile(engine, lambda: False)
     assert proof is not None and proof.board.timeline == 0
     _disable_proofs(monkeypatch)
     result = ActionSearch(max_states=None, max_depth=None, max_seconds=None).find_legal_action(engine)
     assert not result.has_legal_action and not result.exhausted
-    assert engine_state_signature(engine) == before
 
 
 def test_inactive_incoming_move_can_advance_an_empty_required_board():
@@ -102,13 +114,13 @@ def test_inactive_incoming_move_can_advance_an_empty_required_board():
     assert engine.execute_action_move(move) and engine.can_submit_action()
 
 
-def test_clear_ray_to_future_lanes_is_not_immobility_evidence():
+def test_kingless_board_keeps_spatial_moves_despite_unsafe_historical_arrival():
     engine = _immobile_engine()
     manager = engine.timeline_manager
     # Arrival on this old board cannot fix its local check, but the clear L ray
     # might reach a safe board on a future new lane. Conservatively decline.
     manager.timelines[1].positions[0] = _position(1, 0, [(7, 7, 'K'), (7, 0, 'r')])
-    assert not engine.get_legal_moves(manager.timelines[0].positions[0])
+    assert any(m.is_spatial for m in engine.get_legal_moves(manager.timelines[0].positions[0]))
     assert prove_required_board_immobile(engine, lambda: False) is None
 
 
@@ -128,15 +140,16 @@ def test_immobility_requires_fixed_activity_and_in_time_generation(monkeypatch):
     assert prove_required_board_immobile(engine, lambda: expired) is None
 
 
-def test_captured_immobile_required_board_is_stalemate():
+def test_captured_kingless_required_board_is_not_falsely_stalemate():
     engine = _captured_engine('easy20_immobile_required_state')
     before = engine_state_signature(engine)
     proof = prove_required_board_immobile(engine, lambda: False)
-    assert proof is not None and proof.board.timeline == -6
+    assert proof is None
     result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
-    assert not result.candidates and result.termination_reason is None
-    assert result.explored_states == 1
-    assert OutcomeRules.evaluate(engine).kind == OutcomeKind.STALEMATE
+    assert result.candidates
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.action_history[-1].submitted
     assert engine_state_signature(engine) == before
 
 
@@ -424,7 +437,7 @@ def test_durable_seed53_state_is_proven_without_budget_exhaustion():
 
 
 @pytest.mark.parametrize('fixture', [
-    'easy20_pinned_bishop_state', 'easy20_pinned_queen_state',
+    'easy20_pinned_bishop_state',
     'easy20_two_fixed_attackers_state',
 ])
 def test_captured_locally_illegal_defense_is_proven_terminal(fixture):
@@ -440,8 +453,9 @@ def test_captured_locally_illegal_defense_is_proven_terminal(fixture):
     assert engine_state_signature(engine) == before
 
 
-def test_captured_queen_has_replayable_complete_defenses():
-    engine = _captured_engine('easy20_capturable_queen_state')
+@pytest.mark.parametrize('fixture', ['easy20_capturable_queen_state', 'easy20_pinned_queen_state'])
+def test_captured_queen_has_replayable_complete_defenses(fixture):
+    engine = _captured_engine(fixture)
     before = engine_state_signature(engine)
     assert prove_required_board_threat(engine, lambda: False) is None
     result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)

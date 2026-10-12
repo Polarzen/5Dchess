@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时线棋局 · 多时间线国际象棋</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=8">
+    <link rel="stylesheet" href="/static/css/style.css?v=10">
 </head>
 <body>
 <div id="app">
@@ -18,6 +18,11 @@
             </div>
         </div>
         <div class="menu-grid">
+            <button class="menu-card tutorial-entry" onclick="openTutorial()">
+                <span class="menu-icon">◎</span>
+                <strong>第一次玩？从这里开始</strong>
+                <small>3 个动手练习 · 学会跨线移动与提交回合</small>
+            </button>
             <button class="menu-card primary" onclick="startGame('pvp')">
                 <span class="menu-icon">👥</span>
                 <strong>同屏双人对弈</strong>
@@ -60,6 +65,7 @@
         <header id="top-bar">
             <div class="top-left">
                 <button class="ghost-btn" onclick="backToMenu()">← 菜单</button>
+                <button class="ghost-btn" onclick="openTutorial()">新手教程</button>
                 <div class="top-title">
                     <strong>时线棋局</strong>
                     <span id="game-info">多时间线</span>
@@ -102,6 +108,7 @@
                         提交行动
                     </button>
                     <p id="action-help" class="panel-help"></p>
+                    <p id="repetition-warning" class="repetition-warning hidden" role="status"></p>
                 </section>
 
                 <section class="panel-card">
@@ -145,9 +152,23 @@
     </section>
 </div>
 
+<dialog id="tutorial-dialog" aria-labelledby="tutorial-title">
+    <header class="tutorial-heading">
+        <div><span class="tutorial-eyebrow">时线棋局 / 入门练习</span><h2 id="tutorial-title" tabindex="-1">先学会走完一个回合</h2></div>
+        <button class="ghost-btn" id="tutorial-close" onclick="closeTutorial()">稍后再学</button>
+    </header>
+    <p class="tutorial-isolation">这是独立练习，不会改变你的对局。每课依次完成：选棋子 → 点落点 → 提交行动。</p>
+    <nav id="tutorial-steps" aria-label="教程章节"></nav>
+    <div id="tutorial-content" aria-busy="false"></div>
+    <footer class="tutorial-footer">
+        <button class="ghost-btn" id="tutorial-reset" onclick="resetTutorialLesson()">重练本课</button>
+        <button class="submit-btn" id="tutorial-next" onclick="nextTutorialLesson()" disabled>完成本课后继续</button>
+    </footer>
+</dialog>
 <div id="toast" role="status"></div>
-<script src="/static/js/game.js?v=8"></script>
-<script src="/static/js/p2p.js?v=3"></script>
+<script src="/static/js/game.js?v=10"></script>
+<script src="/static/js/p2p.js?v=4"></script>
 <script src="/static/js/p2p_invite.js?v=1"></script>
+<script src="/static/js/tutorial.js?v=1"></script>
 </body>
 </html>

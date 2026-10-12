@@ -9,7 +9,7 @@ import pytest
 from src.web.app import app
 
 
-_JS_ASSETS = ("game.js", "p2p.js", "p2p_invite.js")
+_JS_ASSETS = ("game.js", "p2p.js", "p2p_invite.js", "tutorial.js")
 _USER_VISIBLE_ATTRIBUTES = {
     "alt",
     "aria-description",

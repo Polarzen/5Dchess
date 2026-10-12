@@ -27,6 +27,7 @@ from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
 from src.engine.path_rules import PathRules
 from src.engine.piece_movement import PieceMovementRules
+from src.engine.repetition import frontier_key, repeated_frontier_counts
 from src.engine.royal_rules import RoyalRules
 from src.engine.timeline_rules import TimelineRules
 from src.utils.constants import ChessColor, GameState, PieceType
@@ -300,6 +301,9 @@ class ActionSearchResult:
     explored_states: int
     termination_reason: str | None = None
     failed_state_cache_hits: int = 0
+    # Aligned with candidates when requested. Zero means no third occurrence;
+    # positive counts are prior occurrences within the last 64 Actions.
+    frontier_repetitions: tuple[int, ...] = ()
 
     @property
     def has_legal_action(self) -> bool:
@@ -321,6 +325,8 @@ class _BudgetTracker:
         self.depth_cutoffs = 0
         self.termination_reason: str | None = None
         self.phase_interrupted = False
+        self.repeated_frontiers: dict[tuple, int] = {}
+        self.frontier_repetitions: list[int] = []
 
     def check_time(self, local_deadline: float | None = None) -> bool:
         """Stop on the global deadline or an optional local phase deadline."""
@@ -727,6 +733,7 @@ class ActionPlanner:
         *,
         strategy: str = "auto",
         deadline: float | None = None,
+        track_repetition: bool = False,
     ):
         if strategy not in {"auto", "depth_first", "probe_then_depth_first"}:
             raise ValueError("strategy must be auto, depth_first or probe_then_depth_first")
@@ -735,6 +742,7 @@ class ActionPlanner:
         # remaining wall budget changes. The default admission stays unchanged.
         self._strategy = strategy
         self._deadline = deadline
+        self._track_repetition = track_repetition
         self._cooperative_checks = strategy != "auto"
         self._in_probe = False
         self._tracker: _BudgetTracker | None = None
@@ -762,6 +770,11 @@ class ActionPlanner:
         state._ensure_current_action()
         tracker = _BudgetTracker(self.budget, self._deadline)
         self._tracker = tracker
+        if self._track_repetition and not tracker.check_time():
+            tracker.repeated_frontiers = repeated_frontier_counts(
+                # The candidate's submission occupies the 64th Action slot.
+                state, max_actions=63, should_stop=tracker.check_time,
+            )
         candidates: list[tuple[MoveSpec, ...]] = []
         failed_states: set[tuple] = set()
 
@@ -908,6 +921,7 @@ class ActionPlanner:
             tracker.explored_states,
             termination_reason,
             tracker.failed_state_cache_hits,
+            tuple(tracker.frontier_repetitions),
         )
 
     @property
@@ -1060,6 +1074,14 @@ class ActionPlanner:
             found_completion = True
             if candidate_keys is None or path not in candidate_keys:
                 candidates.append(path)
+                if self._track_repetition:
+                    # Submission changes the player, not these latest boards.
+                    # Reuse this already validated leaf; no replay or outcome
+                    # search is needed to annotate the selection preference.
+                    count = (tracker.repeated_frontiers.get(
+                        frontier_key(state, action.color.opposite()), 0,
+                    ) if tracker.repeated_frontiers else 0)
+                    tracker.frontier_repetitions.append(count)
                 if candidate_keys is not None:
                     candidate_keys.add(path)
             if (
@@ -1141,6 +1163,9 @@ class ActionPlanner:
             )
         )
         fixed_attackers = {}
+        one_move_probe = depth_limit == 1 and (
+            self._uses_production_strategy or self._strategy == "probe_then_depth_first"
+        )
         if self._strategy == "probe_then_depth_first":
             fixed_attackers = fixed_successor_attackers(
                 state, lambda: tracker.check_time(local_deadline),
@@ -1152,7 +1177,7 @@ class ActionPlanner:
             if move_exposes_fixed_attacker(move, fixed_attackers):
                 return True
             if (
-                self._strategy == "probe_then_depth_first" and depth_limit == 1
+                one_move_probe
                 and not move.is_branching
                 and not required.issubset({move.source.board, move.destination.board})
             ):
@@ -1598,7 +1623,7 @@ class ActionPlanner:
                     for move in legal_moves
                     if move.destination.board not in required
                 ]
-            if fixed_attackers or (self._strategy == "probe_then_depth_first" and depth_limit == 1):
+            if fixed_attackers or one_move_probe:
                 legal_moves = (move for move in legal_moves
                                if not skip_probe_move(move))
             ordered_moves = (

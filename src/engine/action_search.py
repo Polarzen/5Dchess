@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 from src.engine.action import ActionRules
 from src.engine.action_proof import (
+    _branches_cannot_defer_required_boards,
+    fixed_successor_attackers, move_exposes_fixed_attacker,
     prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
 )
 from src.engine.move_generator import Move
@@ -238,6 +240,81 @@ class ActionSearch:
             return None
         return self._dfs(child, depth=depth + 1)
 
+    def _probe_present_rewind(self, state, required, ordered_boards):
+        """Try short historical escapes before committing to a deep Action.
+
+        This is witness acquisition only. An unsuccessful/local-time-limited
+        probe proves nothing and never enters the failed-state cache. Its work
+        shares the original state/wall limits, with at most a third of the wall
+        budget (capped at one second) reserved for this ordering shortcut.
+        """
+        if _branches_cannot_defer_required_boards(state):
+            return None
+        if self.max_states is not None and self._explored_states >= self.max_states:
+            # Leave the existing DFS completion-at-limit behavior intact.
+            return None
+        present_time = min(board.legacy_time_point for board in required)
+        if not any(position.turn == state.current_turn_color
+                   and position.time_point + 1 < present_time
+                   for timeline in state.timeline_manager.timelines.values()
+                   for position in timeline.positions.values()):
+            return None
+        slice_seconds = 1.0 if self.max_seconds is None else min(1.0, self.max_seconds / 3)
+        deadline = self._started_at + slice_seconds
+
+        def interrupted(check_states=True):
+            if self._termination_reason is not None:
+                return True
+            if (check_states and self.max_states is not None
+                    and self._explored_states >= self.max_states):
+                self._termination_reason = "state_budget"
+                return True
+            now = time.monotonic()
+            if self.max_seconds is not None and now - self._started_at >= self.max_seconds:
+                self._termination_reason = "time_budget"
+                return True
+            return now >= deadline
+
+        if interrupted():
+            return None
+        attackers = fixed_successor_attackers(state, interrupted)
+        if attackers is None:
+            return None
+        for board in sorted(ordered_boards, key=lambda source: source in required):
+            if interrupted():
+                return None
+            position = state._resolve_position(board)
+            if position is None:
+                continue
+            moves = sorted(
+                (move for move in state.get_legal_moves(position)
+                 if move.is_branching
+                 and move.destination.board.legacy_time_point + 1 < present_time),
+                key=lambda move: (move.destination.board.legacy_time_point,
+                                  _ordered_move_key(move, required)),
+            )
+            if interrupted():
+                return None
+            for move in moves:
+                if interrupted():
+                    return None
+                if move_exposes_fixed_attacker(move, attackers):
+                    continue
+                child = _clone_state_for_action_search(state)
+                self._explored_states += 1
+                if not child.execute_action_move(move):
+                    continue
+                # Required-board progress alone never proves royal safety.
+                action = child._ensure_current_action()
+                if interrupted(False):
+                    return None
+                if (not ActionRules.required_boards(action, child.timeline_manager.timelines)
+                        and ActionRules.can_submit(action, child.timeline_manager.timelines)):
+                    if interrupted(False):
+                        return None
+                    return tuple(action.moves)
+        return None
+
     def _dfs(
         self,
         state: "FiveDEngine",
@@ -315,6 +392,13 @@ class ActionSearch:
                 ),
             )
         )
+
+        if depth == 0 and required:
+            witness = self._probe_present_rewind(state, required, ordered_boards)
+            if witness is not None:
+                return witness
+            if self._termination_reason is not None:
+                return None
 
         # When exactly two Present boards are required, a complete Action may
         # be a single cross-timeline Move from either board into the other. Rank

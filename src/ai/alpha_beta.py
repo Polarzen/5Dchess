@@ -101,7 +101,7 @@ class AlphaBetaAI(AIPlayer):
         self._nodes_searched = 0
         self._states_used = 0
         self._budget_reason = None
-        result = self._search_candidates(engine)
+        result = self._search_candidates(engine, track_repetition=True)
         if not result.candidates:
             reason = result.termination_reason or "no_legal_action"
             raise ActionPlanningError(
@@ -110,28 +110,38 @@ class AlphaBetaAI(AIPlayer):
                 explored_states=result.explored_states,
             )
 
-        best_specs = result.candidates[0]
+        counts = result.frontier_repetitions or (0,) * len(result.candidates)
+        # Consider progress first if the remaining budget cannot score all
+        # candidates. Stable ordering preserves the original order otherwise.
+        order = sorted(range(len(result.candidates)), key=lambda index: counts[index] >= 2)
+        best_index = order[0]
+        best_specs = result.candidates[best_index]
         best_score = float("-inf")
+        best_penalty = 0.0
         alpha = float("-inf")
         beta = float("inf")
         completed_root_search = True
 
-        for specs in result.candidates:
+        for index in order:
+            specs = result.candidates[index]
             if self._deadline_reached():
                 completed_root_search = False
                 break
             child = self._apply_candidate(engine, specs)
             if child is None:
                 continue
+            penalty = 0.25 if counts[index] >= 2 else 0.0
             score = self._search_state(
                 child,
                 self.search_depth - 1,
-                alpha,
+                alpha + penalty,
                 beta,
-            )
+            ) - penalty
             if score > best_score:
                 best_score = score
                 best_specs = specs
+                best_index = index
+                best_penalty = penalty
             alpha = max(alpha, score)
 
         if best_score == float("-inf"):
@@ -154,12 +164,15 @@ class AlphaBetaAI(AIPlayer):
             color=self.color,
             moves=best_specs,
             start_signature=engine_state_signature(engine),
-            score=best_score,
+            score=best_score + best_penalty,
             metadata={
                 "explored_states": self._states_used,
                 "candidate_count": len(result.candidates),
                 "search_depth": self.search_depth,
                 "search_complete": not bool(warning_reason),
+                "selected_index": best_index,
+                "repetition_prior_occurrences": counts[best_index],
+                "repetition_penalty": best_penalty,
             },
             warning=warning,
         )
@@ -172,7 +185,7 @@ class AlphaBetaAI(AIPlayer):
             return True
         return False
 
-    def _search_candidates(self, engine) -> ActionSearchResult:
+    def _search_candidates(self, engine, *, track_repetition=False) -> ActionSearchResult:
         """Enumerate with the remaining global state/time budget."""
         if self._deadline_reached():
             return ActionSearchResult((), self._states_used, "time_budget")
@@ -205,6 +218,7 @@ class AlphaBetaAI(AIPlayer):
         )
         result = ActionPlanner(
             node_budget, strategy=strategy, deadline=deadline,
+            **({"track_repetition": True} if track_repetition else {}),
         ).search(engine)
         self._states_used += result.explored_states
         if result.termination_reason:

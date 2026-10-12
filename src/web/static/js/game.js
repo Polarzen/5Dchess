@@ -638,9 +638,10 @@ async function executeCanonicalMove(move, context = captureSession(), fingerprin
 
         if (!commitMutation(owner)) return;
         gameState = result;
-        focusedBoardKey = move.destination.board.key;
+        focusedBoardKey = moveArrivalBoardKey(result.last_move || result.move || move);
         clearSelection(false);
         updateAll();
+        focusBoard(focusedBoardKey);
         if (!gameState.rule_warning) showToast(localizePlayerText(move.notation, '走子完成'));
     } catch (error) {
         if (ownsMutation(owner)) {
@@ -660,6 +661,15 @@ function clearSelection(render = true) {
         renderMultiverse();
         renderInspector();
     }
+}
+
+function moveArrivalBoardKey(move) {
+    if (move?.result_destination_board?.key) return move.result_destination_board.key;
+    const target = move?.destination?.board;
+    if (!target) return null;
+    const lane = move.is_branching ? move.created_timeline : target.timeline;
+    return lane !== null && lane !== undefined && Number.isFinite(target.time_point)
+        ? `${lane}:${target.time_point + 1}` : target.key;
 }
 
 function focusBoard(boardKey, scroll = true) {
@@ -764,7 +774,17 @@ function updateAll() {
     renderHistory();
     renderReplayPanel();
     surfaceRuleWarning();
+    renderRepetitionWarning();
     checkGameOver();
+}
+
+function renderRepetitionWarning() {
+    const banner = document.getElementById('repetition-warning');
+    if (!banner) return;
+    const repetition = gameState?.repetition;
+    const message = repetition?.kind === 'frontier_repetition' ? repetition.message : '';
+    banner.textContent = message || '';
+    banner.classList.toggle('hidden', !message);
 }
 
 function surfaceRuleWarning() {
@@ -879,7 +899,8 @@ function createBoardCard(board, targetBoardKeys) {
     badges.className = 'board-badges';
     if (board.is_present) badges.appendChild(makeBadge('当前时刻', 'present'));
     if (board.is_required) badges.appendChild(makeBadge('必须推进', 'required'));
-    if (board.playable && !board.is_required) badges.appendChild(makeBadge('可走', 'playable'));
+    if (board.playable && !board.is_required) badges.appendChild(makeBadge(board.is_movable ? '可选走子' : '等待对手', 'playable'));
+    if (board.historical) badges.appendChild(makeBadge('历史 · 仅可落子', 'historical'));
     if (!board.timeline_active) badges.appendChild(makeBadge('非活动', 'inactive'));
     header.appendChild(badges);
     card.appendChild(header);
@@ -913,7 +934,7 @@ function createBoardCard(board, targetBoardKeys) {
             if (last?.source?.board?.key === board.key && last.source.x === x && last.source.y === y) {
                 cell.classList.add('last-source');
             }
-            if (last?.destination?.board?.key === board.key && last.destination.x === x && last.destination.y === y) {
+            if (moveArrivalBoardKey(last) === board.key && last.destination.x === x && last.destination.y === y) {
                 cell.classList.add('last-target');
             }
 
@@ -962,7 +983,7 @@ function drawLinks() {
     const last = gameState.last_move;
     if (last?.source?.board?.key && last?.destination?.board?.key &&
         last.source.board.key !== last.destination.board.key) {
-        appendCurve(svg, last.source.board.key, last.destination.board.key, 'last-move-link', 'move-arrow');
+        appendCurve(svg, last.source.board.key, moveArrivalBoardKey(last), 'last-move-link', 'move-arrow');
     }
 
     if (selectedSource) {
@@ -1063,12 +1084,12 @@ function renderActionPanel() {
             ? '可以提交；如有需要，可先在其他未来或非活动可走棋盘上完成可选走子。'
             : required.length
                 ? '红框棋盘必须继续推进；当前时刻到达对手且王安全后才能提交。'
-                : '选择橙色可行动棋盘上的棋子。';
+                : submissionHelp(action);
     } else if (mode === 'pve') {
         help.textContent = action.can_submit && playerTurn
             ? '可以提交当前行动；提交后 AI 将完成自己的完整行动。'
             : playerTurn
-                ? '红框棋盘必须继续推进；完成后才能提交当前行动。'
+                ? submissionHelp(action)
                 : gameState.ai_thinking || aiRequestInFlight
                     ? 'AI 正在处理自己的行动。'
                     : '等待 AI 同步棋局状态。';
@@ -1079,6 +1100,15 @@ function renderActionPanel() {
     renderAIRetryControl(help);
 
     document.getElementById('check-badge')?.classList.toggle('hidden', !gameState.in_check);
+}
+
+function submissionHelp(action) {
+    if (gameState?.game_state !== 'PLAYING') return '对局已结束，可返回菜单开始新对局。';
+    if (action.can_submit) return '本次行动已完成。点击“提交行动”后才轮到对手；也可以继续可选走子。';
+    const count = action.required_boards?.length || 0;
+    if (count) return `还需推进当前时刻的 ${count} 张红框棋盘。跨线移动可同时推进起点和落点棋盘；每次移动后请查看更新后的红框。`;
+    if (action.submit_blocker === 'royal_safety') return '棋盘已推进，但仍有王受到跨时空攻击，暂不能提交。必须保护每一个王，包括历史棋盘上的王。';
+    return '选择标记为“可行动”的棋盘走子；历史棋盘只能作为合法落点，不能从中选子。';
 }
 
 function renderAIRetryControl(help) {
@@ -1256,6 +1286,7 @@ window.addEventListener('resize', () => {
 });
 
 document.addEventListener('keydown', event => {
+    if (document.getElementById('tutorial-dialog')?.open) return;
     if (!gameState) return;
     if (event.key === 'Escape') clearSelection();
     if (event.key === 'Enter' && mode === 'pvp' && gameState.action?.can_submit) submitAction();

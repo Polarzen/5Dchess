@@ -46,10 +46,8 @@ class RoyalRules:
         view = MultiverseBoardView(timelines)
         kings: list[Square5D] = []
         for board in view.iter_boards():
-            king = board.position.find_king(color)
-            if king is None:
-                continue
-            kings.append(Square5D(board.coord, king[0], king[1]))
+            for x, y in board.position.find_kings(color):
+                kings.append(Square5D(board.coord, x, y))
         return tuple(kings)
 
     def king_squares(self, color: ChessColor) -> tuple[Square5D, ...]:
@@ -244,17 +242,15 @@ class RoyalRules:
         view = MultiverseBoardView(timelines)
 
         # Attack source and target boards must both be on the attacker's phase.
-        # iter_boards already validates each stored Position, and find_king()
+        # iter_boards already validates each stored Position, and find_kings()
         # proves the exact royal piece in that Position. Filtering by side here
         # avoids constructing a second board view, scanning the opposite phase,
         # then resolving and validating every King board a second time.
         kings = []
         for board in view.iter_boards(side=by_color):
-            king = board.position.find_king(color)
-            if king is None:
-                continue
-            kings.append((Square5D(board.coord, king[0], king[1]),
-                          king[0], king[1], board.coord.turn, board.coord.timeline))
+            for x, y in board.position.find_kings(color):
+                kings.append((Square5D(board.coord, x, y),
+                              x, y, board.coord.turn, board.coord.timeline))
 
         if not kings:
             return

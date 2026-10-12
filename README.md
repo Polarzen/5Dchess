@@ -4,7 +4,7 @@
 
 > **项目定位与灵感来源：** 本项目的玩法灵感来自 [《5D Chess With Multiverse Time Travel》](https://store.steampowered.com/app/1349230/5D_Chess_With_Multiverse_Time_Travel/)，代码与项目自制素材独立制作。本项目与该游戏的开发者、发行商不存在隶属、合作或授权关系，也不是该商业游戏的官方开源版本。原作名称仅用于说明灵感来源，不表示获得其认可或背书。
 
-> **当前状态：核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2 已完成。**
+> **当前状态：已实现核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2。规则修正与长局验证的结果和限制见 [验收记录](docs/arena-acceptance-status.md)。**
 >
 > 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training-v2` 实验分支中。
 >
@@ -48,6 +48,8 @@ Vector4D(dx, dy, dt, dl)
 | Pawn | 颜色相关的 Y / L 前进与 X-Y / T-L 捕获 |
 
 Pawn 另外支持首次双步、Timeline 双步中间 Board 检查、Queen promotion 与同 Board en passant。
+
+标准开局的王车易位检查易位权、王车位置与通路，并禁止王在本棋盘受将军时易位或经过受攻击格；最终落点和全局提交仍须满足王安全。
 
 ### PathRules / MultiverseBoardView
 
@@ -123,6 +125,8 @@ Board-local successor 每个 Move 都推进自己的 side，但 `current_turn_co
 
 `RoyalRules` 检查整个 multiverse 的 4D 攻击，包括历史 King 实例与跨时间 / 跨 Timeline 攻击。
 
+时间旅行可能让一张棋盘没有己方王，或同时存在多个己方王。王离开后，其他棋子仍可正常走子；同色王有多个时，每一个都必须满足王安全规则，提交行动时还会检查历史中的王。
+
 终局采用 Action 级搜索：
 
 ```text
@@ -169,6 +173,17 @@ L-1        [Board] → [Board]
 - canonical BoardCoord Web API
 - PvP `execute_action_move()` + 显式 `Submit Action`
 - 棋盘缩放与 Present 定位
+- 首次游玩的互动教程，以及菜单和对局内的常驻教程入口
+- 走子后自动定位实际到达的后继棋盘，分支落点显示在新时间线上
+- 区分必须推进的棋盘、等待对手的棋盘和历史落点，并解释不能提交的原因
+
+### 第一次玩
+
+首次打开普通主页会展示教程，也可以点击菜单中的“第一次玩？从这里开始”，或对局顶部的“新手教程”。三个练习依次演示普通走子与提交、跨时间线移动、回到历史生成分支。每课都要完成“选棋子 → 点落点 → 提交行动”，不会修改正在进行的本地或在线对局。
+
+关闭后浏览器会记住选择，随时可以重新打开。实战中先推进红框棋盘；红框清空后，还必须保护所有王，再点击“提交行动”才会换人。跨线移动后看高亮的后继棋盘，原历史棋盘会保留。
+
+若最近 64 个已提交行动中，所有时间线的最新布局、相对时间位置、行棋方及特殊走子权出现至少三次相同配置，行动面板会显示往返走棋提醒。它只是提示：5D 历史仍不同，不会自动判和，也不会禁止合法走子。尚未提交的行动不显示提醒，改变走法后按新局面重新判断。
 
 启动：
 

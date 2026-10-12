@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from math import log
 from dataclasses import dataclass
 
 import torch
@@ -56,7 +57,7 @@ class NeuralPolicyValueAgent:
             raise ActionPlanningError("wrong_turn", incomplete=False)
         if engine.game_state != GameState.PLAYING:
             raise ActionPlanningError("game_not_playing", incomplete=False)
-        result = ActionPlanner(self.budget).search(engine)
+        result = ActionPlanner(self.budget, track_repetition=True).search(engine)
         if not result.candidates:
             raise ActionPlanningError(
                 result.termination_reason or "no_legal_action",
@@ -79,10 +80,15 @@ class NeuralPolicyValueAgent:
                 self._tensor(actions.candidate_mask).bool(),
             )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
-        selected = int(logits[0].argmax().item())
+        raw_logits = tuple(float(value_) for value_ in logits[0].detach().cpu().tolist())
+        counts = result.frontier_repetitions or (0,) * len(result.candidates)
+        # A small 1.1 policy-odds cost breaks near ties without changing model
+        # weights, reported logits, or excluding a strongly preferred defense.
+        selected = max(range(len(result.candidates)), key=lambda index:
+                       raw_logits[index] - (log(1.1) if counts[index] >= 2 else 0.0))
         decision = NeuralDecision(
             selected_index=selected,
-            logits=tuple(float(value_) for value_ in logits[0].detach().cpu().tolist()),
+            logits=raw_logits,
             value=float(value[0].detach().cpu().item()),
             inference_ms=elapsed_ms,
             explored_states=result.explored_states,
@@ -109,6 +115,10 @@ class NeuralPolicyValueAgent:
                 "search_termination_reason": result.termination_reason,
                 "inference_ms": decision.inference_ms,
                 "neural_value": decision.value,
+                "repetition_prior_occurrences": (
+                    result.frontier_repetitions[decision.selected_index]
+                    if result.frontier_repetitions else 0
+                ),
             },
             warning=warning,
         )

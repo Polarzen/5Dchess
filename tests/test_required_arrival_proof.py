@@ -11,7 +11,7 @@ from src.ai.action_planner import (
 )
 from src.data.archive import GameArchive
 from src.engine import ActionRules, ActionSearch, FiveDEngine, Position, Timeline
-from src.engine.action_proof import prove_required_board_immobile
+from src.engine.action_proof import prove_direct_threat, prove_required_board_immobile
 from src.engine.coordinates import BoardCoord
 from src.engine.move_generator import MoveGenerator
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
@@ -58,37 +58,39 @@ def test_targeted_generation_matches_full_canonical_subset(fixture):
     assert engine_state_signature(engine) == before
 
 
-def test_one_required_board_uses_its_optional_arrival():
+def test_kingless_board_mobility_does_not_override_an_immutable_king_threat():
     engine = _captured('seed43_required_arrival_state')
     before = engine_state_signature(engine)
     required = engine.get_required_action_boards()
     assert len(required) == 1
-    assert engine.get_legal_moves(engine._resolve_position(required[0])) == []
+    assert any(m.is_spatial for m in engine.get_legal_moves(engine._resolve_position(required[0])))
+    proof = prove_direct_threat(engine, lambda: False)
+    assert proof is not None
+    assert proof.king.timeline == -9 and (proof.king.x, proof.king.y) == (3, 1)
+    assert proof.attacker.timeline == -8 and (proof.attacker.x, proof.attacker.y) == (1, 1)
+    assert proof.king.side == engine.current_turn_color.opposite()
     result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
-    assert result.candidates and len(result.candidates[0]) == 1
-    assert result.candidates[0][0].source.board not in required
+    assert not result.candidates and result.explored_states == 1
+    assert result.termination_reason is None
+    assert engine_state_signature(engine) == before
+
+
+def test_captured_kingless_board_no_longer_requires_an_unsafe_arrival():
+    engine = _captured('seed43_forced_unsafe_source_state')
+    before = engine_state_signature(engine)
+    proof = prove_required_board_immobile(engine, lambda: False)
+    assert proof is None
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates
     child = engine.clone_for_simulation()
     apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
     assert child.action_history[-1].submitted
     assert engine_state_signature(engine) == before
 
 
-def test_captured_forced_arrival_is_proven_terminal():
-    engine = _captured('seed43_forced_unsafe_source_state')
-    before = engine_state_signature(engine)
-    proof = prove_required_board_immobile(engine, lambda: False)
-    assert proof is not None and proof.forced_source_threat is not None
-    assert proof.board.timeline == -15
-    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
-    assert result.candidates == () and result.termination_reason is None
-    assert result.explored_states == 1
-    assert OutcomeRules.evaluate(engine).kind == OutcomeKind.STALEMATE
-    assert engine_state_signature(engine) == before
-
-
 @pytest.mark.parametrize('fixture', [
     'seed43_twenty_seven_required_state', 'seed43_twenty_eight_required_state',
-    'seed43_quiet_large_state', 'seed43_immobile_arrival_large_state',
+    'seed43_quiet_large_state',
     'seed53_three_required_defense_state',
     'seed42_two_immobile_required_state', 'seed42_threatened_rewind_source_state',
     'seed42_twenty_required_arrival_defense_state',
@@ -127,8 +129,11 @@ def test_arrival_defense_order_retains_every_canonical_arrival(fixture):
     )
     movable = ActionRules.movable_boards(engine.current_action, engine.timeline_manager.timelines)
     sources = order[0] + tuple(board for board in movable if board not in required)
+    # These old kingless destinations have spatial Moves after the rule fix.
+    # Exercise arrival ordering on the same destinations without asserting that
+    # absence of a King freezes the other pieces.
     targets = {board for board in required
-               if not engine.get_legal_moves(engine._resolve_position(board))}
+               if engine._resolve_position(board).find_king(engine.current_turn_color) is None}
     assert targets
     expected = [move for board in sources
                 for move in engine.get_legal_moves_to_boards(engine._resolve_position(board), targets)]

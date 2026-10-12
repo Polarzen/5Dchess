@@ -61,9 +61,11 @@ def test_integer_prefilter_preserves_full_canonical_threat_enumeration(fixture):
             attacker_color = color.opposite()
             kings = []
             for board in view.iter_boards(side=attacker_color):
-                king = board.position.find_king(color)
-                if king is not None:
-                    kings.append(Square5D(board.coord, *king))
+                # Independent scan: cross-board arrivals can add another King.
+                for y, row in enumerate(board.position.board):
+                    for x, char in enumerate(row):
+                        if char == ('K' if color == ChessColor.WHITE else 'k'):
+                            kings.append(Square5D(board.coord, x, y))
             reference = []
             for board in view.iter_boards(side=attacker_color, playable_only=True):
                 for x, y, piece in board.position.get_all_pieces(attacker_color):

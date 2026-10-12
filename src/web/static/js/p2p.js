@@ -432,8 +432,9 @@ executeCanonicalMove = async function(move) {
             return;
         }
         if (!commitMutation(owner)) return;
-        focusedBoardKey = move.destination.board.key;
+        focusedBoardKey = moveArrivalBoardKey(result.last_move || result.move || move);
         if (applyP2PState(result, context, owner) && !gameState.rule_warning) {
+            focusBoard(focusedBoardKey);
             showToast(localizePlayerText(move.notation, '走子完成'));
         }
     } catch (error) {
@@ -531,7 +532,7 @@ renderActionPanel = function() {
     } else {
         help.textContent = action.can_submit
             ? '对手在线；你的行动已满足提交条件，也可以先完成其他可选走子。'
-            : '对手在线；轮到你行动：继续推进红框必须推进棋盘，直到当前时刻可提交。';
+            : submissionHelp(action);
     }
 };
 

@@ -124,6 +124,10 @@ def _square_payload(square) -> dict[str, Any]:
 
 
 def _move_payload(move: Move) -> dict[str, Any]:
+    arrival = move.destination.board.next()
+    if move.is_branching:
+        arrival = (BoardCoord(move.created_timeline, arrival.turn, arrival.side)
+                   if move.created_timeline is not None else None)
     return {
         "source": _square_payload(move.source),
         "destination": _square_payload(move.destination),
@@ -143,6 +147,8 @@ def _move_payload(move: Move) -> dict[str, Any]:
         "is_branching": move.is_branching,
         "is_cross_timeline": move.is_cross_timeline,
         "created_timeline": move.created_timeline,
+        "result_source_board": _coord_payload(move.source.board.next()),
+        "result_destination_board": _coord_payload(arrival) if arrival else None,
         "notation": move.to_notation(),
     }
 
@@ -431,7 +437,9 @@ def api_execute_move_5d():
 
             if not success:
                 return jsonify({"error": "引擎拒绝走子"}), 400
-        return jsonify({"success": True, "move": _move_payload(move), **get_game_state()})
+            return jsonify({"success": True,
+                            "move": _move_payload(instance.engine.move_history[-1]),
+                            **get_game_state()})
     except (TypeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -459,6 +467,22 @@ def api_submit_action():
         if not instance.engine.submit_action():
             return jsonify({"error": "Action提交失败"}), 400
     return jsonify({"success": True, **get_game_state()})
+
+
+@app.get("/api/tutorial")
+def api_tutorial():
+    """Read-only practice snapshots, including while a live/P2P game is open."""
+    from src.web.tutorial import build_lessons
+
+    def serialize(engine):
+        return {
+            "boards": _board_payloads(engine, interactive=True),
+            "turn": engine.current_turn_color.value,
+            "required_count": len(engine.get_required_action_boards()),
+            "can_submit": engine.can_submit_action(),
+        }
+
+    return jsonify({"lessons": build_lessons(serialize, _move_payload)})
 
 
 # Compatibility endpoint used by older clients/tests.
@@ -676,6 +700,11 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
         "required_boards": [_coord_payload(coord) for coord in required],
         "movable_boards": [_coord_payload(coord) for coord in movable],
     }
+    action_payload["submit_blocker"] = (
+        "game_over" if engine.game_state != GameState.PLAYING else
+        None if action_payload["can_submit"] else
+        "required_boards" if required else "royal_safety"
+    ) if interactive else "read_only"
 
     in_check = False
     if interactive and engine.game_state == GameState.PLAYING:
@@ -730,6 +759,7 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
         "action": action_payload,
         "in_check": in_check,
         "rule_warning": getattr(engine, "rule_warning", None),
+        "repetition": _repetition_payload(engine) if interactive else None,
         "summary": summary,
         "player_color": _game_session.get("player_color"),
         "ai_difficulty": _game_session.get("ai_difficulty"),
@@ -743,6 +773,12 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
             "ai_error": instance._ai_error,
         })
     return state
+
+
+def _repetition_payload(engine):
+    from src.engine.repetition import detect_frontier_repetition
+    repetition = detect_frontier_repetition(engine)
+    return repetition.to_dict() if repetition else None
 
 
 # ---------------------------------------------------------------------------

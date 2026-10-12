@@ -13,7 +13,7 @@ from src.ai.action_planner import (
 )
 from src.ai.hard_ai import HardAI
 from src.data.archive import GameArchive
-from src.engine.engine import FiveDEngine
+from src.engine import ActionRules, BoardCoord, FiveDEngine, Position, Timeline
 from src.utils.constants import ChessColor
 
 
@@ -21,6 +21,25 @@ def _captured(name):
     path = Path(__file__).parent / 'fixtures' / f'{name}.json.gz'
     engine = GameArchive.restore(json.loads(gzip.decompress(path.read_bytes())))
     del engine._replay_origin
+    return engine
+
+
+def _safe_frontier(count=6):
+    """Known legal multi-board state; old traces included unsafe royal arrivals."""
+    engine = FiveDEngine()
+    manager = engine.timeline_manager
+    manager.timelines = {}
+    for lane in list(range(-2, 4))[:count]:
+        board = [[''] * 8 for _ in range(8)]
+        board[7][7], board[0][7], board[6][4] = 'K', 'k', 'P'
+        if lane == 0:
+            board[4][3] = 'R'
+        pos = Position(board, ChessColor.WHITE, lane, 0)
+        manager.timelines[lane] = Timeline(lane, positions={0: pos})
+    manager._next_positive_id = max(manager.timelines) + 1
+    manager._next_negative_id = min(manager.timelines) - 1
+    engine.current_action = ActionRules.begin(ChessColor.WHITE, manager.timelines)
+    assert len(engine.get_required_action_boards()) == count
     return engine
 
 
@@ -57,7 +76,7 @@ def test_minimax_keeps_strategy_and_shares_deadline_and_states(monkeypatch, elap
 
 @pytest.mark.parametrize('seconds', [5.0, 4.999])
 def test_explicit_depth_first_has_same_candidates_at_clock_boundary(monkeypatch, seconds):
-    engine = _captured('hard20_six_required_state')
+    engine = _safe_frontier()
     before = engine_state_signature(engine)
     monkeypatch.setattr(planning.time, 'monotonic', lambda: 100.0)
     legacy = ActionPlanner(ActionSearchBudget(1024, 24, 32, 4.999)).search(engine)
@@ -94,12 +113,13 @@ def test_absolute_deadline_includes_clone_preparation(monkeypatch, seconds, stra
 
 
 @pytest.mark.parametrize('fixture', [
-    'hard20_four_required_state', 'hard20_six_required_state',
+    'fresh_four_required', 'fresh_six_required',
     'hard20_rewind_four_state', 'hard20_rewind_three_state',
     'hard20_eight_required_rewind_state',
 ])
 def test_hard_captured_root_returns_canonical_action_with_primary_budget(fixture):
-    engine = _captured(fixture)
+    engine = (_safe_frontier(4 if fixture == 'fresh_four_required' else 6)
+              if fixture.startswith('fresh_') else _captured(fixture))
     before = engine_state_signature(engine)
     ai = HardAI(engine.current_turn_color, search_depth=2, budget=_PRODUCTION_HYBRID_BUDGET)
     plan = ai.plan_action(engine)
@@ -164,7 +184,7 @@ def test_hard_fixed_successors_exhaust_without_recovery_and_reset():
 
 
 def test_single_move_probe_leaves_incomplete_moves_for_the_deep_phase(monkeypatch):
-    engine = _captured('hard20_six_required_state')
+    engine = _safe_frontier()
     planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET, strategy='probe_then_depth_first')
     original = FiveDEngine.execute_action_move
     deep_incomplete_moves = []
@@ -189,7 +209,7 @@ def test_single_move_probe_leaves_incomplete_moves_for_the_deep_phase(monkeypatc
 
 @pytest.mark.parametrize('seconds', [5.0, 4.999])
 def test_minimax_probe_and_deep_phase_share_global_limits(monkeypatch, seconds):
-    engine = _captured('hard20_six_required_state')
+    engine = _safe_frontier()
     now = [100.0]
     monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
     calls = []
