@@ -782,7 +782,7 @@ def run_server(
     global _launch_readiness_id
     _launch_readiness_id = launch_id
     actual_url = f"http://{host}:{selected_port}"
-    logger.info(f"5D Chess Web 服务器启动: {actual_url}")
+    logger.info(f"时线棋局 Web 服务器启动: {actual_url}")
     try:
         app.run(
             host=host,

@@ -58,7 +58,7 @@ def _parse_port(value: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the 5D Chess P2P Web server")
+    parser = argparse.ArgumentParser(description="启动时线棋局 P2P Web 服务")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument(
         "--port",

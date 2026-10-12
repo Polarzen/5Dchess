@@ -43,7 +43,7 @@ $tunnel = $null
 $httpHandler = $null
 $httpClient = $null
 
-Write-Host "[5D Chess] 启动本地 P2P Flask 服务: http://127.0.0.1:$Port (debug=False)"
+Write-Host "[时线棋局] 启动本地 P2P Flask 服务: http://127.0.0.1:$Port (debug=False)"
 
 try {
     $hadLaunchIdEnv = Test-Path Env:FIVE_D_P2P_LAUNCH_ID
@@ -111,9 +111,9 @@ try {
         throw "Flask 服务在启动 Tunnel 前退出。"
     }
 
-    Write-Host "[5D Chess] 正在创建 Cloudflare Quick Tunnel..."
-    Write-Host "[5D Chess] 终端出现 https://*.trycloudflare.com 地址后，把该地址发给对手。"
-    Write-Host "[5D Chess] 双方打开同一地址：房主点‘创建真人房间’，对手点‘加入真人房间’。"
+    Write-Host "[时线棋局] 正在创建 Cloudflare Quick Tunnel..."
+    Write-Host "[时线棋局] 终端出现 https://*.trycloudflare.com 地址后，把该地址发给对手。"
+    Write-Host "[时线棋局] 双方打开同一地址：房主点‘创建真人房间’，对手点‘加入真人房间’。"
     $tunnel = Start-Process `
         -FilePath $cloudflaredPath `
         -ArgumentList @("tunnel", "--url", "http://127.0.0.1:$Port") `
@@ -140,7 +140,7 @@ finally {
     }
     try {
         if ($tunnel -and -not $tunnel.HasExited) {
-            Write-Host "[5D Chess] 关闭 Cloudflare Tunnel。"
+            Write-Host "[时线棋局] 关闭 Cloudflare Tunnel。"
             Stop-Process -Id $tunnel.Id -Force -ErrorAction SilentlyContinue
         }
     } catch {
@@ -148,7 +148,7 @@ finally {
     }
     try {
         if ($server -and -not $server.HasExited) {
-            Write-Host "[5D Chess] 关闭本地 Flask 服务。"
+            Write-Host "[时线棋局] 关闭本地 Flask 服务。"
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
         }
     } catch {

@@ -1,5 +1,5 @@
 """
-5D Chess - 主入口
+时线棋局 - 主入口
 使用方式:
     python src/main.py                  # 启动GUI
     python src/main.py --cli            # 命令行模式
@@ -33,7 +33,7 @@ def _parse_port(value: str) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="5D Chess - 五维国际象棋")
+    parser = argparse.ArgumentParser(description="时线棋局 - 多时间线国际象棋的独立开源实现")
     parser.add_argument("--cli", action="store_true", help="命令行模式")
     parser.add_argument("--web", action="store_true", help="Web模式 (Flask)")
     parser.add_argument(
@@ -78,7 +78,7 @@ def run_gui(mode: str = None, difficulty: str = "medium"):
     """启动GUI模式"""
     from src.gui import ChessApp
     app = ChessApp()
-    logger.info("5D Chess GUI 启动")
+    logger.info("时线棋局 GUI 启动")
     app.run()
 
 
@@ -95,7 +95,7 @@ def run_cli(args):
 
     engine = FiveDEngine()
     print("=" * 50)
-    print("5D Chess - 命令行模式")
+    print("时线棋局 - 命令行模式")
     print("=" * 50)
 
     while engine.game_state.value == "playing":

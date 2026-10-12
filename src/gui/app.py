@@ -1,5 +1,5 @@
 """
-5D Chess - GUI 主程序
+时线棋局 - GUI 主程序
 三模式集成：PvP / PvE / Replay
 """
 import sys
@@ -20,7 +20,7 @@ from src.gui.control_panel import ControlPanel
 
 
 class ChessApp:
-    """5D Chess GUI 主应用"""
+    """时线棋局 GUI 主应用"""
 
     def __init__(self):
         pygame.init()
@@ -317,11 +317,11 @@ class ChessApp:
     def _draw_menu(self):
         """绘制主菜单"""
         # 标题
-        title = self.big_font.render("5D Chess - 五维国际象棋", True, COLOR_TEXT)
+        title = self.big_font.render("时线棋局 - 多时间线国际象棋", True, COLOR_TEXT)
         title_rect = title.get_rect(center=(WINDOW_WIDTH // 2, 150))
         self.screen.blit(title, title_rect)
 
-        subtitle = self.font.render("Multiverse Time Travel", True, (180, 180, 180))
+        subtitle = self.font.render("独立开源实现 · 非官方项目", True, (180, 180, 180))
         sub_rect = subtitle.get_rect(center=(WINDOW_WIDTH // 2, 190))
         self.screen.blit(subtitle, sub_rect)
 

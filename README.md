@@ -1,6 +1,8 @@
-# ♟️ 5D Chess with Multiverse Time Travel
+# ♟️ 时线棋局 — 多时间线国际象棋
 
-一个使用 Python 实现的 **5D Chess / 多时间线国际象棋项目**。核心引擎使用 canonical 4D 坐标描述空间、时间与时间线移动，并通过不可变历史棋盘、Action / The Present、RoyalRules、Action 级终局搜索以及多棋盘 Web 界面实现完整的 5D 对局基础。
+一个使用 Python 独立实现的 **多时间线国际象棋开源项目**。核心引擎使用 canonical 4D 坐标描述空间、时间与时间线移动，并通过不可变历史棋盘、Action / The Present、RoyalRules、Action 级终局搜索以及多棋盘 Web 界面实现完整的 5D 对局基础。
+
+> **项目定位与灵感来源：** 本项目的玩法灵感来自 [《5D Chess With Multiverse Time Travel》](https://store.steampowered.com/app/1349230/5D_Chess_With_Multiverse_Time_Travel/)，代码与项目自制素材独立制作。本项目与该游戏的开发者、发行商不存在隶属、合作或授权关系，也不是该商业游戏的官方开源版本。原作名称仅用于说明灵感来源，不表示获得其认可或背书。
 
 > **当前状态：核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2 已完成。**
 >
@@ -559,4 +561,6 @@ EXE                            已移出项目范围
 
 ## 📄 License
 
-MIT License
+本项目有权许可的代码、文档与自制素材采用 [MIT License](LICENSE)。使用、修改或分发时，请保留许可证要求的版权及许可声明。
+
+第三方依赖、外部引用内容及其名称、标识保留各自的权利与许可条件，不因本项目采用 MIT License 而获得重新授权。本项目的许可证不涵盖灵感来源游戏的代码、素材或品牌标识。
