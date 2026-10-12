@@ -22,7 +22,7 @@ Quick Tunnel 可以把房主的本地 Web 地址临时发布为 `https://*.trycl
 
 ### 下载 ZIP 后一键启动（推荐）
 
-Windows 10/11 x64 用户先将整个 ZIP 解压，再双击根目录的 `本地.bat` 或 `远程.bat`，详细使用方法见 [使用说明.txt](../使用说明.txt)。首次会自动下载项目专用 Python 和依赖；远程入口固定使用 HTTP/2，并在 Cloudflare 确认连接后打开公网网页。只有房主需要下载项目。
+Windows 10/11 x64 用户先将整个 ZIP 解压，再双击根目录的 `本地.bat` 或 `远程.bat`，详细使用方法见 [使用说明.txt](../../使用说明.txt)。首次会自动下载项目专用 Python 和依赖；远程入口固定使用 HTTP/2，并在 Cloudflare 确认连接后打开公网网页。只有房主需要下载项目。
 
 这些入口使用项目内 `.runtime/`，没有 D 盘或未安装 Python 也可用。Python 采用 [Python 官方文档列出的 NuGet 包](https://docs.python.org/3.11/using/windows.html#the-nuget-org-packages)，版本和 SHA-256 在 `scripts/p2p/python-runtime.json` 中固定；Cloudflare 沿用现有校验清单。组件完整解压并验证后才启用，首次下载或依赖安装失败会保留日志并停止，下次点击可重试。本地首次准备完成后不需要联网；远程模式始终依赖外部网络。
 
@@ -202,4 +202,4 @@ failed to read quick-tunnel response: context deadline exceeded (Client.Timeout 
 
 官方参考：[Quick Tunnel 使用说明](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)、[cloudflared 下载](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/)。
 
-本次实际运行结果及验证范围见 [P2P 验收记录](P2P_ACCEPTANCE.md)。
+本次实际运行结果及验证范围见 [P2P 验收记录](../validation/P2P_ACCEPTANCE.md)。

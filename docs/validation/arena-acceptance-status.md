@@ -357,7 +357,7 @@ self-play or training was started. PR #24 and #25 remain Draft and unmerged;
 
 Model SHA-256: `de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55`. Raw source fingerprints and all
 historical failed/aborted attempts are preserved in
-`docs/planner-validation-20261011.json` (`reliability_phase2_fix12` is current).
+`docs/validation/planner-validation-20261011.json` (`reliability_phase2_fix12` is current).
 The original remote Stage 1 artifact expired, so these local Planner/Arena
 results are not remote workflow passes. Workflow-file follow-ups remain in
 the preserved local patch because the credential lacks `workflow` scope.

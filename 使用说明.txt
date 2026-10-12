@@ -59,10 +59,12 @@
 logs\launcher：安装和启动日志；logs\p2p：网站与隧道日志。
 棋局保存在服务内存中，关闭服务不会自动保存当前在线房间。
 
-向别人分享项目时，推荐直接分享 GitHub 的 Download ZIP，或本项目提供的源码包。
+向别人分享项目时，推荐分享 GitHub Releases 中的 5DChess-Windows.zip。
+下载地址：https://github.com/Polarzen/5Dchess/releases/latest
+在该页面的 Assets 中选择 5DChess-Windows.zip。
 源码包不含你的运行环境、日志和本地数据；对方首次运行会自动准备环境。
 macOS、Linux、Windows ARM/32 位不适用这两个启动入口，请参考 README。
-更多玩法、开发和命令行说明见 README.md 与 docs\P2P_CLOUDFLARE.md。
+更多玩法、开发和命令行说明见 README.md 与 docs\guides\P2P_CLOUDFLARE.md。
 
 运行组件来源与版本清单：scripts\p2p\python-runtime.json、cloudflared-release.json。
 下载组件会核对固定 SHA-256；项目依赖由 pip 从 PyPI 安装。
