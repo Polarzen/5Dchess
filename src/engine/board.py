@@ -2,7 +2,6 @@
 5D Chess - 棋盘表示
 """
 from __future__ import annotations
-from copy import deepcopy
 from dataclasses import dataclass, field
 from src.utils.constants import (
     ChessColor, PieceType, INITIAL_BOARD, BOARD_SIZE, COL_NAMES, ROW_NAMES
@@ -106,13 +105,19 @@ class Position:
         return piece is not None and piece.color == color
 
     def find_king(self, color: ChessColor) -> tuple[int, int] | None:
-        """找到王的位置"""
+        """Return the first King (compatibility/existence queries only)."""
         king_char = "K" if color == ChessColor.WHITE else "k"
         for y in range(BOARD_SIZE):
             for x in range(BOARD_SIZE):
                 if self.board[y][x] == king_char:
                     return (x, y)
         return None
+
+    def find_kings(self, color: ChessColor) -> tuple[tuple[int, int], ...]:
+        """All royal instances; time travel can put multiple Kings on one board."""
+        king_char = "K" if color == ChessColor.WHITE else "k"
+        return tuple((x, y) for y, row in enumerate(self.board)
+                     for x, char in enumerate(row) if char == king_char)
 
     def get_all_pieces(self, color: ChessColor) -> list[tuple[int, int, Piece]]:
         """获取某方所有棋子"""
@@ -125,8 +130,23 @@ class Position:
         return result
 
     def copy(self) -> "Position":
-        """深拷贝"""
-        return deepcopy(self)
+        """Copy one board state without generic object-graph traversal.
+
+        Every mutable Position field is duplicated explicitly. Enum/int values
+        and the en-passant coordinate tuple are immutable and may be shared.
+        This preserves deepcopy semantics while avoiding Python's recursive
+        dataclass reconstruction in MoveValidator and timeline transitions.
+        """
+        return Position(
+            board=[row[:] for row in self.board],
+            turn=self.turn,
+            timeline_id=self.timeline_id,
+            time_point=self.time_point,
+            move_number=self.move_number,
+            castling_rights=self.castling_rights.copy(),
+            en_passant_target=self.en_passant_target,
+            unmoved_pawns=set(self.unmoved_pawns),
+        )
 
     def to_fen(self) -> str:
         """导出为标准FEN（不含时间信息）"""

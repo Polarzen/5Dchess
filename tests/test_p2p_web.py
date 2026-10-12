@@ -67,6 +67,50 @@ def _pair():
     return host, guest, created, joined, _credentials(created), _credentials(joined)
 
 
+def test_tutorial_isolated_from_online_room_and_branch_response_is_recorded():
+    from tests.test_travelling_kings import engine_with, position
+    from src.ai.action_planner import engine_state_signature
+    host, _guest, _created, _joined, auth, _guest_auth = _pair()
+    instance = _game_session['mode_instance']
+    before = engine_state_signature(instance.engine)
+    version = p2p_module._room['version']
+    assert host.get('/api/tutorial').status_code == 200
+    assert _game_session['mode_instance'] is instance
+    assert engine_state_signature(instance.engine) == before
+    assert p2p_module._room['version'] == version
+    pieces = {(0, 7): 'K', (7, 0): 'k'}
+    instance.engine = engine_with(position(0, 0, pieces), position(0, 1, pieces),
+                                  position(0, 2, {**pieces, (3, 4): 'R'}))
+    state = host.post('/api/p2p/state', json=auth).json
+    source = next(b['coord'] for b in state['boards'] if b['key'] == '0:2')
+    moves = host.post('/api/p2p/legal_moves', json={**auth, 'board': source, 'x': 3, 'y': 4}).json['moves']
+    move = next(m for m in moves if m['destination']['board']['key'] == '0:0')
+    response = host.post('/api/p2p/move', json={**auth, **move})
+    assert response.status_code == 200
+    assert response.json['move'] == response.json['last_move']
+    assert response.json['move']['created_timeline'] == 1
+    assert response.json['move']['result_destination_board']['key'] == '1:1'
+    assert response.json['action_counter'] == 0
+    assert response.json['move_counter'] == 1
+    assert response.json['move']['display_notation'] == 'L0 · T1 白方：d4 → L0 · T0 白方 d4（新分支 L+1）'
+    assert response.json['move_history_display'][-1] == response.json['move']['display_notation']
+    assert response.json['turn'] == 'white'
+    submitted = host.post('/api/p2p/submit', json=auth)
+    assert submitted.status_code == 200 and submitted.json['turn'] == 'black'
+    assert submitted.json['action_counter'] == 1
+
+
+def test_both_online_players_receive_same_nonterminal_repetition_advisory():
+    from tests.test_frontier_repetition import play_cycle
+    host, guest, _created, _joined, host_auth, guest_auth = _pair()
+    play_cycle(_game_session['mode_instance'].engine, 2)
+    host_state = host.post('/api/p2p/state', json=host_auth).json
+    guest_state = guest.post('/api/p2p/state', json=guest_auth).json
+    assert host_state['repetition'] == guest_state['repetition']
+    assert host_state['repetition']['occurrences'] == 3
+    assert host_state['game_state'] == guest_state['game_state'] == 'PLAYING'
+
+
 def _move_pawn(client, auth, source_y, destination_y):
     state = client.post("/api/p2p/state", json=auth).get_json()
     board = next(board for board in state["boards"] if board["playable"])

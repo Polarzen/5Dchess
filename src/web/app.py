@@ -7,6 +7,7 @@ multiverse instead of pretending that one selected 8x8 board is the game.
 from __future__ import annotations
 
 from contextlib import nullcontext
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,12 @@ from src.data.pgn_parser import FiveDPGN
 from src.modes import PvEMode, PvPMode, ReplayMode
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
+from src.web.port_utils import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    select_port,
+    validate_port,
+)
 
 
 app = Flask(
@@ -32,6 +39,25 @@ app = Flask(
     template_folder=str(Path(__file__).parent / "templates"),
     static_folder=str(Path(__file__).parent / "static"),
 )
+
+P2P_READINESS_PATH = "/__p2p/readiness"
+_launch_readiness_id: str | None = None
+
+
+@app.get(P2P_READINESS_PATH)
+def p2p_readiness():
+    """Return the opt-in launcher identity without touching game state."""
+    if _launch_readiness_id is None:
+        response = jsonify({"ready": False})
+        response.status_code = 404
+    else:
+        response = jsonify({
+            "launch_id": _launch_readiness_id,
+            "pid": os.getpid(),
+        })
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 # Single-session local UI.  Multi-user/server deployment is intentionally out
 # of scope for this project; the browser and engine live in one local process.
@@ -97,7 +123,40 @@ def _square_payload(square) -> dict[str, Any]:
     }
 
 
+def _move_display_notation(move: Move) -> str:
+    """UI coordinates use a8 at row zero; keep legacy archive notation intact."""
+    def lane_label(lane):
+        return f'L{lane:+d}' if lane else 'L0'
+
+    def board_label(board):
+        side = '白方' if board.side == ChessColor.WHITE else '黑方'
+        return f'{lane_label(board.timeline)} · T{board.turn} {side}'
+
+    def square_label(square):
+        return f'{chr(97 + square.x)}{8 - square.y}'
+
+    source, destination = move.source, move.destination
+    target = square_label(destination)
+    if destination.board != source.board:
+        target = f'{board_label(destination.board)} {target}'
+    separator = '×' if move.captured else '→'
+    text = f'{board_label(source.board)}：{square_label(source)} {separator} {target}'
+    if move.promotion:
+        text += f'={move.promotion.value}'
+    if move.is_castling:
+        text += '（短易位）' if destination.x == 6 else '（长易位）'
+    if move.is_en_passant:
+        text += '（吃过路兵）'
+    if move.is_branching and move.created_timeline is not None:
+        text += f'（新分支 {lane_label(move.created_timeline)}）'
+    return text
+
+
 def _move_payload(move: Move) -> dict[str, Any]:
+    arrival = move.destination.board.next()
+    if move.is_branching:
+        arrival = (BoardCoord(move.created_timeline, arrival.turn, arrival.side)
+                   if move.created_timeline is not None else None)
     return {
         "source": _square_payload(move.source),
         "destination": _square_payload(move.destination),
@@ -117,7 +176,10 @@ def _move_payload(move: Move) -> dict[str, Any]:
         "is_branching": move.is_branching,
         "is_cross_timeline": move.is_cross_timeline,
         "created_timeline": move.created_timeline,
+        "result_source_board": _coord_payload(move.source.board.next()),
+        "result_destination_board": _coord_payload(arrival) if arrival else None,
         "notation": move.to_notation(),
+        "display_notation": _move_display_notation(move),
     }
 
 
@@ -405,7 +467,9 @@ def api_execute_move_5d():
 
             if not success:
                 return jsonify({"error": "引擎拒绝走子"}), 400
-        return jsonify({"success": True, "move": _move_payload(move), **get_game_state()})
+            return jsonify({"success": True,
+                            "move": _move_payload(instance.engine.move_history[-1]),
+                            **get_game_state()})
     except (TypeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -433,6 +497,22 @@ def api_submit_action():
         if not instance.engine.submit_action():
             return jsonify({"error": "Action提交失败"}), 400
     return jsonify({"success": True, **get_game_state()})
+
+
+@app.get("/api/tutorial")
+def api_tutorial():
+    """Read-only practice snapshots, including while a live/P2P game is open."""
+    from src.web.tutorial import build_lessons
+
+    def serialize(engine):
+        return {
+            "boards": _board_payloads(engine, interactive=True),
+            "turn": engine.current_turn_color.value,
+            "required_count": len(engine.get_required_action_boards()),
+            "can_submit": engine.can_submit_action(),
+        }
+
+    return jsonify({"lessons": build_lessons(serialize, _move_payload)})
 
 
 # Compatibility endpoint used by older clients/tests.
@@ -650,6 +730,11 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
         "required_boards": [_coord_payload(coord) for coord in required],
         "movable_boards": [_coord_payload(coord) for coord in movable],
     }
+    action_payload["submit_blocker"] = (
+        "game_over" if engine.game_state != GameState.PLAYING else
+        None if action_payload["can_submit"] else
+        "required_boards" if required else "royal_safety"
+    ) if interactive else "read_only"
 
     in_check = False
     if interactive and engine.game_state == GameState.PLAYING:
@@ -693,7 +778,9 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
         "game_state": engine.game_state.name,
         "turn": engine.current_turn_color.value,
         "move_counter": engine.move_counter,
+        "action_counter": len(engine.action_history),
         "move_history": [move.to_notation() for move in engine.move_history],
+        "move_history_display": [_move_display_notation(move) for move in engine.move_history],
         "last_move": last_move,
         "active_timeline_id": engine.timeline_manager.active_timeline_id,
         "board": current_position.board,  # compatibility
@@ -704,6 +791,7 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
         "action": action_payload,
         "in_check": in_check,
         "rule_warning": getattr(engine, "rule_warning", None),
+        "repetition": _repetition_payload(engine) if interactive else None,
         "summary": summary,
         "player_color": _game_session.get("player_color"),
         "ai_difficulty": _game_session.get("ai_difficulty"),
@@ -719,14 +807,72 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
     return state
 
 
+def _repetition_payload(engine):
+    from src.engine.repetition import detect_frontier_repetition
+    repetition = detect_frontier_repetition(engine)
+    return repetition.to_dict() if repetition else None
+
+
 # ---------------------------------------------------------------------------
 # Development server
 # ---------------------------------------------------------------------------
 
 
-def run_server(host: str = "127.0.0.1", port: int = 5000, debug: bool = True):
-    logger.info(f"5D Chess Web 服务器启动: http://{host}:{port}")
-    app.run(host=host, port=port, debug=debug)
+def run_server(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    debug: bool = True,
+    *,
+    strict_port: bool = False,
+    launch_id: str | None = None,
+):
+    """Select and start the local Web server.
+
+    Normal Web callers treat ``port`` as the preferred start of a bounded
+    ascending search.  P2P's launcher passes an already selected port with
+    ``strict_port=True`` so the tunnel target and server bind cannot silently
+    diverge.
+    """
+    if strict_port:
+        if port is None:
+            raise ValueError("strict_port requires an explicit port")
+        # This port has already been handed off by the launcher.  Validate it
+        # without probing so a final bind race is reported by Flask itself.
+        selected_port = validate_port(port)
+    else:
+        preferred_port = DEFAULT_PORT if port is None else port
+        selected_port = select_port(
+            host,
+            preferred_port,
+            log=lambda message: logger.info(message),
+        )
+
+    global _launch_readiness_id
+    _launch_readiness_id = launch_id
+    actual_url = f"http://{host}:{selected_port}"
+    logger.info(f"时线棋局 Web 服务器启动: {actual_url}")
+    try:
+        app.run(
+            host=host,
+            port=selected_port,
+            debug=debug,
+            use_reloader=False,
+        )
+    except OSError as exc:
+        _launch_readiness_id = None
+        raise RuntimeError(
+            f"无法启动 Web 地址 {actual_url}；"
+            "所选端口可能已在探测后被其他进程占用，请检查端口并重试 "
+            "（存在启动竞争条件）。"
+        ) from exc
+    except SystemExit as exc:
+        if exc.code is None or exc.code == 0:
+            raise
+        _launch_readiness_id = None
+        raise RuntimeError(
+            f"无法启动 Web 地址 {actual_url}；Flask 以状态 {exc.code} 退出，"
+            "所选端口可能在探测后发生启动竞争，请检查端口并重试。"
+        ) from exc
 
 
 if __name__ == "__main__":

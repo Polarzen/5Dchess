@@ -10,6 +10,7 @@ from src.ai.action_planner import (
     ActionPlanningError,
     ActionSearchBudget,
     ActionSearchResult,
+    _PRODUCTION_HYBRID_BUDGET,
     apply_action_plan,
     engine_state_signature,
 )
@@ -17,6 +18,7 @@ from src.ai.base import AIPlayer
 from src.ai.evaluator import Evaluator
 from src.engine.move_generator import Move
 from src.engine.move_validator import MoveValidator
+from src.engine.outcome_rules import OutcomeKind, OutcomeRules
 from src.utils.constants import AIDifficulty, ChessColor, GameState
 
 
@@ -100,7 +102,7 @@ class AlphaBetaAI(AIPlayer):
         self._nodes_searched = 0
         self._states_used = 0
         self._budget_reason = None
-        result = self._search_candidates(engine)
+        result = self._search_candidates(engine, track_repetition=True)
         if not result.candidates:
             reason = result.termination_reason or "no_legal_action"
             raise ActionPlanningError(
@@ -109,28 +111,38 @@ class AlphaBetaAI(AIPlayer):
                 explored_states=result.explored_states,
             )
 
-        best_specs = result.candidates[0]
+        counts = result.frontier_repetitions or (0,) * len(result.candidates)
+        # Consider progress first if the remaining budget cannot score all
+        # candidates. Stable ordering preserves the original order otherwise.
+        order = sorted(range(len(result.candidates)), key=lambda index: counts[index] >= 2)
+        best_index = order[0]
+        best_specs = result.candidates[best_index]
         best_score = float("-inf")
+        best_penalty = 0.0
         alpha = float("-inf")
         beta = float("inf")
         completed_root_search = True
 
-        for specs in result.candidates:
+        for index in order:
+            specs = result.candidates[index]
             if self._deadline_reached():
                 completed_root_search = False
                 break
             child = self._apply_candidate(engine, specs)
             if child is None:
                 continue
+            penalty = 0.25 if counts[index] >= 2 else 0.0
             score = self._search_state(
                 child,
                 self.search_depth - 1,
-                alpha,
+                alpha + penalty,
                 beta,
-            )
+            ) - penalty
             if score > best_score:
                 best_score = score
                 best_specs = specs
+                best_index = index
+                best_penalty = penalty
             alpha = max(alpha, score)
 
         if best_score == float("-inf"):
@@ -153,12 +165,15 @@ class AlphaBetaAI(AIPlayer):
             color=self.color,
             moves=best_specs,
             start_signature=engine_state_signature(engine),
-            score=best_score,
+            score=best_score + best_penalty,
             metadata={
                 "explored_states": self._states_used,
                 "candidate_count": len(result.candidates),
                 "search_depth": self.search_depth,
                 "search_complete": not bool(warning_reason),
+                "selected_index": best_index,
+                "repetition_prior_occurrences": counts[best_index],
+                "repetition_penalty": best_penalty,
             },
             warning=warning,
         )
@@ -171,7 +186,7 @@ class AlphaBetaAI(AIPlayer):
             return True
         return False
 
-    def _search_candidates(self, engine) -> ActionSearchResult:
+    def _search_candidates(self, engine, *, track_repetition=False) -> ActionSearchResult:
         """Enumerate with the remaining global state/time budget."""
         if self._deadline_reached():
             return ActionSearchResult((), self._states_used, "time_budget")
@@ -193,7 +208,19 @@ class AlphaBetaAI(AIPlayer):
             max_move_depth=self.budget.max_move_depth,
             max_seconds=remaining_seconds,
         )
-        result = ActionPlanner(node_budget).search(engine)
+        # Remaining time may equal the configured limit on a coarse clock or
+        # be slightly smaller on a fine clock. Keep minimax candidate ordering
+        # independent of that equality, and share its original absolute deadline
+        # so cloning/preparation cannot restart the global wall budget.
+        deadline = None if self._timeout is None else self._start_time + self._timeout
+        strategy = (
+            "probe_then_depth_first" if self.budget == _PRODUCTION_HYBRID_BUDGET
+            else "depth_first"
+        )
+        result = ActionPlanner(
+            node_budget, strategy=strategy, deadline=deadline,
+            **({"track_repetition": True} if track_repetition else {}),
+        ).search(engine)
         self._states_used += result.explored_states
         if result.termination_reason:
             self._budget_reason = self._budget_reason or result.termination_reason
@@ -216,17 +243,25 @@ class AlphaBetaAI(AIPlayer):
 
     def _search_state(self, engine, depth: int, alpha: float, beta: float) -> float:
         self._nodes_searched += 1
+        # Canonical submission already classified this boundary. A known result
+        # remains exact even at the horizon or after the planning deadline.
+        if engine.game_state == GameState.CHECKMATE:
+            return self._mate_score(engine)
+        if engine.game_state in {GameState.STALEMATE, GameState.DRAW}:
+            return 0.0
         if depth <= 0 or self._deadline_reached():
             return self.evaluator.evaluate_engine(engine, self.color)
 
         result = self._search_candidates(engine)
         if not result.candidates:
-            if result.termination_reason and result.termination_reason != "game_not_playing":
+            if result.termination_reason:
                 return self.evaluator.evaluate_engine(engine, self.color)
-            # A completed no-action search is a genuine Action terminal.
-            if engine.current_turn_color == self.color:
-                return -100000.0
-            return 100000.0
+            # A complete no-action proof still needs the canonical distinction
+            # between checkmate and stalemate. Reuse it without another search.
+            outcome = OutcomeRules.classify_proven_no_legal_action(
+                engine, explored_states=result.explored_states,
+            )
+            return self._mate_score(engine) if outcome.kind == OutcomeKind.CHECKMATE else 0.0
 
         maximizing = engine.current_turn_color == self.color
         best = float("-inf") if maximizing else float("inf")
@@ -251,6 +286,10 @@ class AlphaBetaAI(AIPlayer):
         if not searched:
             return self.evaluator.evaluate_engine(engine, self.color)
         return best
+
+    def _mate_score(self, engine) -> float:
+        # After submission the player due to act is the checkmated side.
+        return -100000.0 if engine.current_turn_color == self.color else 100000.0
 
     @staticmethod
     def _move_priority(move: Move) -> float:

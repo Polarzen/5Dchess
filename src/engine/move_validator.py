@@ -1,9 +1,9 @@
 """
 5D Chess - 走子合法性校验
 
-当前层仍保留项目原有的“单步、棋盘局部王安全”过滤语义；Action 级别的
-完整 5D 将军/将杀规则会在后续单独实现。跨棋盘走子不再错误地模拟在一张
-source Board 上，而是分别构造 source / destination 的结果棋盘。
+当前层检查单步的棋盘局部王安全；Action 提交由 RoyalRules 检查完整的
+跨时空王安全。跨棋盘走子分别构造 source / destination 的结果棋盘，
+支持王离开后的无王棋盘，以及王到达后同一棋盘上的多个同色王。
 """
 from __future__ import annotations
 
@@ -50,17 +50,10 @@ class MoveValidator:
         if new_pos is None:
             return False
 
-        color = position.turn
-        king_pos = new_pos.find_king(color)
-        if king_pos is None:
-            return False
-
-        return not self._is_square_attacked(
-            new_pos,
-            king_pos[0],
-            king_pos[1],
-            color.opposite(),
-        )
+        # A travelling King may leave zero Kings here or join another King.
+        # Board-local safety checks every remaining royal; Action submission
+        # still checks all historical instances across the multiverse.
+        return self._local_king_safe(new_pos, position.turn)
 
     def _simulate_spatial_move(self, position: Position, move: Move) -> Position | None:
         """模拟同一 Board 内走子，并严格验证 Pawn 特殊规则。"""
@@ -75,6 +68,8 @@ class MoveValidator:
         if actual_piece.piece_type == PieceType.PAWN:
             if not self._validate_spatial_pawn(position, move, target):
                 return None
+        if move.is_castling and not self._validate_castling(position, move):
+            return None
 
         new_pos = position.copy()
         new_pos.en_passant_target = None
@@ -108,6 +103,36 @@ class MoveValidator:
 
         new_pos.turn = position.turn.opposite()
         return new_pos
+
+    def _validate_castling(self, position: Position, move: Move) -> bool:
+        """The castle King cannot start in or pass through same-board check.
+
+        Cross-board threats are still decided at Action submission. This local
+        restriction follows the game's developer clarification, not a blanket
+        prohibition on castling while a different timeline is threatened.
+        """
+        color = move.piece.color
+        row = 7 if color == ChessColor.WHITE else 0
+        if (move.piece.piece_type != PieceType.KING
+                or (move.from_x, move.from_y) != (4, row)
+                or move.to_y != row or move.to_x not in (2, 6)
+                or move.captured is not None or move.promotion is not None
+                or move.is_en_passant):
+            return False
+        kingside = move.to_x == 6
+        wing = 'kingside' if kingside else 'queenside'
+        rook_x, through_x = (7, 5) if kingside else (0, 3)
+        if not position.castling_rights.get(f'{color.value}_{wing}', False):
+            return False
+        if position.get_piece(rook_x, row) != Piece(PieceType.ROOK, color):
+            return False
+        if any(not position.is_empty(x, row) for x in ((5, 6) if kingside else (1, 2, 3))):
+            return False
+        if self._is_square_attacked(position, 4, row, color.opposite()):
+            return False
+        through = position.copy()
+        through.move_piece(4, row, through_x, row)
+        return not self._is_square_attacked(through, through_x, row, color.opposite())
 
     def _validate_spatial_pawn(
         self,
@@ -282,16 +307,9 @@ class MoveValidator:
         return True
 
     def _local_king_safe(self, position: Position, color: ChessColor) -> bool:
-        """Check standard 2D attacks if this board contains the color's king."""
-        king_pos = position.find_king(color)
-        if king_pos is None:
-            return True
-        return not self._is_square_attacked(
-            position,
-            king_pos[0],
-            king_pos[1],
-            color.opposite(),
-        )
+        """No King may be attacked; an empty royal set is locally safe."""
+        return all(not self._is_square_attacked(position, x, y, color.opposite())
+                   for x, y in position.find_kings(color))
 
     def _is_square_attacked(self, position: Position, x: int, y: int,
                             by_color: ChessColor) -> bool:
@@ -357,13 +375,5 @@ class MoveValidator:
         return False
 
     def is_king_in_check(self, position: Position, color: ChessColor) -> bool:
-        """检查单张棋盘上的王是否被二维攻击。"""
-        king_pos = position.find_king(color)
-        if king_pos is None:
-            return False
-        return self._is_square_attacked(
-            position,
-            king_pos[0],
-            king_pos[1],
-            color.opposite(),
-        )
+        """检查单张棋盘上是否有任意一个同色王被二维攻击。"""
+        return not self._local_king_safe(position, color)

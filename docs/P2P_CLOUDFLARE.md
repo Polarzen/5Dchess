@@ -4,7 +4,13 @@
 
 ## 为什么使用 Cloudflare Quick Tunnel
 
-Quick Tunnel 可以把房主的 `http://127.0.0.1:5000` 临时发布为 `https://*.trycloudflare.com`，不需要公网 IP 或预先配置域名，适合开发、试玩和临时联机。需要长期固定地址时，应改用 Cloudflare Named Tunnel，并按照部署环境补充访问控制。
+Quick Tunnel 可以把房主的本地 Web 地址临时发布为 `https://*.trycloudflare.com`，不需要公网 IP 或预先配置域名，适合开发、试玩和临时联机。需要长期固定地址时，应改用 Cloudflare Named Tunnel，并按照部署环境补充访问控制。
+
+本项目默认监听 `127.0.0.1`，首选端口为 `5050`。普通 Web 启动会在
+`5050-5099` 中逐个进行 TCP bind 探测并选择第一个可用端口；`--port N` 表示
+首选起点，仍会从 `N` 向上最多搜索 50 个候选（范围在 `65535` 处截断），不是
+严格绑定要求。实际选中的 URL 会在 Flask 启动前记录；如果 50 个候选都不可用，
+启动会报告包含完整搜索范围的错误。
 
 ## Windows 启动
 
@@ -22,7 +28,7 @@ Quick Tunnel 可以把房主的 `http://127.0.0.1:5000` 临时发布为 `https:/
    powershell -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1
    ```
 
-   脚本会以 `debug=False` 启动 `scripts/run_p2p_server.py`，再创建 Quick Tunnel。终端出现 `https://*.trycloudflare.com` 地址后，房主先打开该地址并创建在线房间。
+   脚本会先通过 `python scripts/run_p2p_server.py --select-port` 获取一个机器可读的具体端口，再以 `debug=False` 将该端口严格传给 `scripts/run_p2p_server.py` 和 Cloudflare Quick Tunnel。启动时脚本生成一次性的本地 launch identity，通过环境变量传给服务，并用不带 identity 的固定 readiness 路径核对响应中的 identity 与服务 PID；identity 不会进入 URL。终端出现 `https://*.trycloudflare.com` 地址后，房主先打开该地址并创建在线房间。脚本会在有界时间内等待该身份就绪端点，并在服务或 Tunnel 任一进程退出时清理另一个进程，不依赖固定睡眠或从日志猜测端口。
 
 4. 房主点击“创建在线房间”后，顶部会出现“复制邀请链接”。点击后得到类似：
 
@@ -44,9 +50,15 @@ Quick Tunnel 可以把房主的 `http://127.0.0.1:5000` 临时发布为 `https:/
 python scripts/run_p2p_server.py
 ```
 
+命令会动态选择可用端口并在日志中记录实际 URL。把该日志中的端口填入：
+
 ```powershell
-cloudflared tunnel --url http://127.0.0.1:5000
+cloudflared tunnel --url http://127.0.0.1:<actual-port>
 ```
+
+若需要由外部启动器传入已经选定的端口，可使用
+`python scripts/run_p2p_server.py --port <actual-port>`；此参数是严格绑定，
+服务不会静默改用其他端口，以确保 Tunnel 和 Flask 指向同一监听端口。
 
 手动启动时也应保持 Flask 的非调试模式，不要把开发调试器发布到公网。
 

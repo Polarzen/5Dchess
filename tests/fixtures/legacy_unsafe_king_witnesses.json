@@ -1,0 +1,425 @@
+{
+  "hard20_four_required_state": {
+    "specs": [
+      {
+        "source": [
+          -2,
+          15,
+          "white",
+          4,
+          7
+        ],
+        "destination": [
+          -1,
+          15,
+          "white",
+          5,
+          6
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          1,
+          16,
+          "white",
+          3,
+          4
+        ],
+        "destination": [
+          2,
+          15,
+          "white",
+          2,
+          3
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          4,
+          15,
+          "white",
+          5,
+          5
+        ],
+        "destination": [
+          4,
+          15,
+          "white",
+          6,
+          5
+        ],
+        "promotion": null
+      }
+    ],
+    "expected_failure": "unsafe_submission"
+  },
+  "hard20_six_required_state": {
+    "specs": [
+      {
+        "source": [
+          -4,
+          16,
+          "white",
+          5,
+          5
+        ],
+        "destination": [
+          -4,
+          16,
+          "white",
+          4,
+          4
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -2,
+          16,
+          "white",
+          4,
+          7
+        ],
+        "destination": [
+          -1,
+          16,
+          "white",
+          5,
+          6
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          2,
+          16,
+          "white",
+          4,
+          7
+        ],
+        "destination": [
+          2,
+          16,
+          "white",
+          3,
+          6
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          5,
+          16,
+          "white",
+          4,
+          7
+        ],
+        "destination": [
+          4,
+          16,
+          "white",
+          3,
+          6
+        ],
+        "promotion": null
+      }
+    ],
+    "expected_failure": "unsafe_submission"
+  },
+  "seed43_immobile_arrival_large_state": {
+    "specs": [
+      {
+        "source": [
+          1,
+          9,
+          "black",
+          4,
+          0
+        ],
+        "destination": [
+          2,
+          9,
+          "black",
+          4,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          3,
+          9,
+          "black",
+          2,
+          2
+        ],
+        "destination": [
+          3,
+          9,
+          "black",
+          3,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          12,
+          9,
+          "black",
+          0,
+          0
+        ],
+        "destination": [
+          12,
+          9,
+          "black",
+          3,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -14,
+          9,
+          "black",
+          5,
+          0
+        ],
+        "destination": [
+          -15,
+          9,
+          "black",
+          6,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -13,
+          9,
+          "black",
+          2,
+          2
+        ],
+        "destination": [
+          -12,
+          9,
+          "black",
+          2,
+          2
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -11,
+          9,
+          "black",
+          2,
+          0
+        ],
+        "destination": [
+          -10,
+          9,
+          "black",
+          1,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -7,
+          9,
+          "black",
+          3,
+          3
+        ],
+        "destination": [
+          -9,
+          9,
+          "black",
+          3,
+          2
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -4,
+          9,
+          "black",
+          5,
+          0
+        ],
+        "destination": [
+          -5,
+          9,
+          "black",
+          6,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          4,
+          9,
+          "black",
+          5,
+          0
+        ],
+        "destination": [
+          5,
+          9,
+          "black",
+          4,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          8,
+          9,
+          "black",
+          5,
+          1
+        ],
+        "destination": [
+          9,
+          9,
+          "black",
+          5,
+          1
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -8,
+          9,
+          "black",
+          4,
+          1
+        ],
+        "destination": [
+          -3,
+          9,
+          "black",
+          4,
+          6
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -6,
+          9,
+          "black",
+          3,
+          3
+        ],
+        "destination": [
+          -6,
+          9,
+          "black",
+          4,
+          4
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          -2,
+          9,
+          "black",
+          2,
+          0
+        ],
+        "destination": [
+          -1,
+          9,
+          "black",
+          1,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          0,
+          9,
+          "black",
+          3,
+          1
+        ],
+        "destination": [
+          0,
+          9,
+          "black",
+          3,
+          2
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          6,
+          9,
+          "black",
+          2,
+          4
+        ],
+        "destination": [
+          7,
+          9,
+          "black",
+          0,
+          4
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          10,
+          9,
+          "black",
+          0,
+          0
+        ],
+        "destination": [
+          11,
+          9,
+          "black",
+          0,
+          0
+        ],
+        "promotion": null
+      },
+      {
+        "source": [
+          14,
+          9,
+          "black",
+          3,
+          0
+        ],
+        "destination": [
+          13,
+          9,
+          "black",
+          2,
+          0
+        ],
+        "promotion": null
+      }
+    ],
+    "expected_failure": "illegal_move"
+  }
+}

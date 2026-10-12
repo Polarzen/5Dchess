@@ -131,10 +131,25 @@ class MoveGenerator:
     STRAIGHT_DIRS = [(0, 1), (0, -1), (1, 0), (-1, 0)]
     DIAGONAL_DIRS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
 
-    def __init__(self, position: Position, timelines: dict[int, "Timeline"] = None):
+    def __init__(
+        self, position: Position, timelines: dict[int, "Timeline"] = None,
+        *, allow_branching: bool = True, destination_boards=None,
+    ):
         self.position = position
         self.timelines = timelines or {}
         self.board_view = MultiverseBoardView(self.timelines)
+        self.allow_branching = allow_branching
+        self.destination_boards = (
+            None if destination_boards is None else frozenset(destination_boards)
+        )
+
+    def _target_boards(self, color):
+        return tuple(
+            board for board in self.board_view.iter_boards(
+                side=color, playable_only=not self.allow_branching,
+            )
+            if self.destination_boards is None or board.coord in self.destination_boards
+        )
 
     def _board_coord(
         self,
@@ -186,22 +201,72 @@ class MoveGenerator:
                 return []
 
         moves: list[Move] = []
-        for x, y, piece in self.position.get_all_pieces(color):
-            if piece.piece_type == PieceType.PAWN:
-                moves.extend(self._gen_pawn_moves(x, y, piece))
-            elif piece.piece_type == PieceType.KNIGHT:
-                moves.extend(self._gen_knight_moves(x, y, piece))
-            elif piece.piece_type == PieceType.BISHOP:
-                moves.extend(self._gen_bishop_moves(x, y, piece))
-            elif piece.piece_type == PieceType.ROOK:
-                moves.extend(self._gen_rook_moves(x, y, piece))
-            elif piece.piece_type == PieceType.QUEEN:
-                moves.extend(self._gen_queen_moves(x, y, piece))
-            elif piece.piece_type == PieceType.KING:
-                moves.extend(self._gen_king_moves(x, y, piece))
+        if self.destination_boards is None or source_board in self.destination_boards:
+            for x, y, piece in self.position.get_all_pieces(color):
+                moves.extend(self._gen_spatial_piece_moves(x, y, piece))
 
         moves.extend(self._gen_multiverse_moves(color))
         return moves
+
+    def generate_from_square(self, x: int, y: int) -> list[Move]:
+        """Generate pseudo-legal Moves for exactly one source square.
+
+        This is semantically the same subset that ``generate_all`` would emit
+        for the source piece. It exists so callers validating one immutable
+        MoveSpec do not regenerate every other piece's moves first.
+        """
+        color = self.position.turn
+        source_board = self._board_coord()
+
+        if self.timelines:
+            source = self.board_view.describe(source_board)
+            if source is not None and not source.is_playable:
+                return []
+
+        piece = self.position.get_piece(x, y)
+        if piece is None or piece.color != color:
+            return []
+
+        moves = (
+            self._gen_spatial_piece_moves(x, y, piece)
+            if self.destination_boards is None or source_board in self.destination_boards
+            else []
+        )
+        if not self.timelines:
+            return moves
+
+        target_boards = self._target_boards(color)
+        if piece.piece_type == PieceType.PAWN:
+            moves.extend(self._gen_pawn_multiverse_moves(
+                x,
+                y,
+                piece,
+                target_boards,
+            ))
+        elif PieceMovementRules.supports(piece.piece_type):
+            moves.extend(self._gen_piece_multiverse_moves(
+                x,
+                y,
+                piece,
+                target_boards,
+            ))
+        return moves
+
+    def _gen_spatial_piece_moves(self, x: int, y: int, piece: Piece) -> list[Move]:
+        """Generate the same-board pseudo-legal subset for one piece."""
+        if piece.piece_type == PieceType.PAWN:
+            return self._gen_pawn_moves(x, y, piece)
+        if piece.piece_type == PieceType.KNIGHT:
+            return self._gen_knight_moves(x, y, piece)
+        if piece.piece_type == PieceType.BISHOP:
+            return self._gen_bishop_moves(x, y, piece)
+        if piece.piece_type == PieceType.ROOK:
+            return self._gen_rook_moves(x, y, piece)
+        if piece.piece_type == PieceType.QUEEN:
+            return self._gen_queen_moves(x, y, piece)
+        if piece.piece_type == PieceType.KING:
+            return self._gen_king_moves(x, y, piece)
+        return []
 
     def _in_bounds(self, x: int, y: int) -> bool:
         return 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE
@@ -377,7 +442,7 @@ class MoveGenerator:
         if source_description is None or not source_description.is_playable:
             return []
 
-        target_boards = tuple(self.board_view.iter_boards(side=color))
+        target_boards = self._target_boards(color)
         moves: list[Move] = []
 
         for x, y, piece in self.position.get_all_pieces(color):
@@ -388,52 +453,66 @@ class MoveGenerator:
                     piece,
                     target_boards,
                 ))
+            elif PieceMovementRules.supports(piece.piece_type):
+                moves.extend(self._gen_piece_multiverse_moves(
+                    x,
+                    y,
+                    piece,
+                    target_boards,
+                ))
+        return moves
+
+    def _gen_piece_multiverse_moves(
+        self,
+        x: int,
+        y: int,
+        piece: Piece,
+        target_boards,
+    ) -> list[Move]:
+        """Generate non-pawn cross-board Moves for one source piece."""
+        source = Square5D(self._board_coord(), x, y)
+        moves: list[Move] = []
+
+        for target_board in target_boards:
+            if target_board.coord == source.board:
                 continue
 
-            if not PieceMovementRules.supports(piece.piece_type):
-                continue
-
-            source = Square5D(source_board, x, y)
-            for target_board in target_boards:
-                if target_board.coord == source_board:
+            dt = target_board.coord.turn - source.turn
+            dl = target_board.coord.timeline - source.timeline
+            for dx, dy in self._candidate_spatial_offsets(
+                piece.piece_type, dt, dl
+            ):
+                tx, ty = x + dx, y + dy
+                if not self._in_bounds(tx, ty):
                     continue
 
-                dt = target_board.coord.turn - source.turn
-                dl = target_board.coord.timeline - source.timeline
-                for dx, dy in self._candidate_spatial_offsets(
-                    piece.piece_type, dt, dl
+                destination = Square5D(target_board.coord, tx, ty)
+                vector = source.vector_to(destination)
+                if not PieceMovementRules.is_valid(piece.piece_type, vector):
+                    continue
+
+                if (
+                    PieceMovementRules.is_slider(piece.piece_type)
+                    and not PathRules.is_clear(
+                        piece.piece_type,
+                        source,
+                        destination,
+                        self.board_view.resolve,
+                    )
                 ):
-                    tx, ty = x + dx, y + dy
-                    if not self._in_bounds(tx, ty):
-                        continue
+                    continue
 
-                    destination = Square5D(target_board.coord, tx, ty)
-                    vector = source.vector_to(destination)
-                    if not PieceMovementRules.is_valid(piece.piece_type, vector):
-                        continue
+                captured = target_board.position.get_piece(tx, ty)
+                if captured is not None and captured.color == piece.color:
+                    continue
 
-                    if (
-                        PieceMovementRules.is_slider(piece.piece_type)
-                        and not PathRules.is_clear(
-                            piece.piece_type,
-                            source,
-                            destination,
-                            self.board_view.resolve,
-                        )
-                    ):
-                        continue
-
-                    captured = target_board.position.get_piece(tx, ty)
-                    if captured is not None and captured.color == piece.color:
-                        continue
-
-                    moves.append(Move(
-                        piece=piece,
-                        source=source,
-                        destination=destination,
-                        captured=captured,
-                        is_branching=target_board.is_historical,
-                    ))
+                moves.append(Move(
+                    piece=piece,
+                    source=source,
+                    destination=destination,
+                    captured=captured,
+                    is_branching=target_board.is_historical,
+                ))
 
         return moves
 
