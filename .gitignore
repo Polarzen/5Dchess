@@ -17,6 +17,7 @@ build/
 
 # 日志
 logs/
+saves/
 # Optional legacy local Cloudflare binary; managed installation lives in D:\p2p.
 cloudflared.exe
 

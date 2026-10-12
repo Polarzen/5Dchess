@@ -7,6 +7,10 @@ and bounded reconnect leases.
 from __future__ import annotations
 
 from collections import deque
+from copy import deepcopy
+import ipaddress
+import os
+from pathlib import Path
 import secrets
 import threading
 import time
@@ -14,6 +18,7 @@ from typing import Any, Callable
 
 from flask import g, jsonify, request
 
+from src.data.online_save import OnlineSaveStore
 from src.engine import FiveDEngine
 from src.engine.multiverse import MultiverseBoardView
 from src.modes import PvPMode
@@ -40,6 +45,10 @@ _ERROR_MESSAGES = {
     "invalid_request": "请求格式无效",
     "p2p_room_active": "在线 P2P 房间进行中，legacy mutation 已阻断",
     "internal_error": "服务器内部错误",
+    "save_failed": "存档失败，行动尚未提交。请房主检查 saves 目录权限和磁盘空间后重试。",
+    "save_unavailable": "存档不存在或已损坏；未改变当前棋局。请检查项目 saves 目录。",
+    "host_required": "恢复存档需由房主在本机 127.0.0.1 页面操作。",
+    "action_conflict": "棋局已更新，请重新同步后再操作。",
 }
 
 _room_lock = threading.RLock()
@@ -182,6 +191,42 @@ def register_p2p_routes(
     if flask_app.extensions.get("five_d_p2p_registered"):
         return
     flask_app.extensions["five_d_p2p_registered"] = True
+    flask_app.config.setdefault("P2P_SAVE_DIR", os.environ.get(
+        "FIVE_D_CHESS_SAVE_DIR", str(Path(__file__).resolve().parents[2] / "saves")))
+
+    def save_store():
+        return OnlineSaveStore(flask_app.config["P2P_SAVE_DIR"])
+
+    def is_local_host():
+        # cloudflared connects from loopback too. Reject forwarded requests,
+        # public Host names and cross-origin browser requests as well.
+        try:
+            loopback = ipaddress.ip_address(request.remote_addr or "").is_loopback
+        except ValueError:
+            return False
+        hostname = request.host.split(":")[0].lower()
+        if request.host.startswith("["):
+            hostname = request.host.split("]")[0] + "]"
+        return (loopback and hostname in {"localhost", "127.0.0.1", "[::1]"}
+                and not any(name.lower().startswith(("x-forwarded-", "cf-"))
+                            or name.lower() == "forwarded" for name in request.headers.keys())
+                and request.headers.get("Sec-Fetch-Site") not in {"cross-site", "same-site"}
+                and request.headers.get("Origin", request.host_url.rstrip("/"))
+                == request.host_url.rstrip("/"))
+
+    def open_room(engine, save_id, saved):
+        global _room
+        token = _new_player_token()
+        _room = {
+            "code": _new_room_code(),
+            "players": {"white": token, "black": None},
+            "leases": {"white": {"last_heartbeat": _now(), "online": True}, "black": None},
+            "version": 1, "save_id": save_id, "saved": saved, "save_error": False,
+        }
+        game_session.update({"mode": "pvp", "mode_instance": PvPMode(engine),
+                             "ai_difficulty": "medium", "player_color": None})
+        return jsonify({"success": True, "room_code": _room["code"],
+                        "player_token": token, **room_state_for(ChessColor.WHITE)})
 
     def request_object() -> tuple[dict[str, Any] | None, Any | None]:
         data = request.get_json(silent=True)
@@ -224,6 +269,13 @@ def register_p2p_routes(
                 and engine.current_turn_color == color
             ),
             "state_version": _room["version"],
+            "retention_seconds": PLAYER_LEASE_SECONDS + RECONNECT_GRACE_SECONDS,
+            "opponent_retention_remaining": max(0.0,
+                PLAYER_LEASE_SECONDS + RECONNECT_GRACE_SECONDS
+                - (_now() - _lease(_room, opponent)["last_heartbeat"]))
+                if opponent_present else None,
+            "saved": _room.get("saved"),
+            "save_error": _room.get("save_error", False),
         }
         return state
 
@@ -313,40 +365,40 @@ def register_p2p_routes(
 
             try:
                 engine = FiveDEngine()
-                instance = PvPMode(engine)
-                instance.start()
-                now = _now()
-                white_token = _new_player_token()
-                _room = {
-                    "code": _new_room_code(),
-                    "players": {
-                        ChessColor.WHITE.value: white_token,
-                        ChessColor.BLACK.value: None,
-                    },
-                    "leases": {
-                        ChessColor.WHITE.value: {
-                            "last_heartbeat": now,
-                            "online": True,
-                        },
-                        ChessColor.BLACK.value: None,
-                    },
-                    "version": 1,
-                }
-                game_session.update({
-                    "mode": "pvp",
-                    "mode_instance": instance,
-                    "ai_difficulty": "medium",
-                    "player_color": None,
-                })
-                logger.info(f"P2P room created: {_room['code']}")
-                return jsonify({
-                    "success": True,
-                    "room_code": _room["code"],
-                    "player_token": white_token,
-                    **room_state_for(ChessColor.WHITE),
-                })
+                save_id = secrets.token_hex(16)
+                saved = save_store().save(save_id, engine)
+                return open_room(engine, save_id, saved)
+            except OSError:
+                return _error("save_failed", 503)
             except Exception:
                 return internal_error("P2P room creation failed")
+
+    @flask_app.route("/api/p2p/saves", methods=["GET"])
+    def p2p_saved_games():
+        if not is_local_host():
+            return _error("host_required", 403)
+        with _room_lock:
+            try:
+                return jsonify(save_store().catalog())
+            except OSError:
+                return _error("save_unavailable", 503)
+
+    @flask_app.route("/api/p2p/restore", methods=["POST"])
+    def p2p_restore_game():
+        if not is_local_host():
+            return _error("host_required", 403)
+        data, error = request_object()
+        if error:
+            return error
+        with _room_lock:
+            if _room is not None:
+                return _error("room_full", 409)
+            try:
+                save_id = data.get("save_id")
+                engine, saved = save_store().load(save_id)
+            except (OSError, ValueError, KeyError, TypeError):
+                return _error("save_unavailable", 409)
+            return open_room(engine, save_id, saved)
 
     @flask_app.route("/api/p2p/join", methods=["POST"])
     def p2p_join_room():
@@ -507,10 +559,25 @@ def register_p2p_routes(
             try:
                 instance = game_session["mode_instance"]
                 engine = instance.engine
-                if not engine.can_submit_action() or not engine.submit_action():
+                expected = data.get("expected_action_counter")
+                if expected is not None and expected != len(engine.action_history):
+                    return _error("action_conflict", 409)
+                if not engine.can_submit_action():
                     return _error("action_not_submittable", 409)
-
+                # Publish the new turn only after its checkpoint is on disk.
+                # A disk error leaves the original pending Action retryable.
+                candidate = deepcopy(engine)
+                if not candidate.submit_action():
+                    return _error("action_not_submittable", 409)
                 assert _room is not None
+                try:
+                    saved = save_store().save(_room["save_id"], candidate)
+                except OSError:
+                    _room["save_error"] = True
+                    _room["version"] += 1
+                    return _error("save_failed", 503)
+                instance.engine = candidate
+                _room.update(saved=saved, save_error=False)
                 _room["version"] += 1
                 return jsonify({"success": True, **room_state_for(color)})
             except Exception:

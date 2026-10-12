@@ -45,7 +45,8 @@ def _reset_state():
 
 
 @pytest.fixture(autouse=True)
-def isolated_p2p(monkeypatch):
+def isolated_p2p(monkeypatch, tmp_path):
+    monkeypatch.setitem(app.config, 'P2P_SAVE_DIR', str(tmp_path / 'saves'))
     clock = FakeClock()
     monkeypatch.setattr(p2p_module, "_clock", clock)
     _reset_state()

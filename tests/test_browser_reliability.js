@@ -17,6 +17,9 @@ function element() {
         classList: { add() {}, remove() {}, toggle() {} },
         style: {},
         appendChild() {},
+        replaceChildren() {},
+        showModal() { this.open = true; },
+        close() { this.open = false; },
         remove() {},
         querySelector() { return null; },
         querySelectorAll() { return []; },
@@ -604,7 +607,82 @@ function testHistoryUsesBoardCoordinatesWithLegacyFallback() {
     assert.deepEqual(rows, ['1. (T0) e7-e5']);
 }
 
+async function testReconnectCountdownAndSameVersionRecoveryControls() {
+    const context = loadClient(true);
+    vm.runInContext(`
+        __now = 100000;
+        Date = class extends Date { static now() { return __now; } };
+        mode = 'p2p'; p2pRoomCode = 'ABC123'; p2pPlayerToken = 'secret';
+        p2pLastStateAt = __now;
+        gameState = { mode: 'p2p', game_state: 'PLAYING', turn: 'white', player_color: 'white', boards: [],
+            action: {can_submit: true}, p2p: {room_code: 'ABC123', state_version: 4, can_act: true,
+                retention_seconds: 608, opponent_connected: true, opponent_status: 'connected',
+                saved: {action_counter: 2, saved_at: '2026-10-12T12:00:00Z'} } };
+        updateAll = () => {}; showToast = () => {}; clearSelection = () => {};
+        noteP2PPollFailure();
+    `, context);
+    assert.equal(context.document.getElementById('submit-action-btn').disabled, true);
+    assert.match(context.document.getElementById('p2p-connection-status').textContent, /连接中断.*10分08秒/);
+    vm.runInContext('__now += 300000; renderP2PConnection();', context);
+    assert.match(context.document.getElementById('p2p-connection-status').textContent, /5分08秒/);
+    vm.runInContext(`api = async () => gameState`, context);
+    await vm.runInContext('pollP2PState()', context);
+    assert.equal(context.document.getElementById('submit-action-btn').disabled, false);
+    assert.match(context.document.getElementById('p2p-connection-status').textContent, /连接正常/);
+    vm.runInContext(`gameState.p2p.opponent_status = 'offline';
+        gameState.p2p.opponent_retention_remaining = 300;
+        applyP2PState(gameState, captureSession(), null, {preserveSelection: true});`, context);
+    assert.match(context.document.getElementById('p2p-connection-status').textContent, /对手离线.*5分00秒/);
+    assert.match(context.document.getElementById('p2p-save-status').textContent, /已存档 2 个行动/);
+    // A transient failure while recovering on the menu has no gameState yet.
+    vm.runInContext(`mode = null; gameState = null; noteP2PPollFailure()`, context);
+}
+
+async function testSavedGameRestoreOwnershipAndTerminalInstructions() {
+    const context = loadClient(true);
+    const options = [];
+    context.document.getElementById('p2p-save-list').appendChild = item => options.push(item);
+    vm.runInContext(`api = async () => ({saves: [{save_id: 'abc', action_counter: 4,
+        saved_at: '2026-10-12T12:00:00Z', game_state: 'PLAYING'}], unreadable: 1})`, context);
+    await vm.runInContext('openSavedP2PGames()', context);
+    assert.equal(options[0].value, 'abc');
+    assert.match(context.document.getElementById('p2p-save-detail').textContent, /无法读取/);
+    assert.equal(context.document.getElementById('p2p-restore-btn').disabled, false);
+    context.document.getElementById('p2p-save-list').value = 'abc';
+    vm.runInContext(`__posts = 0; __entered = 0;
+        enterP2PGame = () => { __entered++; };
+        api = () => { __posts++; return new Promise(resolve => { __restoreResolve = resolve; }); };`, context);
+    const pending = vm.runInContext('restoreSavedP2PGame()', context);
+    await vm.runInContext('restoreSavedP2PGame()', context);
+    assert.equal(vm.runInContext('__posts', context), 1);
+    vm.runInContext(`invalidateSession(); __restoreResolve({success: true});`, context);
+    await pending;
+    assert.equal(vm.runInContext('__entered', context), 0);
+    vm.runInContext(`showToast = () => {}; terminateP2PSession({code: 'room_expired'});`, context);
+    assert.match(context.document.getElementById('p2p-recovery-note').textContent, /房主.*恢复/);
+}
+
+async function testLocalHostInviteNeverCopiesLoopbackURL() {
+    const context = loadClient(true);
+    context.window.location = {hostname: '127.0.0.1', origin: 'http://127.0.0.1:5050', search: ''};
+    const pills = [];
+    context.document.getElementById('top-status').appendChild = item => pills.push(item);
+    vm.runInContext(`globalThis = window; mode = 'p2p'; gameState = {player_color: 'white', p2p: {room_code: 'ABC123'}};
+        __copied = ''; navigator.clipboard.writeText = async value => { __copied = value; };
+        showToast = () => {};`, context);
+    vm.runInContext(fs.readFileSync('src/web/static/js/p2p_invite.js', 'utf8'), context);
+    vm.runInContext('renderTopStatus()', context);
+    await pills.at(-1).onclick();
+    assert.equal(vm.runInContext('__copied', context), 'ABC123');
+    context.window.location = {hostname: 'game.trycloudflare.com', origin: 'https://game.trycloudflare.com'};
+    await pills.at(-1).onclick();
+    assert.equal(vm.runInContext('__copied', context), 'https://game.trycloudflare.com/?room=ABC123');
+}
+
 (async () => {
+    await testReconnectCountdownAndSameVersionRecoveryControls();
+    await testSavedGameRestoreOwnershipAndTerminalInstructions();
+    await testLocalHostInviteNeverCopiesLoopbackURL();
     await testRequestDeadline();
     await testAbortAwareAndBodyDeadlines();
     await testHTTPAndNetworkEnvelopes();

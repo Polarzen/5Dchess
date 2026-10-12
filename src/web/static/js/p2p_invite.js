@@ -72,6 +72,7 @@ if (typeof window !== 'undefined') {
 
     async function copyP2PInviteLink() {
         const roomCode = normalizeRoomCode(gameState?.p2p?.room_code || p2pRoomCode);
+        const isLocal = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location?.hostname);
         const inviteURL = buildP2PInviteURL(roomCode);
         if (!inviteURL) {
             showToast('当前房间无法生成邀请链接', true);
@@ -80,10 +81,12 @@ if (typeof window !== 'undefined') {
 
         try {
             if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-            await navigator.clipboard.writeText(inviteURL);
-            showToast('邀请链接已复制');
+            await navigator.clipboard.writeText(isLocal ? roomCode : inviteURL);
+            showToast(isLocal
+                ? `房间码 ${roomCode} 已复制；请同时发送启动窗口中的公网网址。本机网址不能用于异地加入。`
+                : '邀请链接已复制');
         } catch (error) {
-            showToast(`邀请链接：${inviteURL}`);
+            showToast(isLocal ? `房间码：${roomCode}；请同时发送启动窗口中的公网网址。` : `邀请链接：${inviteURL}`);
         }
     }
 
@@ -123,7 +126,8 @@ if (typeof window !== 'undefined') {
         if (!status) return;
         const invite = document.createElement('span');
         invite.className = 'status-pill emphasis';
-        invite.textContent = '复制邀请链接';
+        const isLocal = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location?.hostname);
+        invite.textContent = isLocal ? '复制房间码' : '复制邀请链接';
         invite.title = '复制只包含房间码的在线邀请链接';
         invite.style.cursor = 'pointer';
         invite.onclick = copyP2PInviteLink;
@@ -139,7 +143,10 @@ if (typeof window !== 'undefined') {
         ) return;
         const help = document.getElementById('action-help');
         if (help) {
-            help.textContent = `房间 ${gameState.p2p.room_code} 正在等待第二位玩家；点击顶部“复制邀请链接”发送给对手。`;
+            const isLocal = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location?.hostname);
+            help.textContent = isLocal
+                ? `房间 ${gameState.p2p.room_code} 等待对手；发送启动窗口中的公网网址和房间码。`
+                : `房间 ${gameState.p2p.room_code} 正在等待第二位玩家；点击顶部“复制邀请链接”发送给对手。`;
         }
     };
 

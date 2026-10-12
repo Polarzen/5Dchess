@@ -20,7 +20,8 @@ def _reset_state() -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolated_modes():
+def isolated_modes(monkeypatch, tmp_path):
+    monkeypatch.setitem(app.config, 'P2P_SAVE_DIR', str(tmp_path / 'saves'))
     app.config.update(TESTING=True)
     _reset_state()
     yield

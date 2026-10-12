@@ -22,6 +22,8 @@ let p2pLeaveOwner = null;
 let p2pLegalCacheIdentity = null;
 let p2pLegalCache = new Map();
 let p2pPrefetchAttempt = null;
+let p2pLastStateAt = 0;
+let p2pSaveReadSequence = 0;
 
 const baseRefreshState = refreshState;
 const baseSubmitAction = submitAction;
@@ -149,8 +151,11 @@ function startP2PPolling() {
 }
 
 function resetP2PPollState() {
+    const wasDisconnected = p2pPollFailureCount > 0;
     p2pPollFailureCount = 0;
     p2pPollRetryAt = 0;
+    renderP2PConnection();
+    if (wasDisconnected && mode === 'p2p') renderActionPanel();
 }
 
 function noteP2PPollFailure() {
@@ -165,6 +170,9 @@ function noteP2PPollFailure() {
         void 'Waiting for opponent';
         showToast('在线同步暂时中断，正在自动重试…', true);
     }
+    clearSelection(false);
+    if (mode === 'p2p' && gameState) renderActionPanel();
+    renderP2PConnection();
 }
 
 function p2pErrorCode(result) {
@@ -188,6 +196,8 @@ function applyP2PState(result, context = captureSession(), owner = null, options
         && Number.isFinite(incomingVersion)
         && currentVersion === incomingVersion;
     gameState = result;
+    p2pLastStateAt = Date.now();
+    renderP2PConnection();
     if (options.preserveSelection && sameVersion) {
         prefetchP2PLegalMoves();
         return true;
@@ -204,9 +214,9 @@ function isTerminalP2PError(result) {
 
 function terminalP2PMessage(result) {
     const messages = {
-        invalid_token: '玩家身份已失效，请重新加入房间',
-        room_not_found: '房间已不存在，请重新加入',
-        room_expired: '房间已过期，请重新创建或加入',
+        invalid_token: '玩家身份已失效；请房主重新邀请，或在本机恢复存档',
+        room_not_found: '房间已不存在；房主可在本机恢复存档，再发送新网址和房间码',
+        room_expired: '房间保留期已结束；房主可在本机恢复上次已提交的行动',
     };
     return messages[p2pErrorCode(result)] || '房间会话已结束，请重新加入';
 }
@@ -237,6 +247,8 @@ function terminateP2PSession(result = null, context = captureSession()) {
     p2pRoomCode = null;
     p2pPlayerToken = null;
     if (mode === 'p2p') baseBackToMenu();
+    const note = document.getElementById('p2p-recovery-note');
+    if (note) note.textContent = terminalP2PMessage(result);
 }
 
 function scheduleStoredRecovery(saved, context) {
@@ -304,6 +316,7 @@ function enterP2PGame(result) {
     p2pTerminalMessageShown = false;
     mode = 'p2p';
     gameState = result;
+    p2pLastStateAt = Date.now();
     p2pRoomCode = result.room_code || result.p2p?.room_code || p2pRoomCode;
     p2pPlayerToken = result.player_token || p2pPlayerToken;
     storeP2PSession();
@@ -370,6 +383,7 @@ async function joinP2PRoomCode(roomCode) {
 }
 
 async function pollP2PState() {
+    renderP2PConnection();
     if (p2pPollInFlight || mode !== 'p2p' || !p2pRoomCode || !p2pPlayerToken) return;
     if (Date.now() < p2pPollRetryAt) return;
     const context = captureSession();
@@ -433,7 +447,7 @@ refreshState = async function() {
 canSelectSource = function(board, ch) {
     if (mode !== 'p2p') return baseCanSelectSource(board, ch);
     if (!board || !ch || !gameState || gameState.game_state !== 'PLAYING') return false;
-    if (!board.is_movable || !gameState.p2p?.opponent_connected) return false;
+    if (!board.is_movable || !gameState.p2p?.opponent_connected || p2pPollFailureCount) return false;
     if (pieceColor(ch) !== gameState.turn) return false;
     if (gameState.player_color !== gameState.turn) return false;
     return Boolean(gameState.p2p?.can_act) && !mutationOwner && !selectionOwner;
@@ -479,7 +493,7 @@ selectSource = async function(board, x, y) {
 
 executeCanonicalMove = async function(move) {
     if (mode !== 'p2p') return baseExecuteCanonicalMove(move);
-    if (!move || mutationOwner) return;
+    if (!move || mutationOwner || p2pPollFailureCount) return;
     const context = captureSession();
     const owner = acquireMutation(context);
     if (!owner) return;
@@ -514,22 +528,28 @@ executeCanonicalMove = async function(move) {
 
 submitAction = async function() {
     if (mode !== 'p2p') return baseSubmitAction();
-    if (!gameState?.action?.can_submit || !gameState?.p2p?.can_act || mutationOwner) return;
+    if (!gameState?.action?.can_submit || !gameState?.p2p?.can_act || mutationOwner || p2pPollFailureCount) return;
     const context = captureSession();
     const owner = acquireMutation(context);
     if (!owner) return;
     try {
-        const result = await api('/api/p2p/submit', 'POST', p2pCredentials());
+        const result = await api('/api/p2p/submit', 'POST', p2pCredentials({
+            expected_action_counter: gameState.action_counter,
+        }));
         if (!ownsMutation(owner)) return;
         if (isErrorResult(result)) {
             showToast(playerErrorMessage(result, '行动提交失败'), true);
+            await refreshState();
             return;
         }
         if (!commitMutation(owner)) return;
         if (!applyP2PState(result, context, owner)) return;
-        if (!gameState.rule_warning) showToast('行动已提交，等待对手');
+        if (!gameState.rule_warning) showToast('行动已提交并自动存档，等待对手');
     } catch (error) {
-        if (ownsMutation(owner)) showToast('行动提交失败，请稍后重试', true);
+        if (ownsMutation(owner)) {
+            showToast('提交结果尚未确认，正在重新同步，请勿重复走子', true);
+            await refreshState();
+        }
     } finally {
         releaseMutation(owner);
     }
@@ -573,13 +593,14 @@ renderTopStatus = function() {
 
 renderActionPanel = function() {
     baseRenderActionPanel();
+    renderP2PConnection();
     if (mode !== 'p2p') return;
 
     const action = gameState.action || {};
     const p2p = gameState.p2p || {};
     const submit = document.getElementById('submit-action-btn');
     if (submit) {
-        submit.disabled = mutationOwner !== null || !p2p.can_act || !action.can_submit
+        submit.disabled = mutationOwner !== null || p2pPollFailureCount > 0 || !p2p.can_act || !action.can_submit
             || gameState.game_state !== 'PLAYING';
         submit.classList.remove('hidden');
     }
@@ -665,3 +686,91 @@ function recoverP2PSessionOnLoad() {
 }
 
 window.addEventListener('load', recoverP2PSessionOnLoad);
+
+function renderP2PConnection() {
+    const panel = document.getElementById('p2p-connection');
+    if (!panel) return;
+    panel.classList.toggle('hidden', mode !== 'p2p');
+    if (mode !== 'p2p' || !gameState?.p2p) return;
+    const p2p = gameState.p2p;
+    const elapsed = Math.max(0, (Date.now() - p2pLastStateAt) / 1000);
+    const duration = seconds => {
+        const total = Math.max(0, Math.ceil(seconds));
+        return `${Math.floor(total / 60)}分${String(total % 60).padStart(2, '0')}秒`;
+    };
+    let connection;
+    if (p2pPollFailureCount) {
+        const remaining = Math.max(0, (p2p.retention_seconds || 608) - elapsed);
+        const retry = Math.max(0, Math.ceil((p2pPollRetryAt - Date.now()) / 1000));
+        connection = `连接中断，${retry}秒后自动重试。预计身份剩余保留 ${duration(remaining)}（以服务端为准）。请保持页面打开。`;
+    } else if (p2p.opponent_status === 'offline') {
+        connection = `对手离线，对局暂停。对手身份剩余保留 ${duration((p2p.opponent_retention_remaining || 0) - elapsed)}。`;
+    } else {
+        connection = p2p.opponent_connected ? '连接正常 · 双方在线' : '等待对手加入 · 分享启动窗口中的网址和房间码';
+    }
+    document.getElementById('p2p-connection-status').textContent = connection;
+    const saved = p2p.saved;
+    document.getElementById('p2p-save-status').textContent = p2p.save_error
+        ? '自动存档失败：行动尚未提交。房主检查 saves 目录权限与磁盘空间后，可重新提交。'
+        : saved ? `已存档 ${saved.action_counter} 个行动 · ${new Date(saved.saved_at).toLocaleString()}。未提交的走子不在存档内。`
+            : '每次成功提交行动后自动存档。';
+    document.getElementById('p2p-recovery-help').textContent =
+        '重连超时或服务重启：房主打开启动窗口中的 127.0.0.1 本机网址，在菜单选择“恢复在线对局”，再发送当前公网网址和新房间码。';
+}
+
+async function openSavedP2PGames() {
+    const context = captureSession();
+    const readId = ++p2pSaveReadSequence;
+    const dialog = document.getElementById('p2p-save-dialog');
+    const detail = document.getElementById('p2p-save-detail');
+    const select = document.getElementById('p2p-save-list');
+    const button = document.getElementById('p2p-restore-btn');
+    dialog.showModal();
+    detail.textContent = '正在读取房主电脑中的存档…';
+    select.replaceChildren();
+    button.disabled = true;
+    const result = await api('/api/p2p/saves');
+    if (!isCurrentSession(context) || !dialog.open || readId !== p2pSaveReadSequence) return;
+    if (isErrorResult(result)) {
+        detail.textContent = playerErrorMessage(result, '无法读取存档');
+        return;
+    }
+    for (const saved of result.saves || []) {
+        const option = document.createElement('option');
+        option.value = saved.save_id;
+        option.textContent = `${new Date(saved.saved_at).toLocaleString()} · ${saved.action_counter} 个行动 · ${saved.game_state === 'PLAYING' ? '进行中' : '已结束'}`;
+        select.appendChild(option);
+    }
+    button.disabled = !result.saves?.length;
+    detail.textContent = (result.saves?.length
+        ? '默认选中最近存档。恢复后房主仍执白棋，对手用新房间码加入；恢复到最后一次成功提交，未提交走子需重走。'
+        : '尚无在线存档。创建在线房间后，成功提交的行动会自动保存。')
+        + (result.unreadable ? ` 另有 ${result.unreadable} 份存档无法读取，请保留 saves 目录中的原文件。` : '');
+}
+
+async function restoreSavedP2PGame() {
+    if (p2pRoomOperation) return;
+    const saveId = document.getElementById('p2p-save-list').value;
+    if (!saveId) return;
+    const context = captureSession();
+    const owner = { id: ++operationSequence, context };
+    p2pRoomOperation = owner;
+    const button = document.getElementById('p2p-restore-btn');
+    button.disabled = true;
+    try {
+        const result = await api('/api/p2p/restore', 'POST', { save_id: saveId });
+        if (!isCurrentSession(context) || p2pRoomOperation !== owner) return;
+        if (isErrorResult(result)) {
+            document.getElementById('p2p-save-detail').textContent = p2pErrorCode(result) === 'room_full'
+                ? '已有在线房间，请先回到原页面继续或退出房间，再恢复存档。'
+                : playerErrorMessage(result, '恢复失败');
+            return;
+        }
+        document.getElementById('p2p-save-dialog').close();
+        enterP2PGame(result);
+        showToast(`存档已恢复。请发送当前公网网址和新房间码 ${p2pRoomCode}，等待对手加入。`);
+    } finally {
+        if (p2pRoomOperation === owner) p2pRoomOperation = null;
+        button.disabled = false;
+    }
+}

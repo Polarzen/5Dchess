@@ -50,9 +50,12 @@ def test_release_uses_commit_excludes_local_files_and_is_reproducible(repository
         builder.build_package(repository, ref='HEAD', version='v0.1.0', output=tmp_path / 'first')
 
 
-def test_release_rejects_tracked_private_data(repository, tmp_path):
-    (repository / '.env').write_text('fixture only')
-    subprocess.run(['git', 'add', '.env'], cwd=repository, check=True)
+@pytest.mark.parametrize('private_path', ['.env', 'saves/private.json'])
+def test_release_rejects_tracked_private_data(repository, tmp_path, private_path):
+    target = repository / private_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('fixture only')
+    subprocess.run(['git', 'add', private_path], cwd=repository, check=True)
     subprocess.run(['git', '-c', 'user.name=Release Test', '-c', 'user.email=release@example.invalid',
                     'commit', '-qm', 'invalid fixture'], cwd=repository, check=True)
     with pytest.raises(ValueError, match='private file'):

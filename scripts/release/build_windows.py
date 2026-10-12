@@ -23,7 +23,7 @@ REQUIRED = {
 PRIVATE_DIRS = {'.git', '.runtime', '.venv', '.venv311', '.venv-training',
                 '.planner-work', '.pytest_cache', '__pycache__', '.claude',
                 '.vscode', '.idea', 'logs', 'dist', 'runs', 'checkpoints',
-                'datasets', 'training_data'}
+                'datasets', 'training_data', 'saves'}
 
 
 def validate_archive(archive: zipfile.ZipFile) -> None:
