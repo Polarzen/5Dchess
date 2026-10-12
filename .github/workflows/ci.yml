@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/local-ai-training-v2]
   pull_request:
-    branches: [main]
+    branches: [main, feat/local-ai-training-v2]
   workflow_dispatch:
 
 permissions:
@@ -61,6 +61,16 @@ jobs:
       - name: Compile source
         run: python -m compileall -q src
 
+      - name: Run browser reliability and localization regressions
+        run: |
+          node --check src/web/static/js/game.js
+          node --check src/web/static/js/p2p.js
+          node --check src/web/static/js/p2p_invite.js
+          node --check src/web/static/js/tutorial.js
+          node tests/test_browser_reliability.js
+          node tests/test_p2p_invite.js
+          node tests/test_tutorial_browser.js
+
       - name: Run Action loop regression tests
         run: >-
           timeout 60s python -m pytest -q
@@ -75,9 +85,6 @@ jobs:
       - name: Run P2P multiplayer regression tests
         run: |
           python -m py_compile scripts/run_p2p_server.py
-          node --check src/web/static/js/p2p.js
-          node --check src/web/static/js/p2p_invite.js
-          node tests/test_p2p_invite.js
           pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content 'scripts/start_p2p.ps1' -Raw)) | Out-Null"
           timeout 60s python -m pytest -q tests/test_p2p_web.py tests/test_p2p_invite_web.py tests/test_hotseat_online_modes.py
 

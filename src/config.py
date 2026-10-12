@@ -1,5 +1,5 @@
 """
-5D Chess - 全局配置
+时线棋局 - 全局配置
 """
 import os
 from pathlib import Path
@@ -37,7 +37,7 @@ AI_CONFIG = {
 AI_TIMEOUT = 5.0                    # AI 思考超时(秒)
 
 # GUI 配置
-WINDOW_TITLE = "5D Chess - 五维国际象棋"
+WINDOW_TITLE = "时线棋局 - 多时间线国际象棋"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 BOARD_VIEW_SIZE = 640               # 棋盘视图边长

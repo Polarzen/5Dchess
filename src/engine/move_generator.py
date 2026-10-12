@@ -131,10 +131,25 @@ class MoveGenerator:
     STRAIGHT_DIRS = [(0, 1), (0, -1), (1, 0), (-1, 0)]
     DIAGONAL_DIRS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
 
-    def __init__(self, position: Position, timelines: dict[int, "Timeline"] = None):
+    def __init__(
+        self, position: Position, timelines: dict[int, "Timeline"] = None,
+        *, allow_branching: bool = True, destination_boards=None,
+    ):
         self.position = position
         self.timelines = timelines or {}
         self.board_view = MultiverseBoardView(self.timelines)
+        self.allow_branching = allow_branching
+        self.destination_boards = (
+            None if destination_boards is None else frozenset(destination_boards)
+        )
+
+    def _target_boards(self, color):
+        return tuple(
+            board for board in self.board_view.iter_boards(
+                side=color, playable_only=not self.allow_branching,
+            )
+            if self.destination_boards is None or board.coord in self.destination_boards
+        )
 
     def _board_coord(
         self,
@@ -186,8 +201,9 @@ class MoveGenerator:
                 return []
 
         moves: list[Move] = []
-        for x, y, piece in self.position.get_all_pieces(color):
-            moves.extend(self._gen_spatial_piece_moves(x, y, piece))
+        if self.destination_boards is None or source_board in self.destination_boards:
+            for x, y, piece in self.position.get_all_pieces(color):
+                moves.extend(self._gen_spatial_piece_moves(x, y, piece))
 
         moves.extend(self._gen_multiverse_moves(color))
         return moves
@@ -211,11 +227,15 @@ class MoveGenerator:
         if piece is None or piece.color != color:
             return []
 
-        moves = self._gen_spatial_piece_moves(x, y, piece)
+        moves = (
+            self._gen_spatial_piece_moves(x, y, piece)
+            if self.destination_boards is None or source_board in self.destination_boards
+            else []
+        )
         if not self.timelines:
             return moves
 
-        target_boards = tuple(self.board_view.iter_boards(side=color))
+        target_boards = self._target_boards(color)
         if piece.piece_type == PieceType.PAWN:
             moves.extend(self._gen_pawn_multiverse_moves(
                 x,
@@ -422,7 +442,7 @@ class MoveGenerator:
         if source_description is None or not source_description.is_playable:
             return []
 
-        target_boards = tuple(self.board_view.iter_boards(side=color))
+        target_boards = self._target_boards(color)
         moves: list[Move] = []
 
         for x, y, piece in self.position.get_all_pieces(color):

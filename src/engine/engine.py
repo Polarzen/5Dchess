@@ -282,7 +282,7 @@ class FiveDEngine:
         candidates = required or movable
         return self._resolve_position(candidates[0])
 
-    def get_legal_moves(self, position: Position = None) -> list[Move]:
+    def get_legal_moves(self, position: Position = None, *, destination_boards=None) -> list[Move]:
         """获取当前 Action 可走棋盘上的合法 Move。"""
         if self.game_state != GameState.PLAYING:
             return []
@@ -300,16 +300,30 @@ class FiveDEngine:
         ):
             return []
 
-        generator = MoveGenerator(position, self.timeline_manager.timelines)
+        generator = MoveGenerator(
+            position, self.timeline_manager.timelines,
+            allow_branching=len(self.timeline_manager.timelines) < self.timeline_manager.max_timelines,
+            destination_boards=destination_boards,
+        )
         validator = MoveValidator(self.timeline_manager.timelines)
         pseudo_moves = generator.generate_all()
         return validator.filter_legal_moves(position, pseudo_moves)
+
+    def get_legal_moves_to_boards(self, position: Position, boards) -> list[Move]:
+        """Canonical legal-Move subset landing on the requested boards.
+
+        Restrict destinations before geometry/path generation; all retained
+        moves still pass the same generator and local safety validator.
+        """
+        return self.get_legal_moves(position, destination_boards=boards)
 
     def get_legal_moves_from_square(
         self,
         position: Position,
         x: int,
         y: int,
+        *,
+        destination_boards=None,
     ) -> list[Move]:
         """Return the canonical legal-Move subset for one source square.
 
@@ -327,10 +341,18 @@ class FiveDEngine:
         ):
             return []
 
-        generator = MoveGenerator(position, self.timeline_manager.timelines)
+        generator = MoveGenerator(
+            position, self.timeline_manager.timelines,
+            allow_branching=len(self.timeline_manager.timelines) < self.timeline_manager.max_timelines,
+            destination_boards=destination_boards,
+        )
         validator = MoveValidator(self.timeline_manager.timelines)
         pseudo_moves = generator.generate_from_square(x, y)
         return validator.filter_legal_moves(position, pseudo_moves)
+
+    def get_legal_moves_from_square_to_boards(self, position: Position, x: int, y: int, boards) -> list[Move]:
+        """Canonical source-square subset with destination generation bounded."""
+        return self.get_legal_moves_from_square(position, x, y, destination_boards=boards)
 
     def execute_action_move(self, move: Move) -> bool:
         """Execute one Move inside the current player's Action without submitting.

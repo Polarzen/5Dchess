@@ -17,9 +17,19 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from src.engine.action import ActionRules
+from src.engine.action_proof import (
+    _branches_cannot_defer_required_boards,
+    fixed_successor_attackers, move_exposes_fixed_attacker,
+    prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
+)
 from src.engine.action_search import ActionSearch
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
+from src.engine.path_rules import PathRules
+from src.engine.piece_movement import PieceMovementRules
+from src.engine.repetition import frontier_key, repeated_frontier_counts
+from src.engine.royal_rules import RoyalRules
+from src.engine.timeline_rules import TimelineRules
 from src.utils.constants import ChessColor, GameState, PieceType
 
 if TYPE_CHECKING:
@@ -291,6 +301,9 @@ class ActionSearchResult:
     explored_states: int
     termination_reason: str | None = None
     failed_state_cache_hits: int = 0
+    # Aligned with candidates when requested. Zero means no third occurrence;
+    # positive counts are prior occurrences within the last 64 Actions.
+    frontier_repetitions: tuple[int, ...] = ()
 
     @property
     def has_legal_action(self) -> bool:
@@ -302,8 +315,9 @@ class ActionSearchResult:
 
 
 class _BudgetTracker:
-    def __init__(self, budget: ActionSearchBudget):
+    def __init__(self, budget: ActionSearchBudget, deadline: float | None = None):
         self.budget = budget
+        self.deadline = deadline
         self.started_at = time.monotonic()
         self.explored_states = 0
         self.explored_actions = 0
@@ -311,15 +325,21 @@ class _BudgetTracker:
         self.depth_cutoffs = 0
         self.termination_reason: str | None = None
         self.phase_interrupted = False
+        self.repeated_frontiers: dict[tuple, int] = {}
+        self.frontier_repetitions: list[int] = []
 
     def check_time(self, local_deadline: float | None = None) -> bool:
         """Stop on the global deadline or an optional local phase deadline."""
         if self.termination_reason is not None:
             return True
-        if self.budget.max_seconds is None and local_deadline is None:
+        if (
+            self.budget.max_seconds is None
+            and local_deadline is None
+            and self.deadline is None
+        ):
             return False
         now = time.monotonic()
-        if (
+        if (self.deadline is not None and now >= self.deadline) or (
             self.budget.max_seconds is not None
             and now - self.started_at >= self.budget.max_seconds
         ):
@@ -427,30 +447,342 @@ def _required_move_sort_key(move: Move, required: set[BoardCoord]) -> tuple:
     )
 
 
+_PREPARATION_INTERRUPTED = object()
+
+
+def _legal_moves_into(state, position, required):
+    targeted = getattr(state, "get_legal_moves_to_boards", None)
+    if targeted is not None:
+        return targeted(position, required)
+    return [move for move in state.get_legal_moves(position)
+            if move.destination.board in required]
+
+
+def _large_frontier_moves(state, position, required, key, tracker, local_deadline):
+    """Generate required-board progress before unrelated historical targets."""
+    preferred = sorted(_legal_moves_into(state, position, required), key=key)
+    if tracker.check_time(local_deadline):
+        return
+    seen = {MoveSpec.from_move(move) for move in preferred}
+    yield from preferred
+    if tracker.check_time(local_deadline):
+        return
+    remaining = sorted(state.get_legal_moves(position), key=key)
+    if tracker.check_time(local_deadline):
+        return
+    yield from (move for move in remaining if MoveSpec.from_move(move) not in seen)
+
+
+def _immobile_arrival_moves(state, sources, targets, key, capture_targets, threatened_kings, tracker, local_deadline):
+    """Keep King escapes, then other sources, before unrelated departures.
+
+    Advancing a threatened King's board with another piece can consume its
+    defense. Moving that King or capturing a known attacker may solve the
+    threat and the arrival at once, so preserve those Moves in the established
+    source order. Deferred arrivals remain canonical Moves on this parent.
+    """
+    threatened_sources = {square.board for square in threatened_kings}
+    deferred = []
+    for board in sources:
+        if tracker.check_time(local_deadline):
+            return
+        position = state._resolve_position(board)
+        if position is None:
+            continue
+        moves = sorted(_legal_moves_into(state, position, targets), key=key)
+        if tracker.check_time(local_deadline):
+            return
+        for move in moves:
+            if (
+                move.source.board in threatened_sources
+                and move.source not in threatened_kings
+                and move.destination not in capture_targets
+            ):
+                deferred.append(move)
+            else:
+                yield move
+    for move in deferred:
+        if tracker.check_time(local_deadline):
+            return
+        yield move
+
+
+# Quiet frontiers use lazy generation only at this size. Smaller frontiers
+# retain MRV unless a concrete required-board attacker needs defense first.
+_LARGE_DEFENSE_MIN_REQUIRED = 17
+
+
+def _required_defense_order(state, required, tracker, local_deadline, *, continue_strategy=False, check_rewinds=False):
+    """Order real multiverse boards without generating every move list.
+
+    Virtual threats are ordering evidence only. Captures of their attackers
+    and moves of threatened Kings come first, then boards without a local King
+    (which need multiverse moves), then quiet Pawn moves. All legal moves and
+    optional boards remain in DFS; no virtual threat proves a failed state.
+    """
+    successors = {board.next(): board for board in required}
+    captures = set()
+    kings = set()
+    local_king_escapes = {}
+    manager = state.timeline_manager
+    color = state.current_turn_color
+    direction = 1 if color == ChessColor.WHITE else -1
+    next_lane = manager._next_positive_id if direction == 1 else manager._next_negative_id
+    while next_lane in manager.timelines:
+        next_lane += direction
+    can_rewind = (
+        check_rewinds
+        and len(manager.timelines) < manager.max_timelines
+        and abs(next_lane) <= TimelineRules.creator_counts(manager.timelines)[color.opposite()] + 1
+    )
+    prefer_rewinds = False
+    rules = RoyalRules(manager.timelines)
+    for threat in rules.threats_against(color):
+        if tracker.check_time(local_deadline):
+            return _PREPARATION_INTERRUPTED
+        if threat.attacker.board in successors:
+            capture_priority = True
+            if threat.attacker.board == threat.king.board:
+                # Canonical Move validation already resolves a board-local
+                # check. When its King can move, try that local defense before
+                # consuming another board for an incoming capture. Preserve
+                # capture priority when the King has no legal departure.
+                king = Square5D(successors[threat.king.board], threat.king.x, threat.king.y)
+                if king not in local_king_escapes:
+                    position = state._resolve_position(king.board)
+                    if position is None:
+                        return None
+                    targeted = getattr(state, 'get_legal_moves_from_square', None)
+                    moves = (
+                        targeted(position, king.x, king.y) if targeted is not None
+                        else [move for move in state.get_legal_moves(position) if move.source == king]
+                    )
+                    if tracker.check_time(local_deadline):
+                        return _PREPARATION_INTERRUPTED
+                    local_king_escapes[king] = bool(moves)
+                capture_priority = not local_king_escapes[king]
+            if capture_priority:
+                captures.add(Square5D(successors[threat.attacker.board], threat.attacker.x, threat.attacker.y))
+        if threat.king.board in successors:
+            kings.add(Square5D(successors[threat.king.board], threat.king.x, threat.king.y))
+        # If an immutable royal target cannot be defended by any legal
+        # capture, advancing the attacker's board is hopeless. An active past
+        # branch may instead defer that board. This only prioritizes Moves;
+        # canonical execution/submission still decides whether a rewind works.
+        attacker_board = successors.get(threat.attacker.board)
+        if (
+            not can_rewind or prefer_rewinds or attacker_board is None
+            or threat.piece.piece_type == PieceType.PAWN
+            or rules.board_view.resolve(threat.king.board) is None
+        ):
+            continue
+        if PieceMovementRules.is_slider(threat.piece.piece_type) and any(
+            rules.board_view.resolve(square.board) is None
+            for square in PathRules.intermediate_squares(threat.piece.piece_type, threat.attacker, threat.king)
+        ):
+            continue
+        target = Square5D(attacker_board, threat.attacker.x, threat.attacker.y)
+        capturable = False
+        for source in ActionRules.movable_boards(state._ensure_current_action(), manager.timelines):
+            if tracker.check_time(local_deadline):
+                return _PREPARATION_INTERRUPTED
+            position = state._resolve_position(source)
+            if position is None:
+                return None
+            for x, y, piece in position.get_all_pieces(color):
+                if not RoyalRules._attack_geometry_matches(piece, Square5D(source, x, y), target):
+                    continue
+                targeted = getattr(state, 'get_legal_moves_from_square_to_boards', None)
+                moves = (
+                    targeted(position, x, y, {target.board}) if targeted is not None
+                    else state.get_legal_moves_from_square(position, x, y)
+                )
+                if tracker.check_time(local_deadline):
+                    return _PREPARATION_INTERRUPTED
+                if any(move.destination == target for move in moves):
+                    capturable = True
+                    break
+            if capturable:
+                break
+        prefer_rewinds = not capturable
+    if tracker.check_time(local_deadline):
+        return _PREPARATION_INTERRUPTED
+    capture_boards = {square.board for square in captures}
+    king_boards = {square.board for square in kings}
+    has_king = {}
+    for board in required:
+        position = state._resolve_position(board)
+        if position is None:
+            return None
+        has_king[board] = position.find_king(state.current_turn_color) is not None
+    if (
+        not continue_strategy and len(required) < _LARGE_DEFENSE_MIN_REQUIRED
+        and not (captures or kings or not all(has_king.values()))
+    ):
+        return None
+    boards = tuple(sorted(required, key=lambda board: (
+        board not in king_boards,
+        board not in capture_boards,
+        has_king[board],
+        board.timeline, board.turn, _enum_value(board.side),
+    )))
+
+    def move_key(move):
+        return (
+            move.destination not in captures,
+            move.source not in kings,
+            move.is_branching,
+            -_required_board_progress(move, required),
+            move.piece.piece_type != PieceType.PAWN,
+            move.piece.piece_type == PieceType.KING,
+            *_required_move_sort_key(move, required),
+        )
+
+    return boards, move_key, prefer_rewinds, frozenset(captures), frozenset(kings)
+
+
+def _safe_king_moves_first(state, moves, tracker, local_deadline):
+    """Defer risky King moves, without discarding their possible continuations.
+
+    Virtual threats may still be repairable on another board. They only rank
+    the child here; deferred moves are searched normally if time remains.
+    Prepared children use canonical execution and the same wall deadline.
+    """
+    deferred = []
+    for move in moves:
+        if tracker.check_time(local_deadline):
+            return
+        child = None
+        if move.piece.piece_type == PieceType.KING:
+            child = state.clone_for_simulation()
+            if not child.execute_action_move(move):
+                continue
+            unsafe = RoyalRules(child.timeline_manager.timelines).is_in_check(state.current_turn_color)
+            if tracker.check_time(local_deadline):
+                return
+            if unsafe:
+                deferred.append(move)
+                continue
+        yield move, child
+    for move in deferred:
+        if tracker.check_time(local_deadline):
+            return
+        yield move, None
+
+
+def _prepare_required_legal_moves(
+    state: "FiveDEngine",
+    required: set[BoardCoord],
+    movable: tuple[BoardCoord, ...],
+    tracker: _BudgetTracker,
+    depth: int,
+    depth_limit: int | None,
+    local_deadline: float | None,
+) -> tuple[dict[BoardCoord, tuple[Move, ...]], tuple[BoardCoord, ...]] | object:
+    """Prepare required-board legal lists and order boards by MRV.
+
+    Required boards are generated once in the planner's canonical board order.
+    Optional boards intentionally remain outside this preparation boundary so
+    their existing lazy traversal and ordering are preserved.
+    """
+    canonical_boards = tuple(sorted(
+        movable,
+        key=lambda board: (
+            board not in required,
+            board.timeline,
+            board.turn,
+            _enum_value(board.side),
+        ),
+    ))
+    legal_by_board: dict[BoardCoord, tuple[Move, ...]] = {}
+    required_boards: list[BoardCoord] = []
+    for board in canonical_boards:
+        if board not in required:
+            continue
+        if tracker.check(depth, depth_limit, local_deadline):
+            return _PREPARATION_INTERRUPTED
+        position = state._resolve_position(board)
+        if tracker.check_time(local_deadline):
+            return _PREPARATION_INTERRUPTED
+        legal_by_board[board] = (
+            () if position is None else tuple(state.get_legal_moves(position))
+        )
+        if tracker.check_time(local_deadline):
+            return _PREPARATION_INTERRUPTED
+        required_boards.append(board)
+
+    ordered_required = tuple(sorted(
+        required_boards,
+        key=lambda board: (
+            len(legal_by_board[board]) == 0,
+            len(legal_by_board[board]),
+            board.timeline,
+            board.turn,
+            _enum_value(board.side),
+        ),
+    ))
+    return legal_by_board, ordered_required
+
+
 class ActionPlanner:
     """Enumerate complete legal Actions without mutating the caller."""
 
-    def __init__(self, budget: ActionSearchBudget | None = None):
+    def __init__(
+        self,
+        budget: ActionSearchBudget | None = None,
+        *,
+        strategy: str = "auto",
+        deadline: float | None = None,
+        track_repetition: bool = False,
+    ):
+        if strategy not in {"auto", "depth_first", "probe_then_depth_first"}:
+            raise ValueError("strategy must be auto, depth_first or probe_then_depth_first")
         self.budget = budget or ActionSearchBudget()
+        # Minimax can explicitly keep the same candidate ordering as its
+        # remaining wall budget changes. The default admission stays unchanged.
+        self._strategy = strategy
+        self._deadline = deadline
+        self._track_repetition = track_repetition
+        self._cooperative_checks = strategy != "auto"
+        self._in_probe = False
         self._tracker: _BudgetTracker | None = None
         self._search_telemetry: list[dict[str, Any]] = []
+        self._defense_order_active = False
+        self._arrival_targets = frozenset()
+
+    @property
+    def _uses_production_strategy(self) -> bool:
+        return (
+            self._strategy == "auto" and self.budget == _PRODUCTION_HYBRID_BUDGET
+        ) or (self._strategy == "probe_then_depth_first" and self._in_probe)
 
     def search(self, engine: "FiveDEngine") -> ActionSearchResult:
         """Search all bounded complete Action witnesses from ``engine``."""
         self._search_telemetry = []
+        self._in_probe = False
+        self._defense_order_active = False
+        self._arrival_targets = frozenset()
         if engine.game_state != GameState.PLAYING:
             return ActionSearchResult((), 0, "game_not_playing")
 
         state = engine.clone_for_simulation()
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
-        tracker = _BudgetTracker(self.budget)
+        tracker = _BudgetTracker(self.budget, self._deadline)
         self._tracker = tracker
+        if self._track_repetition and not tracker.check_time():
+            tracker.repeated_frontiers = repeated_frontier_counts(
+                # The candidate's submission occupies the 64th Action slot.
+                state, max_actions=63, should_stop=tracker.check_time,
+            )
         candidates: list[tuple[MoveSpec, ...]] = []
         failed_states: set[tuple] = set()
 
-        if self.budget != _PRODUCTION_HYBRID_BUDGET:
-            self._dfs(state, (), 0, tracker, candidates, failed_states)
+        if not self._uses_production_strategy and self._strategy != "probe_then_depth_first":
+            self._dfs(
+                state, (), 0, tracker, candidates, failed_states,
+                cooperative_checks=self._cooperative_checks,
+            )
             termination_reason = tracker.termination_reason
             if termination_reason is None and tracker.depth_cutoffs:
                 termination_reason = "move_depth_budget"
@@ -463,20 +795,42 @@ class ActionPlanner:
         probe_candidates_before = len(candidates)
         probe_cache_hits_before = tracker.failed_state_cache_hits
         probe_elapsed_start = time.monotonic() - tracker.started_at
+        probe_depth_limit = (
+            1 if self.budget.max_move_depth is None
+            else min(1, self.budget.max_move_depth)
+        )
         probe_deadline = tracker.started_at + 1.0
         tracker.phase_interrupted = False
-        self._dfs(
-            state,
-            (),
-            0,
-            tracker,
-            candidates,
-            failed_states,
-            depth_limit=1,
-            candidate_keys=candidate_keys,
-            local_deadline=probe_deadline,
-            cooperative_checks=True,
+        self._in_probe = True
+        probe_skipped = (
+            self._strategy == "auto" and probe_depth_limit == 1
+            and len(ActionRules.required_boards(state._ensure_current_action(), state.timeline_manager.timelines)) > 2
+            and _branches_cannot_defer_required_boards(state)
         )
+        # A Move advances at most two existing boards. When allocation/activity
+        # proves every required board must advance, a one-Move probe cannot
+        # complete an Action with three or more required boards. Keep the whole
+        # original budget for deep search; no failed-state/cache evidence is
+        # created by skipping this impossible shallow phase.
+        if not probe_skipped:
+            self._dfs(
+                state,
+                (),
+                0,
+                tracker,
+                candidates,
+                failed_states,
+                depth_limit=probe_depth_limit,
+                candidate_keys=candidate_keys,
+                local_deadline=probe_deadline,
+                cooperative_checks=True,
+            )
+        self._in_probe = False
+        if self._strategy == "probe_then_depth_first":
+            # The probe's ordering hints must not replace minimax's established
+            # board order in the deep phase. Both phases keep the same tracker.
+            self._defense_order_active = False
+            self._arrival_targets = frozenset()
         tracker.check_time(probe_deadline)
         probe_elapsed_end = time.monotonic() - tracker.started_at
         probe_interrupted = (
@@ -487,7 +841,7 @@ class ActionPlanner:
         self._record_search_phase(
             tracker=tracker,
             phase="probe",
-            depth_limit=1,
+            depth_limit=probe_depth_limit,
             elapsed_start=probe_elapsed_start,
             elapsed_end=probe_elapsed_end,
             local_slice=1.0,
@@ -501,11 +855,12 @@ class ActionPlanner:
             cutoffs_before=probe_cutoffs_before,
             candidates_after=len(candidate_keys),
         )
+        self._search_telemetry[-1]["structurally_skipped"] = probe_skipped
         tracker.phase_interrupted = False
 
         run_fallback = (
             probe_global_reason is None
-            and (probe_interrupted or probe_cutoffs_delta > 0)
+            and (probe_skipped or probe_interrupted or probe_cutoffs_delta > 0)
         )
         if run_fallback:
             fallback_cutoffs_before = tracker.depth_cutoffs
@@ -566,6 +921,7 @@ class ActionPlanner:
             tracker.explored_states,
             termination_reason,
             tracker.failed_state_cache_hits,
+            tuple(tracker.frontier_repetitions),
         )
 
     @property
@@ -718,6 +1074,14 @@ class ActionPlanner:
             found_completion = True
             if candidate_keys is None or path not in candidate_keys:
                 candidates.append(path)
+                if self._track_repetition:
+                    # Submission changes the player, not these latest boards.
+                    # Reuse this already validated leaf; no replay or outcome
+                    # search is needed to annotate the selection preference.
+                    count = (tracker.repeated_frontiers.get(
+                        frontier_key(state, action.color.opposite()), 0,
+                    ) if tracker.repeated_frontiers else 0)
+                    tracker.frontier_repetitions.append(count)
                 if candidate_keys is not None:
                     candidate_keys.add(path)
             if (
@@ -729,6 +1093,19 @@ class ActionPlanner:
 
         if tracker.check(depth, depth_limit, local_deadline):
             return found_completion
+
+        # A direct immutable threat is cheaper to prove than to serialize this
+        # whole multiverse for the transposition key. Charge the inspected state
+        # once; no failed-state cache is needed for this independently proved leaf.
+        if self._uses_production_strategy or self._strategy == "probe_then_depth_first":
+            proof = prove_direct_threat(
+                state, lambda: tracker.check_time(local_deadline),
+            )
+            if tracker.check_time(local_deadline):
+                return found_completion
+            if proof is not None:
+                tracker.explored_states += 1
+                return False
 
         # Reuse the engine ActionSearch equivalence relation, whose regression
         # tests prove that Position.move_number and commuting Action Move order
@@ -744,6 +1121,20 @@ class ActionPlanner:
             return found_completion
 
         tracker.explored_states += 1
+
+        if depth == 0 and self._uses_production_strategy:
+            proof = prove_required_board_threat(
+                state, lambda: tracker.check_time(local_deadline),
+            )
+            if proof is None:
+                proof = prove_required_board_immobile(
+                    state, lambda: tracker.check_time(local_deadline),
+                )
+            if tracker.check_time(local_deadline):
+                return found_completion
+            if proof is not None:
+                failed_states.add(key)
+                return False
 
         movable = ActionRules.movable_boards(
             action,
@@ -771,6 +1162,95 @@ class ActionPlanner:
                 ),
             )
         )
+        fixed_attackers = {}
+        one_move_probe = depth_limit == 1 and (
+            self._uses_production_strategy or self._strategy == "probe_then_depth_first"
+        )
+        if self._strategy == "probe_then_depth_first":
+            fixed_attackers = fixed_successor_attackers(
+                state, lambda: tracker.check_time(local_deadline),
+            )
+            if fixed_attackers is None:
+                return found_completion
+
+        def skip_probe_move(move):
+            if move_exposes_fixed_attacker(move, fixed_attackers):
+                return True
+            if (
+                one_move_probe
+                and not move.is_branching
+                and not required.issubset({move.source.board, move.destination.board})
+            ):
+                # A non-branching Move advances at most its source and target;
+                # it cannot change timeline activity or rewind Present. This
+                # path needs another Move, so leave it to the deep phase. Keep
+                # cutoff evidence to trigger that phase and forbid a failed-
+                # state cache entry for this deliberately incomplete probe.
+                tracker.depth_cutoffs += 1
+                return True
+            return False
+
+        move_sort_key = lambda move: _required_move_sort_key(move, required)
+        defense_order = None
+        prioritized_specs = set()
+        if (
+            depth == 0 and required and (len(required) > 2 or depth_limit == 1)
+            and self._uses_production_strategy
+            and state.timeline_manager.timelines
+        ):
+            defense_order = _required_defense_order(
+                state, required, tracker, local_deadline,
+                continue_strategy=self._defense_order_active,
+                check_rewinds=depth_limit == 1,
+            )
+            if defense_order is _PREPARATION_INTERRUPTED:
+                return found_completion
+            if defense_order is not None and (
+                len(required) >= _LARGE_DEFENSE_MIN_REQUIRED
+                or (len(required) > 2 and depth_limit != 1 and defense_order[3])
+            ):
+                self._defense_order_active = True
+
+        # This is a one-Move completion probe, not a new deep-search priority.
+        # An unsuccessful rewind must not monopolize the fallback's DFS budget.
+        if defense_order is not None and defense_order[2] and depth_limit == 1:
+            present_time = min(board.legacy_time_point for board in required)
+            # Optional sources can rewind without advancing a threatened
+            # required board. Prepare one source at a time so large frontiers
+            # do not consume the whole probe before its first execution.
+            threatened_sources = {square.board for square in defense_order[3]}
+            for board in sorted(ordered_boards, key=lambda source: (
+                source in required, source in threatened_sources,
+            )):
+                if tracker.check_time(local_deadline):
+                    return found_completion
+                position = state._resolve_position(board)
+                if position is None:
+                    continue
+                rewinds = sorted(
+                    (move for move in state.get_legal_moves(position)
+                     if move.is_branching
+                     and move.destination.board.legacy_time_point + 1 < present_time),
+                    key=lambda move: (move.destination.board.legacy_time_point, _move_sort_key(move)),
+                )
+                if tracker.check_time(local_deadline):
+                    return found_completion
+                for move in rewinds:
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    if skip_probe_move(move):
+                        continue
+                    child = state.clone_for_simulation()
+                    spec = MoveSpec.from_move(move)
+                    prioritized_specs.add(spec)
+                    if not child.execute_action_move(move):
+                        continue
+                    if self._dfs(
+                        child, path + (spec,), depth + 1, tracker, candidates, failed_states,
+                        depth_limit=depth_limit, candidate_keys=candidate_keys,
+                        local_deadline=local_deadline, cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
 
         # With exactly two required Present boards, a complete Action can be a
         # single cross-timeline Move between them.  Rank legal Moves from both
@@ -779,6 +1259,150 @@ class ActionPlanner:
         # Move that lands directly on a required board is also completion-relevant:
         # inspect only those optional Moves before ordinary required-board
         # branches.  Other optional Moves remain after required Moves as before.
+        if len(required) > 2 and self._defense_order_active and depth_limit != 1:
+            if defense_order is None:
+                defense_order = _required_defense_order(
+                    state, required, tracker, local_deadline, continue_strategy=True,
+                )
+            if defense_order is _PREPARATION_INTERRUPTED:
+                return found_completion
+            # A kingless required board may have no outgoing Move at all.
+            # Advance it by arrival before other defenses consume its sources.
+            # Keep the root's ordering hints until each board is advanced. A
+            # second immobile board must not lose its arrivals after the first.
+            # Hints never prune Moves; branches may change future mobility.
+            if depth == 0:
+                immobile = set()
+                for board in defense_order[0]:
+                    if tracker.check_time(local_deadline):
+                        return found_completion
+                    position = state._resolve_position(board)
+                    if (
+                        position is not None
+                        and position.find_king(state.current_turn_color) is None
+                        and not state.get_legal_moves(position)
+                    ):
+                        immobile.add(board)
+                if tracker.check_time(local_deadline):
+                    return found_completion
+                self._arrival_targets = frozenset(immobile)
+            immobile = self._arrival_targets & required
+            if immobile:
+                arrival_sources = defense_order[0] + tuple(
+                    board for board in ordered_boards if board not in required
+                )
+                arrivals = _immobile_arrival_moves(
+                    state, arrival_sources, immobile, defense_order[1],
+                    defense_order[3], defense_order[4], tracker, local_deadline,
+                )
+                for move in arrivals:
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    if skip_probe_move(move):
+                        continue
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                    spec = MoveSpec.from_move(move)
+                    prioritized_specs.add(spec)
+                    if self._dfs(
+                        child, path + (spec,), depth + 1, tracker, candidates, failed_states,
+                        depth_limit=depth_limit, candidate_keys=candidate_keys,
+                        local_deadline=local_deadline, cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
+
+        if len(required) > 2 and self._defense_order_active and depth_limit != 1:
+            if defense_order is None:
+                defense_order = _required_defense_order(
+                    state, required, tracker, local_deadline, continue_strategy=True,
+                )
+            if defense_order is _PREPARATION_INTERRUPTED:
+                return found_completion
+            if defense_order is not None and defense_order[3]:
+                # An attacker on a required successor may need to be captured
+                # from a different board before that successor is exposed.
+                # Prepare only those destinations, then retain all other moves
+                # in the ordinary traversal below.
+                targets = defense_order[3]
+                target_boards = {square.board for square in targets}
+                # Keep threatened King/source boards ahead of unrelated
+                # sources; canonical lane order can consume a needed defender.
+                capture_order = defense_order[0] + tuple(
+                    board for board in ordered_boards if board not in required
+                )
+                for board in capture_order:
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    position = state._resolve_position(board)
+                    if position is None:
+                        continue
+                    captures = sorted(
+                        (move for move in _legal_moves_into(state, position, target_boards)
+                         if move.destination in targets),
+                        key=defense_order[1],
+                    )
+                    for move in captures:
+                        if tracker.check(depth, depth_limit, local_deadline):
+                            return found_completion
+                        if MoveSpec.from_move(move) in prioritized_specs:
+                            continue
+                        if skip_probe_move(move):
+                            continue
+                        child = state.clone_for_simulation()
+                        if not child.execute_action_move(move):
+                            continue
+                        prioritized_specs.add(MoveSpec.from_move(move))
+                        if self._dfs(
+                            child, path + (MoveSpec.from_move(move),), depth + 1,
+                            tracker, candidates, failed_states, depth_limit=depth_limit,
+                            candidate_keys=candidate_keys, local_deadline=local_deadline,
+                            cooperative_checks=cooperative_checks,
+                        ):
+                            found_completion = True
+
+        single_required_moves = None
+        if len(required) == 1 and self._uses_production_strategy:
+            required_position = state._resolve_position(next(iter(required)))
+            if required_position is not None:
+                single_required_moves = state.get_legal_moves(required_position)
+            if tracker.check_time(local_deadline):
+                return found_completion
+
+        if single_required_moves == []:
+            # An immobile Present board can still be advanced by an optional
+            # source. Try those arrivals before unrelated optional subtrees.
+            # Targeted generation retains canonical legality and destination
+            # order. Mobile required boards keep their ordinary move priority.
+            for board in ordered_boards:
+                if board in required:
+                    continue
+                if tracker.check(depth, depth_limit, local_deadline):
+                    return found_completion
+                position = state._resolve_position(board)
+                if position is None:
+                    continue
+                arrivals = sorted(
+                    _legal_moves_into(state, position, required),
+                    key=lambda move: _required_move_sort_key(move, required),
+                )
+                for move in arrivals:
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    if skip_probe_move(move):
+                        continue
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                    prioritized_specs.add(MoveSpec.from_move(move))
+                    if self._dfs(
+                        child, path + (MoveSpec.from_move(move),), depth + 1,
+                        tracker, candidates, failed_states, depth_limit=depth_limit,
+                        candidate_keys=candidate_keys, local_deadline=local_deadline,
+                        cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
+
         if len(required) == 2:
             required_moves: list[Move] = []
             optional_progress_moves: list[Move] = []
@@ -791,7 +1415,7 @@ class ActionPlanner:
                     continue
                 if board not in required:
                     optional_boards.append(board)
-                    optional_moves = state.get_legal_moves(position)
+                    optional_moves = _legal_moves_into(state, position, required)
                     if cooperative_checks and tracker.check_time(local_deadline):
                         return found_completion
                     optional_progress_moves.extend(
@@ -832,6 +1456,8 @@ class ActionPlanner:
                 child = None
                 direct_completion = False
                 if _required_board_progress(move, required) == 2:
+                    if skip_probe_move(move):
+                        continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
                         continue
@@ -847,7 +1473,19 @@ class ActionPlanner:
                         direct_completion = child.can_submit_action()
                         if tracker.check_time(local_deadline):
                             return found_completion
-                prepared_moves.append((0 if direct_completion else 2, move, child))
+                if direct_completion:
+                    # Keep a proved complete Action immediately. Preparing a
+                    # later progress=2 move may exhaust the deadline; it must
+                    # not discard a legal completion already found in time.
+                    if self._dfs(
+                        child, path + (MoveSpec.from_move(move),), depth + 1,
+                        tracker, candidates, failed_states, depth_limit=depth_limit,
+                        candidate_keys=candidate_keys, local_deadline=local_deadline,
+                        cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
+                    continue
+                prepared_moves.append((2, move, child))
 
             prepared_moves.extend(
                 (1, move, None)
@@ -859,6 +1497,8 @@ class ActionPlanner:
                 if tracker.check(depth, depth_limit, local_deadline):
                     return found_completion
                 if child is None:
+                    if skip_probe_move(move):
+                        continue
                     child = state.clone_for_simulation()
                     if not child.execute_action_move(move):
                         continue
@@ -878,6 +1518,76 @@ class ActionPlanner:
 
             ordered_boards = tuple(optional_boards)
 
+        elif (
+            len(required) > 2
+            and self._uses_production_strategy
+            and self._defense_order_active
+        ):
+            prepared = defense_order if defense_order is not None else _required_defense_order(
+                state, required, tracker, local_deadline, continue_strategy=True,
+            )
+            if prepared is _PREPARATION_INTERRUPTED:
+                return found_completion
+            if prepared is not None:
+                required_order, move_sort_key, _, _, _ = prepared
+                ordered_boards = required_order + tuple(
+                    board for board in ordered_boards if board not in required
+                )
+
+        # MRV preparation is admitted only for the selected production hybrid
+        # strategy; explicit depth-first searches keep their board ordering.
+        elif len(required) > 2 and self._uses_production_strategy:
+            prepared = _prepare_required_legal_moves(
+                state,
+                required,
+                tuple(movable),
+                tracker,
+                depth,
+                depth_limit,
+                local_deadline,
+            )
+            if prepared is _PREPARATION_INTERRUPTED:
+                return found_completion
+            prepared_legal, ordered_required_boards = prepared
+            for board in ordered_required_boards:
+                if tracker.check(depth, depth_limit, local_deadline):
+                    return found_completion
+                legal_moves = sorted(
+                    prepared_legal[board],
+                    key=lambda move: (
+                        move.is_branching,
+                        -_required_board_progress(move, required),
+                        *_required_move_sort_key(move, required),
+                    ),
+                )
+                for move in legal_moves:
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    if skip_probe_move(move):
+                        continue
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
+                    if self._dfs(
+                        child,
+                        path + (MoveSpec.from_move(move),),
+                        depth + 1,
+                        tracker,
+                        candidates,
+                        failed_states,
+                        depth_limit=depth_limit,
+                        candidate_keys=candidate_keys,
+                        local_deadline=local_deadline,
+                        cooperative_checks=cooperative_checks,
+                    ):
+                        found_completion = True
+
+            # Optional boards retain the existing canonical order and lazy
+            # legal-move generation after all prepared required branches.
+            ordered_boards = tuple(
+                board for board in ordered_boards if board not in required
+            )
+
         for board in ordered_boards:
             if tracker.check(depth, depth_limit, local_deadline):
                 return found_completion
@@ -889,10 +1599,19 @@ class ActionPlanner:
             # No movement/rule legality is duplicated here.  All generated
             # Move varieties, including branching and cross-timeline moves,
             # are retained and passed through the engine's canonical API.
-            legal_moves = sorted(
-                state.get_legal_moves(position),
-                key=lambda move: _required_move_sort_key(move, required),
-            )
+            if len(required) > 2 and self._defense_order_active and depth_limit != 1:
+                legal_moves = _large_frontier_moves(
+                    state, position, required, move_sort_key, tracker, local_deadline,
+                )
+            elif board in required and single_required_moves is not None:
+                legal_moves = sorted(single_required_moves, key=move_sort_key)
+            else:
+                legal_moves = sorted(
+                    state.get_legal_moves(position),
+                    key=move_sort_key,
+                )
+            if prioritized_specs:
+                legal_moves = (move for move in legal_moves if MoveSpec.from_move(move) not in prioritized_specs)
             if cooperative_checks and tracker.check_time(local_deadline):
                 return found_completion
             if len(required) == 2 and board not in required:
@@ -904,12 +1623,23 @@ class ActionPlanner:
                     for move in legal_moves
                     if move.destination.board not in required
                 ]
-            for move in legal_moves:
+            if fixed_attackers or one_move_probe:
+                legal_moves = (move for move in legal_moves
+                               if not skip_probe_move(move))
+            ordered_moves = (
+                _safe_king_moves_first(state, legal_moves, tracker, local_deadline)
+                if self._defense_order_active and len(required) > 2
+                else ((move, None) for move in legal_moves)
+            )
+            for move, child in ordered_moves:
                 if tracker.check(depth, depth_limit, local_deadline):
                     return found_completion
-                child = state.clone_for_simulation()
-                if not child.execute_action_move(move):
-                    continue
+                if child is None:
+                    if skip_probe_move(move):
+                        continue
+                    child = state.clone_for_simulation()
+                    if not child.execute_action_move(move):
+                        continue
                 if self._dfs(
                     child,
                     path + (MoveSpec.from_move(move),),

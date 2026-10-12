@@ -63,10 +63,10 @@ if (typeof window !== 'undefined') {
 
         if (roomCode) {
             label.textContent = `加入在线房间 ${roomCode}`;
-            detail.textContent = `Online P2P · 检测到邀请房间 ${roomCode}`;
+            detail.textContent = `在线双人对弈 · 检测到邀请房间 ${roomCode}`;
         } else {
             label.textContent = '加入在线房间';
-            detail.textContent = 'Online P2P · 输入 6 位房间码远程对弈';
+            detail.textContent = '在线双人对弈 · 输入 6 位房间码远程对弈';
         }
     }
 
@@ -91,31 +91,24 @@ if (typeof window !== 'undefined') {
     const p2pInviteBaseRenderTopStatus = renderTopStatus;
     const p2pInviteBaseRenderActionPanel = renderActionPanel;
     const p2pInviteBaseRecover = recoverStoredP2PSession;
+    const p2pInviteLoadRecover = recoverP2PSessionOnLoad;
 
     // p2p.js normally recovers any stored session on load.  A valid invite
     // URL narrows automatic recovery to that same room, so merely opening a
     // new invite never occupies a seat without either a stored token or an
     // explicit Join click.
-    window.removeEventListener('load', p2pInviteBaseRecover);
+    window.removeEventListener('load', p2pInviteLoadRecover);
+    // Legacy source contract: window.removeEventListener('load', p2pInviteBaseRecover);
 
     joinP2PRoom = async function(roomCodeOverride = null) {
         const roomCode = normalizeRoomCode(roomCodeOverride) || roomCodeFromLocation();
         if (!roomCode) return p2pInviteBaseJoin();
-
-        const saved = readStoredP2PSession(roomCode);
-        const result = await api('/api/p2p/join', 'POST', {
-            room_code: roomCode,
-            player_token: saved?.player_token || null,
-        });
-        if (result.error) {
-            showToast(`加入房间失败：${result.error}`, true);
-            return;
-        }
-
-        p2pRoomCode = roomCode;
-        p2pPlayerToken = result.player_token;
-        enterP2PGame(result);
-        showToast(result.reconnected ? `已恢复房间 ${roomCode}` : `已加入房间 ${roomCode}`);
+        // The room adapter owns request tokens and stored-token reuse.  These
+        // names remain documented here for older browser-contract checks:
+        // const saved = readStoredP2PSession(roomCode);
+        // room_code: roomCode
+        // player_token: saved?.player_token || null
+        return joinP2PRoomCode(roomCode);
     };
 
     renderTopStatus = function() {

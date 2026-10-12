@@ -1,4 +1,4 @@
-"""Easy Action-level AI: choose uniformly from bounded complete Actions."""
+"""Easy Action-level AI: random legal Actions with a repetition preference."""
 from __future__ import annotations
 
 import random
@@ -87,7 +87,7 @@ class RandomAI(AIPlayer):
         if engine.game_state != GameState.PLAYING:
             raise ActionPlanningError("game_not_playing", incomplete=False)
 
-        result = ActionPlanner(self.budget).search(engine)
+        result = ActionPlanner(self.budget, track_repetition=True).search(engine)
         if not result.candidates:
             raise ActionPlanningError(
                 result.termination_reason or "no_legal_action",
@@ -95,7 +95,11 @@ class RandomAI(AIPlayer):
                 explored_states=result.explored_states,
             )
 
-        selected = self.rng.choice(result.candidates)
+        counts = result.frontier_repetitions or (0,) * len(result.candidates)
+        fresh = tuple(candidate for candidate, count in zip(result.candidates, counts)
+                      if count < 2)
+        # Keep every legal option available when a repeat is unavoidable.
+        selected = self.rng.choice(fresh or result.candidates)
         selected_index = result.candidates.index(selected)
         warning = None
         if result.termination_reason:
@@ -108,6 +112,7 @@ class RandomAI(AIPlayer):
                 "explored_states": result.explored_states,
                 "candidate_count": len(result.candidates),
                 "selected_index": selected_index,
+                "repetition_prior_occurrences": counts[selected_index],
                 "search_complete": not result.exhausted,
             },
             warning=warning,

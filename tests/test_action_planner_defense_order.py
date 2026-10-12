@@ -1,0 +1,349 @@
+"""Complete-Action regression for the captured 19-required-board failure."""
+import gzip
+import json
+from pathlib import Path
+
+import pytest
+
+import src.ai.action_planner as planning
+from src.ai.action_planner import (
+    AIActionPlan, ActionPlanner, _PRODUCTION_HYBRID_BUDGET,
+    apply_action_plan, engine_state_signature,
+)
+from src.data.archive import GameArchive
+from src.engine import ActionRules, FiveDEngine, Position, Timeline
+from src.engine.coordinates import BoardCoord
+from src.engine.royal_rules import RoyalRules
+from src.utils.constants import ChessColor, PieceType
+
+
+def _captured(name='easy20_nineteen_required_state'):
+    path = Path(__file__).parent / f'fixtures/{name}.json.gz'
+    engine = GameArchive.restore(json.loads(gzip.decompress(path.read_bytes())))
+    del engine._replay_origin
+    return engine
+
+
+def test_active_rewind_defers_uncapturable_required_attacker():
+    engine = _captured('easy20_active_rewind_state')
+    before = engine_state_signature(engine)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert result.candidates and len(result.candidates[0]) == 1
+    assert not planner._defense_order_active  # small roots keep ordinary MRV
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.action_history[-1].submitted
+    assert child.timeline_manager.timelines[1].latest_time == engine.timeline_manager.timelines[1].latest_time
+    assert engine_state_signature(engine) == before
+
+
+def test_active_rewind_cannot_ignore_a_second_historical_king():
+    engine = _captured('control43_active_rewind_state')
+    before = engine_state_signature(engine)
+    assert len(engine.get_required_action_boards()) == 1
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    threats = RoyalRules(engine.timeline_manager.timelines).direct_threats_against(engine.current_turn_color)
+    assert any(t.king.timeline == 3 and (t.king.x, t.king.y) == (3, 1) for t in threats)
+    assert result.candidates == () and result.termination_reason is None
+    assert result.explored_states == 1
+    assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('fixture', ['easy20_pinned_rewind_state', 'easy20_pinned_rewind_large_state'])
+def test_pinned_capture_does_not_hide_active_rewind(fixture):
+    engine = _captured(fixture)
+    before = engine_state_signature(engine)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates and len(result.candidates[0]) == 1
+    for candidate in result.candidates:
+        child = engine.clone_for_simulation()
+        apply_action_plan(child, AIActionPlan(engine.current_turn_color, candidate, before))
+        assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def test_large_mutable_king_escape_candidates_replay():
+    engine = _captured('easy20_king_escape_state')
+    before = engine_state_signature(engine)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates
+    assert result.explored_states <= 1024 and len(result.candidates) <= 24
+    for candidate in result.candidates:
+        assert len(candidate) <= 32
+        child = engine.clone_for_simulation()
+        apply_action_plan(child, AIActionPlan(engine.current_turn_color, candidate, before))
+        assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('fixture', ['easy20_twenty_six_required_state', 'seed42_fourteen_required_state'])
+def test_double_progress_solves_recovery_frontiers(fixture):
+    engine = _captured(fixture)
+    before = engine_state_signature(engine)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates
+    assert result.explored_states <= 1024 and len(result.candidates) <= 24
+    candidate = result.candidates[0]
+    assert len(candidate) < len(engine.get_required_action_boards())
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, candidate, before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def test_risky_king_moves_are_deferred_but_retained():
+    engine = _captured('easy20_king_escape_state')
+    before = engine_state_signature(engine)
+    position = engine._resolve_position(next(b for b in engine.get_required_action_boards() if b.timeline == 0))
+    moves = sorted((m for m in engine.get_legal_moves(position)
+                    if m.piece.piece_type == PieceType.KING), key=planning._move_sort_key)
+    tracker = planning._BudgetTracker(planning.ActionSearchBudget(max_seconds=30))
+    ordered = list(planning._safe_king_moves_first(engine, moves, tracker, None))
+    assert {planning.MoveSpec.from_move(m) for m, _ in ordered} == {planning.MoveSpec.from_move(m) for m in moves}
+    risks = []
+    for move, child in ordered:
+        if child is None:
+            child = engine.clone_for_simulation()
+            assert child.execute_action_move(move)
+        risks.append(RoyalRules(child.timeline_manager.timelines).is_in_check(engine.current_turn_color))
+    assert False in risks and True in risks
+    assert risks == sorted(risks)
+    assert engine_state_signature(engine) == before
+
+
+def test_late_king_safety_query_yields_no_prepared_child(monkeypatch):
+    engine = _captured('easy20_king_escape_state')
+    position = engine._resolve_position(next(b for b in engine.get_required_action_boards() if b.timeline == 0))
+    moves = [m for m in engine.get_legal_moves(position) if m.piece.piece_type == PieceType.KING]
+    now = [0.0]
+    monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
+    def delayed_safety(self, color):
+        now[0] = 6.0
+        return False
+    monkeypatch.setattr(RoyalRules, 'is_in_check', delayed_safety)
+    tracker = planning._BudgetTracker(_PRODUCTION_HYBRID_BUDGET)
+    assert not list(planning._safe_king_moves_first(engine, moves, tracker, None))
+    assert tracker.termination_reason == 'time_budget'
+
+
+def test_rewind_priority_includes_future_optional_sources():
+    def position(lane, time, pieces):
+        board = [[''] * 8 for _ in range(8)]
+        for x, y, symbol in pieces:
+            board[y][x] = symbol
+        return Position(board=board, timeline_id=lane, time_point=time,
+                        turn=BoardCoord.legacy_side_for_time_point(time), unmoved_pawns=set())
+    engine = FiveDEngine()
+    manager = engine.timeline_manager
+    manager.timelines = {
+        0: Timeline(0, positions={
+            0: position(0, 0, [(7, 7, 'K'), (7, 0, 'k')]),
+            2: position(0, 2, [(0, 0, 'r'), (7, 0, 'k')]),
+        }),
+        1: Timeline(1, owner=ChessColor.WHITE,
+                    positions={3: position(1, 3, [(0, 0, 'K'), (7, 0, 'k')])}),
+        2: Timeline(2, owner=ChessColor.WHITE, positions={2: position(2, 2, [])}),
+        -1: Timeline(-1, owner=ChessColor.BLACK, positions={2: position(-1, 2, [])}),
+        -2: Timeline(-2, owner=ChessColor.BLACK,
+                     positions={4: position(-2, 4, [(0, 7, 'Q'), (7, 7, 'K'), (7, 0, 'k')])}),
+    }
+    manager._next_positive_id = 3
+    manager._next_negative_id = -3
+    engine.current_action = ActionRules.begin(ChessColor.WHITE, manager.timelines)
+    required = ActionRules.required_boards(engine.current_action, manager.timelines)
+    assert len(required) == 3 and all(board.timeline != -2 for board in required)
+    before = engine_state_signature(engine)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert result.candidates and len(result.candidates[0]) == 1
+    assert result.candidates[0][0].source.timeline == -2
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.timeline_manager.timelines[0].latest_time == 2
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def test_large_defense_candidates_replay_and_strategy_does_not_leak():
+    engine = _captured()
+    before = engine_state_signature(engine)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert result.candidates
+    assert result.explored_states <= 1024 and len(result.candidates) <= 24
+    for path in result.candidates:
+        assert len(path) <= 32
+        child = engine.clone_for_simulation()
+        apply_action_plan(child, AIActionPlan(engine.current_turn_color, path, before))
+        assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+    assert planner._defense_order_active
+    fresh = FiveDEngine()
+    assert planner.search(fresh).candidates
+    assert not planner._defense_order_active
+
+
+def test_late_defense_preparation_is_not_a_terminal_proof(monkeypatch):
+    engine = _captured()
+    before = engine_state_signature(engine)
+    now = [0.0]
+    monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
+    for name in ('prove_direct_threat', 'prove_required_board_threat', 'prove_required_board_immobile'):
+        monkeypatch.setattr(planning, name, lambda *args: None)
+    original = planning.RoyalRules.threats_against
+    def delayed_threats(self, color):
+        result = original(self, color)
+        now[0] = 6.0
+        return result
+    monkeypatch.setattr(planning.RoyalRules, 'threats_against', delayed_threats)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert not result.candidates and result.termination_reason == 'time_budget'
+    assert result.failed_state_cache_hits == 0
+    assert engine_state_signature(engine) == before
+
+
+def test_late_rewind_move_generation_is_not_a_terminal_proof(monkeypatch):
+    engine = _captured('easy20_active_rewind_state')
+    before = engine_state_signature(engine)
+    now = [0.0]
+    monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
+    original = FiveDEngine.get_legal_moves
+    def delayed_moves(self, position=None):
+        moves = original(self, position)
+        now[0] = 6.0
+        return moves
+    monkeypatch.setattr(FiveDEngine, 'get_legal_moves', delayed_moves)
+    result = ActionPlanner(_PRODUCTION_HYBRID_BUDGET).search(engine)
+    assert not result.candidates and result.termination_reason == 'time_budget'
+    assert result.failed_state_cache_hits == 0
+    assert engine_state_signature(engine) == before
+
+
+def _three_required_at_capacity(*, empty=False):
+    engine = FiveDEngine(max_timelines=3)
+    manager = engine.timeline_manager
+    manager.timelines = {}
+    for lane in (-1, 0, 1):
+        position = Position.initial(timeline_id=lane)
+        if empty:
+            position.board = [[''] * 8 for _ in range(8)]
+        manager.timelines[lane] = Timeline(lane, positions={0: position},
+            owner=None if lane == 0 else (ChessColor.WHITE if lane > 0 else ChessColor.BLACK))
+    manager._next_positive_id = 2
+    manager._next_negative_id = -2
+    manager.refresh_activity()
+    engine.current_action = ActionRules.begin(ChessColor.WHITE, manager.timelines)
+    return engine
+
+
+def test_impossible_one_move_probe_is_skipped_but_multi_move_actions_remain():
+    engine = _three_required_at_capacity()
+    before = engine_state_signature(engine)
+    for board in engine.get_required_action_boards():
+        for move in engine.get_legal_moves(engine._resolve_position(board)):
+            child = engine.clone_for_simulation()
+            assert child.execute_action_move(move)
+            assert not child.can_submit_action()
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert result.candidates and len(result.candidates[0]) > 1
+    probe, deep = planner.search_telemetry
+    assert probe['structurally_skipped'] and probe['states_delta'] == 0
+    assert probe['depth_cutoffs_delta'] == 0 and deep['unique_candidates_delta'] > 0
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def test_skipped_probe_does_not_turn_proved_terminal_into_depth_exhaustion():
+    engine = _three_required_at_capacity(empty=True)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert not result.candidates and result.termination_reason is None
+    assert result.explored_states == 1
+    assert planner.search_telemetry[0]['structurally_skipped']
+
+
+@pytest.mark.parametrize('fixture', ['hard20_rewind_four_state', 'hard20_rewind_three_state'])
+def test_real_active_rewinds_remain_eligible_for_the_single_move_probe(fixture):
+    engine = _captured(fixture)
+    before = engine_state_signature(engine)
+    planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET)
+    result = planner.search(engine)
+    assert not planner.search_telemetry[0]['structurally_skipped']
+    assert result.candidates and len(result.candidates[0]) == 1
+    child = engine.clone_for_simulation()
+    apply_action_plan(child, AIActionPlan(engine.current_turn_color, result.candidates[0], before))
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+def _local_check_with_incoming_capture(color, blocked):
+    engine = FiveDEngine(max_timelines=3)
+    manager = engine.timeline_manager
+    time = 0 if color == ChessColor.WHITE else 1
+    def position(lane, pieces):
+        board = [[''] * 8 for _ in range(8)]
+        for x, y, symbol in pieces:
+            board[y][x] = symbol if color == ChessColor.WHITE else symbol.swapcase()
+        return Position(board, color, lane, time, unmoved_pawns=set())
+    checked = [(4, 7, 'K'), (4, 0, 'r'), (7, 0, 'k')]
+    blocked_arrivals = []
+    if blocked:
+        checked += [(x, y, 'P') for x, y in [(3, 6), (5, 6), (3, 7), (5, 7)]]
+        blocked_arrivals = [(x, y, 'P') for x in (3, 4, 5) for y in (6, 7)]
+    manager.timelines = {
+        0: Timeline(0, positions={time: position(0, checked)}),
+        1: Timeline(1, owner=ChessColor.WHITE,
+            positions={time: position(1, [(4, 0, 'R'), (7, 7, 'K'), (7, 0, 'k')] + blocked_arrivals)}),
+        -1: Timeline(-1, owner=ChessColor.BLACK,
+            positions={time: position(-1, [(7, 7, 'K'), (7, 0, 'k')] + blocked_arrivals)}),
+    }
+    manager._next_positive_id = 2
+    manager._next_negative_id = -2
+    manager.refresh_activity()
+    engine.current_turn_color = color
+    engine.current_action = ActionRules.begin(color, manager.timelines)
+    return engine
+
+
+@pytest.mark.parametrize('color', list(ChessColor))
+@pytest.mark.parametrize('blocked', [False, True])
+def test_local_king_escape_priority_keeps_required_incoming_capture(color, blocked):
+    engine = _local_check_with_incoming_capture(color, blocked)
+    before = engine_state_signature(engine)
+    required = set(engine.get_required_action_boards())
+    target = planning.Square5D(planning.BoardCoord(0, 0, color), 4, 0)
+    checked = engine._resolve_position(target.board)
+    escapes = engine.get_legal_moves_from_square(checked, 4, 7)
+    assert bool(escapes) != blocked
+    source = engine.timeline_manager.timelines[1].positions[target.board.legacy_time_point]
+    captures = [move for move in engine.get_legal_moves(source) if move.destination == target]
+    assert captures
+    tracker = planning._BudgetTracker(_PRODUCTION_HYBRID_BUDGET)
+    order = planning._required_defense_order(engine, required, tracker, None, continue_strategy=True)
+    assert (target in order[3]) == blocked
+    assert planning.Square5D(target.board, 4, 7) in order[4]
+    child = engine.clone_for_simulation()
+    assert child.execute_action_move(captures[0])
+    assert target.board not in child.get_required_action_boards()
+    assert engine_state_signature(engine) == before
+
+
+def test_late_local_king_escape_query_aborts_defense_preparation(monkeypatch):
+    engine = _local_check_with_incoming_capture(ChessColor.WHITE, False)
+    before = engine_state_signature(engine)
+    now = [0.0]
+    monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
+    original = engine.get_legal_moves_from_square
+    def delayed(*args, **kwargs):
+        moves = original(*args, **kwargs)
+        now[0] = 6.0
+        return moves
+    monkeypatch.setattr(engine, 'get_legal_moves_from_square', delayed)
+    tracker = planning._BudgetTracker(_PRODUCTION_HYBRID_BUDGET)
+    result = planning._required_defense_order(engine, set(engine.get_required_action_boards()), tracker, None)
+    assert result is planning._PREPARATION_INTERRUPTED
+    assert tracker.termination_reason == 'time_budget'
+    assert engine_state_signature(engine) == before

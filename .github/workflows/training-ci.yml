@@ -2,16 +2,9 @@ name: Local AI Training v2 CI
 
 on:
   push:
-    branches: [feat/local-ai-training-v2]
+    branches: [main, feat/local-ai-training-v2]
   pull_request:
-    branches: [main]
-    paths:
-      - "src/training/**"
-      - "scripts/training/**"
-      - "tests/training/**"
-      - "requirements-training.txt"
-      - ".github/workflows/training-ci.yml"
-      - ".github/workflows/local-ai-train.yml"
+    branches: [main, feat/local-ai-training-v2]
   workflow_dispatch:
 
 permissions:

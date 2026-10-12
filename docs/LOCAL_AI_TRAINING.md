@@ -1,8 +1,8 @@
-# Local AI Training v2（实验分支）
+# Local AI Training v2（可选训练工具）
 
-> 分支：`feat/local-ai-training-v2`
+> 分支：`main`
 >
-> 这套代码只负责本地训练实验，不会改变 `main` 的 Easy / Medium / Hard 默认 PvE，也不会把模型权重、训练数据或 PyTorch 依赖带进普通游戏安装。
+> 这套工具随主线提供，用于本地训练实验。它不会替换 Easy / Medium / Hard 默认 PvE，也不会把模型权重、训练数据或 PyTorch 依赖带进普通游戏安装。训练模型仍需单独评测。
 
 ## 0. 架构与安全边界
 
@@ -30,7 +30,7 @@ apply_action_plan()
 
 训练代码位于 `src/training/`；主游戏代码不顶层 import Torch。
 
-## 1. 下载训练分支
+## 1. 下载主线代码
 
 ### Git 方法（推荐）
 
@@ -38,8 +38,8 @@ apply_action_plan()
 git clone https://github.com/Polarzen/5Dchess.git
 cd 5Dchess
 git fetch origin
-git switch feat/local-ai-training-v2
-git pull
+git switch main
+git pull --ff-only
 ```
 
 确认：
@@ -52,12 +52,12 @@ git log -1 --oneline
 第一行必须是：
 
 ```text
-feat/local-ai-training-v2
+main
 ```
 
 ### GitHub Download ZIP
 
-在 GitHub 仓库页面先把左上角 branch selector 切换到 `feat/local-ai-training-v2`，再选择 **Code → Download ZIP**。解压后确认存在：
+在 GitHub 仓库页面选择 `main`，再选择 **Code → Download ZIP**。解压后确认存在：
 
 ```text
 src/training/
@@ -65,7 +65,7 @@ scripts/training/
 requirements-training.txt
 ```
 
-如果没有这些目录，说明下载的是 `main`，不是训练分支。
+如果没有这些目录，请更新到包含训练工具的最新主线版本。
 
 ## 2. Python 3.11 与训练虚拟环境
 
@@ -702,11 +702,11 @@ Local AI Training v2 第一版故意不包含：
 
 ## 20. GitHub Actions 云端 CPU 训练
 
-实验分支提供手动 workflow **Local AI Cloud Training**。操作路径：
+主线提供手动 workflow **Local AI Cloud Training**。操作路径：
 
 1. 打开 GitHub 仓库的 **Actions**。
 2. 选择 **Local AI Cloud Training**，点击 **Run workflow**。
-3. Branch 选择 `feat/local-ai-training-v2`，填写参数后再次点击 **Run workflow**。
+3. Branch 选择 `main`，填写参数后再次点击 **Run workflow**。
 
 workflow 只支持 `workflow_dispatch`，不会因 push、pull request 或 schedule 自动长训。它固定使用
 GitHub 标准 `ubuntu-24.04`、Python 3.11 和 PyTorch 官方 CPU wheel；没有 CUDA，也不会下载外部模型。

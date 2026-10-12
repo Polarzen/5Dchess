@@ -40,6 +40,7 @@ body {
     overflow: hidden;
 }
 button { font: inherit; }
+.repetition-warning { padding: 12px; border-left: 3px solid #e0b465; background: #4a3c26; color: #ffe2ac; font-size: 13px; line-height: 1.7; }
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
 
@@ -92,6 +93,56 @@ button { font: inherit; }
 .menu-icon { grid-row: 1 / 3; font-size: 34px; text-align: center; }
 .menu-card strong { font-size: 17px; }
 .menu-card small { color: var(--muted); }
+
+/* Onboarding stays separate from the live game and is available at any time. */
+#menu-screen { overflow-y: auto; padding: 28px 20px; }
+.tutorial-entry { grid-column: 1 / -1; border-color: #8fba99; background: #293d35; }
+.tutorial-entry:hover { border-color: #b3e9be; background: #314b40; }
+#tutorial-dialog {
+    width: min(930px, calc(100vw - 24px)); max-height: calc(100dvh - 28px);
+    padding: 26px; border: 1px solid #707482; border-radius: 18px;
+    color: var(--text); background: #272931; box-shadow: 0 30px 100px #0008;
+    overflow-y: auto;
+}
+#tutorial-dialog::backdrop { background: #101219d9; }
+.tutorial-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; position: sticky; top: 0; background: #272931; z-index: 2; padding-bottom: 8px; }
+.tutorial-heading h2 { font-size: 26px; margin: 6px 0 0; }
+.tutorial-eyebrow { color: #b7d8bd; letter-spacing: .1em; font-size: 12px; }
+.tutorial-isolation { color: #c5c9d3; font-size: 14px; line-height: 1.7; }
+#tutorial-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
+.tutorial-tab { border: 1px solid #565a69; border-radius: 7px; background: #343741; color: #e8eaf0; padding: 10px 12px; cursor: pointer; }
+.tutorial-tab[aria-current="step"] { background: #d7e7d8; color: #1e3829; border-color: #d7e7d8; }
+.tutorial-description { line-height: 1.8; margin: 12px 0; color: #d2d5df; }
+.tutorial-instruction { background: #3c3451; border-left: 3px solid #b9a0f1; padding: 12px 16px; line-height: 1.7; }
+.tutorial-state { display: flex; gap: 22px; flex-wrap: wrap; font-size: 14px; margin: 16px 0; }
+.tutorial-boards { display: flex; gap: 16px; flex-wrap: wrap; align-items: start; margin-bottom: 20px; }
+.tutorial-board { padding: 8px; background: #353842; border: 2px solid #777b86; border-radius: 9px; }
+.tutorial-board.required { border-color: #fa7373; }
+.tutorial-board h3 { font-size: 12px; font-weight: 500; margin: 0 0 8px; max-width: 228px; color: #f0f1f5; }
+.tutorial-grid { width: min(224px, calc(100vw - 104px)); aspect-ratio: 1; display: grid; grid-template-columns: repeat(8, 1fr); }
+.tutorial-cell { min-width: 0; aspect-ratio: 1; border: none; padding: 0; font-size: 26px; line-height: 1; cursor: pointer; position: relative; border-radius: 0; }
+.tutorial-cell.light { background: var(--light-cell); }
+.tutorial-cell.dark { background: var(--dark-cell); }
+.tutorial-cell:disabled { opacity: 1; cursor: default; }
+.tutorial-cell.white-piece { color: #fff; text-shadow: 0 1px 2px #000, 1px 0 1px #000; }
+.tutorial-cell.black-piece { color: #242424; }
+.tutorial-cell.source { box-shadow: inset 0 0 0 3px #008ba0; }
+.tutorial-cell.target { background: #7395ea; color: #172c60; box-shadow: inset 0 0 0 3px #355ed3; }
+.tutorial-cell.arrival { background: #a2c877; }
+#tutorial-dialog button:focus-visible { outline: 3px solid #91d7ff; outline-offset: 3px; }
+#tutorial-submit { max-width: 320px; }
+.tutorial-rules { margin: 18px 0; color: #c4c8d3; font-size: 14px; line-height: 1.8; }
+.tutorial-rules summary { cursor: pointer; color: #e4e7f0; }
+.tutorial-footer { display: flex; justify-content: space-between; gap: 14px; padding-top: 16px; border-top: 1px solid #4f5360; }
+.tutorial-footer .submit-btn { width: auto; margin: 0; min-width: 160px; }
+@media (max-width: 600px) {
+    #menu-screen { justify-content: flex-start; gap: 20px; }
+    #tutorial-dialog { padding: 18px; }
+    .tutorial-heading h2 { font-size: 21px; }
+    .tutorial-heading .ghost-btn { flex-shrink: 0; }
+    .tutorial-tab { font-size: 12px; padding: 8px; }
+    .tutorial-boards { justify-content: center; }
+}
 
 /* Game shell */
 #game-screen { flex-direction: column; }

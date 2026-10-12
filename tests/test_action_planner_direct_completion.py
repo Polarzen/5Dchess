@@ -85,3 +85,32 @@ def test_direct_submit_candidate_is_found_before_unsafe_progress2_dead_end(monke
 
     assert result.candidates
     assert result.candidates[0][0].destination.x == 1
+
+
+def test_later_direct_completion_timeout_keeps_an_earlier_witness(monkeypatch):
+    required = (REQUIRED_A, REQUIRED_B)
+    clock = [0.0]
+    monkeypatch.setattr('src.ai.action_planner.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr(ActionRules, 'required_boards', staticmethod(
+        lambda action, timelines: required if action == 'root' else ()))
+    monkeypatch.setattr(ActionRules, 'movable_boards', staticmethod(
+        lambda action, timelines: required if action == 'root' else ()))
+    monkeypatch.setattr(ActionSearch, '_state_key', staticmethod(lambda state: (state.label,)))
+
+    def execute(self, move):
+        self.label = str(move.destination.x)
+        return True
+
+    def submit(self):
+        if self.label == '1':
+            clock[0] = 2.0
+        return self.label != 'root'
+
+    monkeypatch.setattr(_FakeEngine, 'execute_action_move', execute)
+    monkeypatch.setattr(_FakeEngine, 'can_submit_action', submit)
+    engine = _FakeEngine()
+    result = ActionPlanner(ActionSearchBudget(8, 8, 4, 1.0)).search(engine)
+    assert result.termination_reason == 'time_budget'
+    assert len(result.candidates) == 1
+    assert result.candidates[0][0].destination.x == 0
+    assert engine.label == 'root'

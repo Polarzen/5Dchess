@@ -1,12 +1,14 @@
-# ♟️ 5D Chess with Multiverse Time Travel
+# ♟️ 时线棋局 — 多时间线国际象棋
 
-一个使用 Python 实现的 **5D Chess / 多时间线国际象棋项目**。核心引擎使用 canonical 4D 坐标描述空间、时间与时间线移动，并通过不可变历史棋盘、Action / The Present、RoyalRules、Action 级终局搜索以及多棋盘 Web 界面实现完整的 5D 对局基础。
+一个使用 Python 独立实现的 **多时间线国际象棋开源项目**。核心引擎使用 canonical 4D 坐标描述空间、时间与时间线移动，并通过不可变历史棋盘、Action / The Present、RoyalRules、Action 级终局搜索以及多棋盘 Web 界面实现完整的 5D 对局基础。
 
-> **当前状态：核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2 已完成。**
+> **项目定位与灵感来源：** 本项目的玩法灵感来自 [《5D Chess With Multiverse Time Travel》](https://store.steampowered.com/app/1349230/5D_Chess_With_Multiverse_Time_Travel/)，代码与项目自制素材独立制作。本项目与该游戏的开发者、发行商不存在隶属、合作或授权关系，也不是该商业游戏的官方开源版本。原作名称仅用于说明灵感来源，不表示获得其认可或背书。
+
+> **当前状态：已实现核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2。规则修正与长局验证的结果和限制见 [验收记录](docs/arena-acceptance-status.md)。**
 >
-> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training-v2` 实验分支中。
+> 主线包含可选的本地 AI 训练工具；普通游戏安装不需要 PyTorch，也不附带模型权重。EXE 打包已移出项目范围。
 >
-> **当前 `feat/local-ai-training-v2` 仅为实验训练分支，未合并 `main`。Windows 本地训练步骤见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。**
+> **Windows 本地训练步骤见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。训练模型仍需独立评测，不替换 Web 的默认 Easy / Medium / Hard AI。**
 
 ---
 
@@ -46,6 +48,8 @@ Vector4D(dx, dy, dt, dl)
 | Pawn | 颜色相关的 Y / L 前进与 X-Y / T-L 捕获 |
 
 Pawn 另外支持首次双步、Timeline 双步中间 Board 检查、Queen promotion 与同 Board en passant。
+
+标准开局的王车易位检查易位权、王车位置与通路，并禁止王在本棋盘受将军时易位或经过受攻击格；最终落点和全局提交仍须满足王安全。
 
 ### PathRules / MultiverseBoardView
 
@@ -121,6 +125,8 @@ Board-local successor 每个 Move 都推进自己的 side，但 `current_turn_co
 
 `RoyalRules` 检查整个 multiverse 的 4D 攻击，包括历史 King 实例与跨时间 / 跨 Timeline 攻击。
 
+时间旅行可能让一张棋盘没有己方王，或同时存在多个己方王。王离开后，其他棋子仍可正常走子；同色王有多个时，每一个都必须满足王安全规则，提交行动时还会检查历史中的王。
+
 终局采用 Action 级搜索：
 
 ```text
@@ -167,6 +173,17 @@ L-1        [Board] → [Board]
 - canonical BoardCoord Web API
 - PvP `execute_action_move()` + 显式 `Submit Action`
 - 棋盘缩放与 Present 定位
+- 首次游玩的互动教程，以及菜单和对局内的常驻教程入口
+- 走子后自动定位实际到达的后继棋盘，分支落点显示在新时间线上
+- 区分必须推进的棋盘、等待对手的棋盘和历史落点，并解释不能提交的原因
+
+### 第一次玩
+
+首次打开普通主页会展示教程，也可以点击菜单中的“第一次玩？从这里开始”，或对局顶部的“新手教程”。三个练习依次演示普通走子与提交、跨时间线移动、回到历史生成分支。每课都要完成“选棋子 → 点落点 → 提交行动”，不会修改正在进行的本地或在线对局。
+
+关闭后浏览器会记住选择，随时可以重新打开。实战中先推进红框棋盘；红框清空后，还必须保护所有王，再点击“提交行动”才会换人。跨线移动后看高亮的后继棋盘，原历史棋盘会保留。
+
+若最近 64 个已提交行动中，所有时间线的最新布局、相对时间位置、行棋方及特殊走子权出现至少三次相同配置，行动面板会显示往返走棋提醒。它只是提示：5D 历史仍不同，不会自动判和，也不会禁止合法走子。尚未提交的行动不显示提醒，改变走法后按新局面重新判断。
 
 启动：
 
@@ -192,6 +209,9 @@ Web 默认使用 `127.0.0.1`，首选端口为 `5050`；启动前会逐个探测
 候选（到 `65535` 为止）。搜索范围耗尽时会直接报错。无参数启动与
 `--web` 的端口行为相同；`--port` 在 CLI、Replay、PvP 或 PvE 模式下会被忽略并
 给出提示。
+
+当前 Web 请求、AI 超时、P2P 轮询与重试行为见
+[`docs/WEB_RELIABILITY.md`](docs/WEB_RELIABILITY.md)。
 
 ---
 
@@ -392,17 +412,12 @@ PvE 现在使用 canonical Action 级 AI。AI 在引擎快照上规划一个可�
 
 搜索由状态数、候选 Action 数、单 Action Move 深度和单调时钟共同设限。预算耗尽不会被误判为将杀、逼和或“无合法 Action”：已有完整候选时从中安全选择；尚无完整候选时返回明确的 bounded-search failure 并停止本次 AI 执行。早期 `choose_move()` 和单 Move Opening Book 仅作为兼容接口保留，不进入 canonical PvE 主路径。
 
-AI Local Training、自对弈数据、模型结构与 checkpoint 管理尚未进入主线。当前实验分支为：
+主线的 `src/training/` 提供可选的本地训练、自对弈数据生成、模型结构与 checkpoint 管理。
+训练依赖通过 `requirements-training.txt` 单独安装；普通游戏不会加载 PyTorch，模型权重和训练数据不随源码分发。
 
-```text
-feat/local-ai-training-v2
-```
-
-规则、Web 与 Replay / Storage 主线不会直接混入本地训练实现。
-
-该实验分支提供手动触发的 **Local AI Cloud Training**：GitHub-hosted CPU runner 可独立完成
+手动触发的 **Local AI Cloud Training** 可让 GitHub-hosted CPU runner 独立完成
 canonical self-play、训练、Arena 与可续训 Artifact；启动后本地浏览器和电脑均可关闭。它不表示
-训练模型已完成，也不会把权重或训练代码自动合并到 `main`。详见训练文档。
+模型已达到可发布棋力，也不会自动部署权重或替换 Web 默认 AI。详见训练文档。
 
 ---
 
@@ -440,6 +455,7 @@ src/
 │   ├── async_writer.py
 │   └── db.py
 ├── gui/                  # legacy Pygame prototype
+├── training/             # optional local / cloud training tools
 ├── ai/
 └── main.py
 
@@ -484,7 +500,7 @@ python src/main.py --web
 
 ## 🧪 GitHub Actions
 
-Pull Request / `main` 更新会运行 Python 3.11 + MySQL 8.0 CI，验证：
+面向 `main` 或整合分支 `feat/local-ai-training-v2` 的 Pull Request，以及这两个分支的更新，会运行 Python 3.11 + MySQL 8.0 CI，验证：
 
 ```text
 MySQL 8.0 service
@@ -492,6 +508,12 @@ MySQL 8.0 service
 pip install -r requirements.txt
         ↓
 python -m compileall -q src
+        ↓
+Browser / tutorial regressions
+├── JavaScript syntax checks
+├── node tests/test_browser_reliability.js
+├── node tests/test_p2p_invite.js
+└── node tests/test_tutorial_browser.js
         ↓
 Action loop regression
 └── timeout 60s python -m pytest -q tests/test_action_loop_guards.py tests/test_action_warning_web.py
@@ -513,6 +535,10 @@ full pytest
 ```
 
 P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup、对手离线时暂停 Move / Submit Action、room-code-only 邀请 URL、非法 query 降级以及 Hotseat / Online 模式隔离。
+
+同样的分支和 PR 还会运行 **Local AI Training v2 CI**（CPU 训练 smoke）与 **Planner Regression**。
+Planner 使用仓库内的故障局面和 canonical 回放测试，不依赖会过期的模型 Artifact；它验证规划正确性、预算和终局证明，不代表完整对局棋力。
+训练 smoke 始终运行，确保引擎与 AI 改动也覆盖训练兼容性。长时间训练和模型 Arena 仍需手动触发。
 
 开发流程：
 
@@ -548,7 +574,7 @@ Local Hotseat PvP              ✅
 Online P2P / Cloudflare Tunnel ✅
 Canonical Action AI / PvE      ✅
 
-AI Local Training              独立分支 / 下一大阶段
+AI Local Training              可选训练工具已提供；模型棋力继续评测
 EXE                            已移出项目范围
 ```
 
@@ -556,4 +582,6 @@ EXE                            已移出项目范围
 
 ## 📄 License
 
-MIT License
+本项目有权许可的代码、文档与自制素材采用 [MIT License](LICENSE)。使用、修改或分发时，请保留许可证要求的版权及许可声明。
+
+第三方依赖、外部引用内容及其名称、标识保留各自的权利与许可条件，不因本项目采用 MIT License 而获得重新授权。本项目的许可证不涵盖灵感来源游戏的代码、素材或品牌标识。

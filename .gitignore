@@ -1,6 +1,8 @@
 # Python
 .venv/
 .venv-training/
+.venv311/
+.planner-work/
 __pycache__/
 *.pyc
 *.pyo
