@@ -123,6 +123,35 @@ def _square_payload(square) -> dict[str, Any]:
     }
 
 
+def _move_display_notation(move: Move) -> str:
+    """UI coordinates use a8 at row zero; keep legacy archive notation intact."""
+    def lane_label(lane):
+        return f'L{lane:+d}' if lane else 'L0'
+
+    def board_label(board):
+        side = '白方' if board.side == ChessColor.WHITE else '黑方'
+        return f'{lane_label(board.timeline)} · T{board.turn} {side}'
+
+    def square_label(square):
+        return f'{chr(97 + square.x)}{8 - square.y}'
+
+    source, destination = move.source, move.destination
+    target = square_label(destination)
+    if destination.board != source.board:
+        target = f'{board_label(destination.board)} {target}'
+    separator = '×' if move.captured else '→'
+    text = f'{board_label(source.board)}：{square_label(source)} {separator} {target}'
+    if move.promotion:
+        text += f'={move.promotion.value}'
+    if move.is_castling:
+        text += '（短易位）' if destination.x == 6 else '（长易位）'
+    if move.is_en_passant:
+        text += '（吃过路兵）'
+    if move.is_branching and move.created_timeline is not None:
+        text += f'（新分支 {lane_label(move.created_timeline)}）'
+    return text
+
+
 def _move_payload(move: Move) -> dict[str, Any]:
     arrival = move.destination.board.next()
     if move.is_branching:
@@ -150,6 +179,7 @@ def _move_payload(move: Move) -> dict[str, Any]:
         "result_source_board": _coord_payload(move.source.board.next()),
         "result_destination_board": _coord_payload(arrival) if arrival else None,
         "notation": move.to_notation(),
+        "display_notation": _move_display_notation(move),
     }
 
 
@@ -748,7 +778,9 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
         "game_state": engine.game_state.name,
         "turn": engine.current_turn_color.value,
         "move_counter": engine.move_counter,
+        "action_counter": len(engine.action_history),
         "move_history": [move.to_notation() for move in engine.move_history],
+        "move_history_display": [_move_display_notation(move) for move in engine.move_history],
         "last_move": last_move,
         "active_timeline_id": engine.timeline_manager.active_timeline_id,
         "board": current_position.board,  # compatibility

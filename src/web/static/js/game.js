@@ -642,7 +642,8 @@ async function executeCanonicalMove(move, context = captureSession(), fingerprin
         clearSelection(false);
         updateAll();
         focusBoard(focusedBoardKey);
-        if (!gameState.rule_warning) showToast(localizePlayerText(move.notation, '走子完成'));
+        if (!gameState.rule_warning) showToast(localizePlayerText(
+            (result.move || result.last_move || move).display_notation, '走子完成'));
     } catch (error) {
         if (ownsMutation(owner)) {
             showToast('走子失败，请稍后重试', true);
@@ -802,7 +803,11 @@ function surfaceRuleWarning() {
 function renderTopStatus() {
     const info = document.getElementById('game-info');
     const present = gameState.present;
-    if (info) info.textContent = `${modeLabel(mode)} · 第 ${gameState.move_counter || 0} 个行动`;
+    if (info) {
+        const submitted = Number.isInteger(gameState.action_counter)
+            ? `已提交 ${gameState.action_counter} 个行动 · ` : '';
+        info.textContent = `${modeLabel(mode)} · ${submitted}共 ${gameState.move_counter || 0} 次走子`;
+    }
 
     const status = document.getElementById('top-status');
     if (!status) return;
@@ -1160,7 +1165,7 @@ function renderInspector() {
 function renderHistory() {
     const container = document.getElementById('move-history');
     container.innerHTML = '';
-    const history = gameState.move_history || [];
+    const history = gameState.move_history_display || gameState.move_history || [];
     if (!history.length) {
         container.textContent = '(无)';
         return;

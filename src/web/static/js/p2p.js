@@ -435,7 +435,8 @@ executeCanonicalMove = async function(move) {
         focusedBoardKey = moveArrivalBoardKey(result.last_move || result.move || move);
         if (applyP2PState(result, context, owner) && !gameState.rule_warning) {
             focusBoard(focusedBoardKey);
-            showToast(localizePlayerText(move.notation, '走子完成'));
+            showToast(localizePlayerText(
+                (result.move || result.last_move || move).display_notation, '走子完成'));
         }
     } catch (error) {
         if (ownsMutation(owner)) {

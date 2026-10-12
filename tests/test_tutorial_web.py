@@ -60,6 +60,7 @@ def test_branch_response_points_to_arrival_and_requires_explicit_submit(client):
     assert state['move'] == state['last_move']
     assert state['move']['result_source_board']['key'] == '0:3'
     assert state['move']['result_destination_board']['key'] == '1:1'
+    assert state['move']['display_notation'] == 'L0 · T1 白方：d4 → L0 · T0 白方 d4（新分支 L+1）'
     assert state['turn'] == 'white'
     assert state['action']['can_submit'] and state['action']['submit_blocker'] is None
     assert next(b for b in state['boards'] if b['key'] == '1:1')['board'][4][3] == 'R'
@@ -67,6 +68,38 @@ def test_branch_response_points_to_arrival_and_requires_explicit_submit(client):
     result = client.post('/api/game/submit_action', json={})
     assert result.status_code == 200
     assert result.json['turn'] == 'black'
+
+
+def test_action_counter_changes_only_on_submission_and_display_matches_tutorial(client):
+    pieces = {(0, 7): 'K', (7, 0): 'k', (4, 6): 'P'}
+    engine = engine_with(position(0, 0, pieces), position(1, 0, pieces))
+    for timeline in engine.timeline_manager.timelines.values():
+        timeline.positions[0].unmoved_pawns.add((4, 6))
+    _game_session['mode_instance'].engine = engine
+    initial = client.get('/api/game/state').json
+    assert initial['action_counter'] == initial['move_counter'] == 0
+    for lane in (0, 1):
+        state = client.get('/api/game/state').json
+        source = next(b['coord'] for b in state['boards'] if b['key'] == f'{lane}:0')
+        moves = client.post('/api/game/legal_moves_5d', json={'board': source, 'x': 4, 'y': 6}).json['moves']
+        move = next(m for m in moves if m['destination']['board']['key'] == f'{lane}:0'
+                    and m['to'] == [4, 4])
+        response = client.post('/api/game/move_5d', json=move)
+        assert response.status_code == 200
+        state = response.json
+        assert state['action_counter'] == 0
+        assert state['move_counter'] == state['action']['move_count'] == lane + 1
+        label = 'L0' if lane == 0 else 'L+1'
+        assert state['move']['display_notation'] == f'{label} · T0 白方：e2 → e4'
+        assert state['move_history_display'][-1] == state['move']['display_notation']
+        # The new presentation must not rewrite the legacy storage/API notation.
+        assert state['move']['notation'] == state['move_history'][-1] == engine.move_history[-1].to_notation()
+        assert state['move']['notation'].endswith('e7-e5')
+    submitted = client.post('/api/game/submit_action', json={})
+    assert submitted.status_code == 200
+    assert submitted.json['action_counter'] == 1
+    assert submitted.json['move_counter'] == 2
+    assert submitted.json['action']['move_count'] == 0
 
 
 def test_submit_blocker_explains_second_king_in_check(client):

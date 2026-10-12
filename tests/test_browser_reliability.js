@@ -517,6 +517,31 @@ function testRepetitionBannerShowsAndClearsWithoutChangingGame() {
     assert.equal(banner.textContent, '');
 }
 
+function testActionAndMoveCountersRemainDistinct() {
+    const context = loadClient(true);
+    const info = context.document.getElementById('game-info');
+    vm.runInContext(`mode = 'pvp'; gameState = {game_state: 'PLAYING', turn: 'white',
+        move_counter: 2, action_counter: 0}; renderTopStatus();`, context);
+    assert.match(info.textContent, /已提交 0 个行动.*共 2 次走子/);
+    vm.runInContext('gameState.action_counter = 1; renderTopStatus();', context);
+    assert.match(info.textContent, /已提交 1 个行动.*共 2 次走子/);
+    vm.runInContext('delete gameState.action_counter; renderTopStatus();', context);
+    assert.match(info.textContent, /共 2 次走子/);
+    assert.doesNotMatch(info.textContent, /行动/);
+}
+
+function testHistoryUsesBoardCoordinatesWithLegacyFallback() {
+    const context = loadClient(true);
+    const rows = [];
+    context.document.getElementById('move-history').appendChild = row => rows.push(row.textContent);
+    vm.runInContext(`gameState = {move_history: ['(T0) e7-e5'],
+        move_history_display: ['L0 · T0 白方：e2 → e4']}; renderHistory();`, context);
+    assert.deepEqual(rows, ['1. L0 · T0 白方：e2 → e4']);
+    rows.length = 0;
+    vm.runInContext('delete gameState.move_history_display; renderHistory();', context);
+    assert.deepEqual(rows, ['1. (T0) e7-e5']);
+}
+
 (async () => {
     await testRequestDeadline();
     await testAbortAwareAndBodyDeadlines();
@@ -538,6 +563,8 @@ function testRepetitionBannerShowsAndClearsWithoutChangingGame() {
     await testSuccessfulMoveRerendersAndEnablesSubmitButton();
     testArrivalUsesCreatedBranchAndExplainsUnsafeSubmission();
     testRepetitionBannerShowsAndClearsWithoutChangingGame();
+    testActionAndMoveCountersRemainDistinct();
+    testHistoryUsesBoardCoordinatesWithLegacyFallback();
     console.log('Browser reliability tests passed');
 })().catch(error => {
     console.error(error);

@@ -90,9 +90,14 @@ def test_tutorial_isolated_from_online_room_and_branch_response_is_recorded():
     assert response.json['move'] == response.json['last_move']
     assert response.json['move']['created_timeline'] == 1
     assert response.json['move']['result_destination_board']['key'] == '1:1'
+    assert response.json['action_counter'] == 0
+    assert response.json['move_counter'] == 1
+    assert response.json['move']['display_notation'] == 'L0 · T1 白方：d4 → L0 · T0 白方 d4（新分支 L+1）'
+    assert response.json['move_history_display'][-1] == response.json['move']['display_notation']
     assert response.json['turn'] == 'white'
     submitted = host.post('/api/p2p/submit', json=auth)
     assert submitted.status_code == 200 and submitted.json['turn'] == 'black'
+    assert submitted.json['action_counter'] == 1
 
 
 def test_both_online_players_receive_same_nonterminal_repetition_advisory():
