@@ -23,7 +23,10 @@ class OnlineSaveStore:
 
     @staticmethod
     def _encode(payload: dict) -> bytes:
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True,
+        # Engine maps use integer lane/time keys. Normalize them to JSON keys
+        # before sorting: numeric 2, 10 and string "2", "10" sort differently.
+        normalized = json.loads(json.dumps(payload, ensure_ascii=False))
+        return json.dumps(normalized, ensure_ascii=False, sort_keys=True,
                           separators=(",", ":")).encode("utf-8")
 
     @staticmethod
@@ -65,9 +68,18 @@ class OnlineSaveStore:
     def _read(self, save_id: str) -> dict:
         envelope = json.loads(self._path(save_id).read_text(encoding="utf-8"))
         payload = envelope["payload"]
-        if (payload["version"] != 1 or payload["save_id"] != save_id
-                or hashlib.sha256(self._encode(payload)).hexdigest() != envelope["sha256"]):
+        if payload["version"] != 1 or payload["save_id"] != save_id:
             raise ValueError("invalid checkpoint")
+        digest = hashlib.sha256(self._encode(payload)).hexdigest()
+        if digest != envelope["sha256"]:
+            # v0.1.2 wrote numeric maps in numeric order. json.loads preserves
+            # that wire order, so verify the exact former encoding as well.
+            # This keeps old long games readable without bypassing integrity
+            # checks or rewriting the user's file.
+            legacy = json.dumps(payload, ensure_ascii=False,
+                                separators=(",", ":")).encode("utf-8")
+            if hashlib.sha256(legacy).hexdigest() != envelope["sha256"]:
+                raise ValueError("invalid checkpoint")
         return payload
 
     def load(self, save_id: str):

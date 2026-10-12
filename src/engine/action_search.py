@@ -42,17 +42,26 @@ def _clone_state_for_action_search(engine: "FiveDEngine") -> "FiveDEngine":
     ``GameArchive`` may attach ``_replay_origin`` dynamically.  That JSON
     snapshot is storage/replay metadata rather than rule state, but the engine's
     simulation clone deliberately fails closed on unknown dynamic attributes.
-    For such archive-decorated roots, preserve the legacy behavior once via a
-    conservative deepcopy, remove only the known archive-only marker on that
-    isolated copy, then enter the normal validated simulation-clone contract.
-    Descendants therefore use the fast clone without weakening the engine's
-    fail-closed handling for any other dynamic state.
+    A canonical engine can borrow its fields in a temporary, read-only shell,
+    excluding only this marker, then copy rule state once through the validated
+    simulation-clone contract. No source field is changed. Subclasses retain
+    the conservative deepcopy path and unknown rule attributes still fail
+    closed. Descendants never carry the archive snapshot into their search.
     """
     if not hasattr(engine, "_replay_origin"):
         return engine.clone_for_simulation()
 
-    sanitized = deepcopy(engine)
-    delattr(sanitized, "_replay_origin")
+    from src.engine.engine import FiveDEngine
+
+    if type(engine) is FiveDEngine:
+        sanitized = object.__new__(FiveDEngine)
+        sanitized.__dict__ = {
+            name: value for name, value in vars(engine).items()
+            if name != "_replay_origin"
+        }
+    else:
+        sanitized = deepcopy(engine)
+        delattr(sanitized, "_replay_origin")
     return sanitized.clone_for_simulation()
 
 

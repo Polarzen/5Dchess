@@ -1,7 +1,7 @@
 """5D Chess replay mode with Action-aware deterministic snapshots."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from src.data.archive import GameArchive
 from src.engine.action import Action
@@ -9,7 +9,7 @@ from src.engine.engine import FiveDEngine
 from src.engine.move_generator import Move
 from src.engine.timeline import TimelineManager
 from src.modes.base import GameModeBase
-from src.utils.constants import ChessColor
+from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
 
 
@@ -148,12 +148,44 @@ class ReplayMode(GameModeBase):
             )
         temp = GameArchive.restore_origin(origin)
         self.snapshots = [GameArchive.capture(temp)]
+        last_submitted = len(final_engine.action_history) - 1
+        pending_outcome = None
         for step in self.steps:
+            if pending_outcome is not None:
+                # Execution assumes generated Moves. A later Action is a valid
+                # witness only if each recorded Move is also legal today.
+                move = step.move
+                position = temp._resolve_position(move.source.board)
+                legal = (temp.get_legal_moves_from_square_to_boards(
+                    position, move.source.x, move.source.y, {move.destination.board},
+                ) if position is not None else ())
+                if replace(move, created_timeline=None) not in legal:
+                    # Preserve old replay compatibility (e.g. archives made
+                    # before castling-rule fixes). Such a Move is NOT proof:
+                    # use the original full outcome check at the prior boundary.
+                    prior = GameArchive.restore(pending_outcome)
+                    prior._check_multiverse_game_result()
+                    if prior.game_state != GameState.PLAYING:
+                        raise ValueError("Replay continues after a terminal Action")
+                    pending_outcome = None
             if not temp.execute_action_move(step.move):
                 raise ValueError(f"Replay Move failed while rebuilding: {step.move}")
-            if step.submit_after and not temp.submit_action():
+            # The following complete Action, validated below through canonical
+            # Move execution and royal-safe submission, is already a witness
+            # that this historical position is not mate/stalemate. Searching
+            # for another witness at every boundary can cost seconds per turn.
+            # This isolated replay is accepted only after ALL witnesses pass.
+            # The last submission still evaluates the actual final outcome,
+            # including when followed only by an unfinished Action.
+            if step.submit_after and not temp.submit_action(
+                evaluate_outcome=step.action_index == last_submitted,
+            ):
                 raise ValueError(f"Replay Action submit failed after move: {step.move}")
             self.snapshots.append(GameArchive.capture(temp))
+            if step.submit_after:
+                pending_outcome = (
+                    self.snapshots[-1] if step.action_index < last_submitted else None
+                )
 
         if strict:
             expected = GameArchive.capture(final_engine)

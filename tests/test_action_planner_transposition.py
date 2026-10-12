@@ -129,3 +129,15 @@ def test_successful_equivalent_states_are_never_pruned(monkeypatch):
     assert len(result.candidates) == 2
     assert [candidate[0].destination.x for candidate in result.candidates] == [1, 2]
     assert result.failed_state_cache_hits == 0
+
+
+def test_successful_paths_do_not_serialize_history_for_an_empty_failure_cache(monkeypatch):
+    _patch_rules(monkeypatch, terminal='win')
+
+    def forbidden_key(state):
+        raise AssertionError('there are no failed states to compare against')
+
+    monkeypatch.setattr(ActionSearch, '_state_key', staticmethod(forbidden_key))
+    result = ActionPlanner(_budget()).search(_FakeState('root', terminal='win'))
+    assert len(result.candidates) == 2
+    assert result.failed_state_cache_hits == 0

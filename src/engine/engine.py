@@ -401,10 +401,10 @@ class FiveDEngine:
     def submit_action(self, *, evaluate_outcome: bool = True) -> bool:
         """Finalize a royal-safe Action and, by default, evaluate the outcome.
 
-        ``evaluate_outcome=False`` is an internal transaction hook used only
-        when a caller has isolated the submitted state and will apply a
-        separately validated outcome. Canonical Action submission is never
-        skipped.
+        ``evaluate_outcome=False`` is an internal transaction/replay hook used
+        only when a caller has isolated the submitted state and validates the
+        outcome separately (a subsequent complete Action is a playing-state
+        witness). Canonical Action submission is never skipped.
         """
         if self.game_state != GameState.PLAYING:
             return False

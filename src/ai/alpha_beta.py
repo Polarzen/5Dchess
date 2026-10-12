@@ -19,6 +19,7 @@ from src.ai.evaluator import Evaluator
 from src.engine.move_generator import Move
 from src.engine.move_validator import MoveValidator
 from src.engine.outcome_rules import OutcomeKind, OutcomeRules
+from src.engine.timeline_rules import TimelineRules
 from src.utils.constants import AIDifficulty, ChessColor, GameState
 
 
@@ -213,8 +214,19 @@ class AlphaBetaAI(AIPlayer):
         # independent of that equality, and share its original absolute deadline
         # so cloning/preparation cannot restart the global wall budget.
         deadline = None if self._timeout is None else self._start_time + self._timeout
+        # Web HardAI has a shorter budget than the legacy hybrid profile, but
+        # needs the same defense ordering when an Action spans many boards.
+        # Inspect the frontier without initializing/mutating the live Action.
+        multi_board_hard = (
+            self.difficulty == AIDifficulty.HARD
+            and engine is not None
+            and len(TimelineRules.required_boards(
+                engine.timeline_manager.timelines, engine.current_turn_color,
+            )) > 2
+        )
         strategy = (
-            "probe_then_depth_first" if self.budget == _PRODUCTION_HYBRID_BUDGET
+            "probe_then_depth_first"
+            if self.budget == _PRODUCTION_HYBRID_BUDGET or multi_board_hard
             else "depth_first"
         )
         result = ActionPlanner(

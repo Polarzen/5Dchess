@@ -116,6 +116,7 @@ def test_absolute_deadline_includes_clone_preparation(monkeypatch, seconds, stra
     'fresh_four_required', 'fresh_six_required',
     'hard20_rewind_four_state', 'hard20_rewind_three_state',
     'hard20_eight_required_rewind_state',
+    'hard_replay_169_state',
 ])
 def test_hard_captured_root_returns_canonical_action_with_primary_budget(fixture):
     engine = (_safe_frontier(4 if fixture == 'fresh_four_required' else 6)
@@ -135,6 +136,35 @@ def test_hard_captured_root_returns_canonical_action_with_primary_budget(fixture
 def test_unknown_strategy_is_rejected():
     with pytest.raises(ValueError, match='strategy'):
         ActionPlanner(strategy='unknown')
+
+
+@pytest.mark.parametrize('fixture', ['hard_replay_169_state', 'hard_replay_200_state'])
+def test_web_hard_completes_saved_frontier_without_extra_budget(fixture):
+    path = Path(__file__).parent / 'fixtures' / f'{fixture}.json.gz'
+    engine = GameArchive.restore(json.loads(gzip.decompress(path.read_bytes())))
+    before = engine_state_signature(engine)
+    assert len(engine.get_required_action_boards()) >= 16
+    ai = HardAI(engine.current_turn_color)
+    assert ai.budget == ActionSearchBudget(1536, 12, 32, 2.0)
+    plan = ai.plan_action(engine)
+    assert 0 < plan.metadata['candidate_count'] <= 12
+    assert plan.metadata['explored_states'] <= 1536
+    assert 0 < len(plan.moves) <= 32
+    child = planning._clone_state_for_action_search(engine)
+    apply_action_plan(child, plan)
+    assert child.action_history[-1].submitted
+    assert engine_state_signature(engine) == before
+
+
+@pytest.mark.parametrize('seconds', [5.0, 4.999])
+def test_explicit_hybrid_skips_provably_impossible_one_move_probe(seconds):
+    engine = _safe_frontier()
+    planner = ActionPlanner(ActionSearchBudget(1024, 24, 32, seconds),
+                            strategy='probe_then_depth_first')
+    result = planner.search(engine)
+    probe, deep = planner.search_telemetry
+    assert probe['structurally_skipped'] and probe['states_delta'] == 0
+    assert result.candidates and deep['unique_candidates_delta'] > 0
 
 
 def test_explicit_probe_strategy_respects_zero_move_depth():
@@ -185,6 +215,8 @@ def test_hard_fixed_successors_exhaust_without_recovery_and_reset():
 
 def test_single_move_probe_leaves_incomplete_moves_for_the_deep_phase(monkeypatch):
     engine = _safe_frontier()
+    # Exercise the probe even though this quiet fixture can normally skip it.
+    monkeypatch.setattr(planning, '_branches_cannot_defer_required_boards', lambda _: False)
     planner = ActionPlanner(_PRODUCTION_HYBRID_BUDGET, strategy='probe_then_depth_first')
     original = FiveDEngine.execute_action_move
     deep_incomplete_moves = []
@@ -210,6 +242,7 @@ def test_single_move_probe_leaves_incomplete_moves_for_the_deep_phase(monkeypatc
 @pytest.mark.parametrize('seconds', [5.0, 4.999])
 def test_minimax_probe_and_deep_phase_share_global_limits(monkeypatch, seconds):
     engine = _safe_frontier()
+    monkeypatch.setattr(planning, '_branches_cannot_defer_required_boards', lambda _: False)
     now = [100.0]
     monkeypatch.setattr(planning.time, 'monotonic', lambda: now[0])
     calls = []
@@ -231,6 +264,6 @@ def test_minimax_probe_and_deep_phase_share_global_limits(monkeypatch, seconds):
     result = planner.search(engine)
     assert result.candidates
     assert len(calls) == 2 and calls[0][0] == calls[1][0]
-    assert calls[0][1:] == (0, True) and calls[1][1:] == (7, False)
+    assert calls[0][1:] == (0, True) and calls[1][1:] == (7, True)
     assert result.explored_states <= 1024 and len(result.candidates) <= 24
     assert planner._tracker.deadline == 105.0

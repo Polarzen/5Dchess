@@ -137,16 +137,19 @@ class Position:
         This preserves deepcopy semantics while avoiding Python's recursive
         dataclass reconstruction in MoveValidator and timeline transitions.
         """
-        return Position(
-            board=[row[:] for row in self.board],
-            turn=self.turn,
-            timeline_id=self.timeline_id,
-            time_point=self.time_point,
-            move_number=self.move_number,
-            castling_rights=self.castling_rights.copy(),
-            en_passant_target=self.en_passant_target,
-            unmoved_pawns=set(self.unmoved_pawns),
-        )
+        # Construction already normalized Pawn coordinates. Re-running
+        # __post_init__ here rebuilds that set a second time for every stored
+        # board at every search node; copying needs no input normalization.
+        clone = object.__new__(Position)
+        clone.board = [row[:] for row in self.board]
+        clone.turn = self.turn
+        clone.timeline_id = self.timeline_id
+        clone.time_point = self.time_point
+        clone.move_number = self.move_number
+        clone.castling_rights = self.castling_rights.copy()
+        clone.en_passant_target = self.en_passant_target
+        clone.unmoved_pawns = set(self.unmoved_pawns)
+        return clone
 
     def to_fen(self) -> str:
         """导出为标准FEN（不含时间信息）"""

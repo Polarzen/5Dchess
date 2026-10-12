@@ -19,10 +19,10 @@ from typing import Any, Mapping, TYPE_CHECKING
 from src.engine.action import ActionRules
 from src.engine.action_proof import (
     _branches_cannot_defer_required_boards,
-    fixed_successor_attackers, move_exposes_fixed_attacker,
+    fixed_branch_arrival_attackers, fixed_successor_attackers, move_exposes_fixed_attacker,
     prove_direct_threat, prove_required_board_immobile, prove_required_board_threat,
 )
-from src.engine.action_search import ActionSearch
+from src.engine.action_search import ActionSearch, _clone_state_for_action_search
 from src.engine.coordinates import BoardCoord, Square5D
 from src.engine.move_generator import Move
 from src.engine.path_rules import PathRules
@@ -752,9 +752,12 @@ class ActionPlanner:
 
     @property
     def _uses_production_strategy(self) -> bool:
+        # Explicit hybrid selection keeps the same defense/MRV ordering in
+        # both phases, even after minimax subtracts preparation time. Falling
+        # back to lane order can consume a defender before its required move.
         return (
             self._strategy == "auto" and self.budget == _PRODUCTION_HYBRID_BUDGET
-        ) or (self._strategy == "probe_then_depth_first" and self._in_probe)
+        ) or self._strategy == "probe_then_depth_first"
 
     def search(self, engine: "FiveDEngine") -> ActionSearchResult:
         """Search all bounded complete Action witnesses from ``engine``."""
@@ -765,7 +768,7 @@ class ActionPlanner:
         if engine.game_state != GameState.PLAYING:
             return ActionSearchResult((), 0, "game_not_playing")
 
-        state = engine.clone_for_simulation()
+        state = _clone_state_for_action_search(engine)
         state.timeline_manager.refresh_activity()
         state._ensure_current_action()
         tracker = _BudgetTracker(self.budget, self._deadline)
@@ -803,7 +806,7 @@ class ActionPlanner:
         tracker.phase_interrupted = False
         self._in_probe = True
         probe_skipped = (
-            self._strategy == "auto" and probe_depth_limit == 1
+            probe_depth_limit == 1
             and len(ActionRules.required_boards(state._ensure_current_action(), state.timeline_manager.timelines)) > 2
             and _branches_cannot_defer_required_boards(state)
         )
@@ -826,11 +829,6 @@ class ActionPlanner:
                 cooperative_checks=True,
             )
         self._in_probe = False
-        if self._strategy == "probe_then_depth_first":
-            # The probe's ordering hints must not replace minimax's established
-            # board order in the deep phase. Both phases keep the same tracker.
-            self._defense_order_active = False
-            self._arrival_targets = frozenset()
         tracker.check_time(probe_deadline)
         probe_elapsed_end = time.monotonic() - tracker.started_at
         probe_interrupted = (
@@ -1113,14 +1111,23 @@ class ActionPlanner:
         # state cache rather than a general visited set: successful states remain
         # searchable so ordered candidate Actions and evaluator semantics are
         # unchanged.  The cache is scoped to this one plan() call.
-        key = ActionSearch._state_key(state)
+        # The first witness path has no failures to look up. Defer serializing
+        # the whole historical multiverse until there is actually a cache
+        # entry, or this node has been exhaustively proved to fail. Besides
+        # hashing work this avoids large temporary tuples at every early node.
+        key = ActionSearch._state_key(state) if failed_states else None
         if tracker.check_time(local_deadline):
             return found_completion
-        if key in failed_states:
+        if key is not None and key in failed_states:
             tracker.failed_state_cache_hits += 1
             return found_completion
 
         tracker.explored_states += 1
+
+        def cache_failure():
+            failure_key = key if key is not None else ActionSearch._state_key(state)
+            if not tracker.check_time(local_deadline):
+                failed_states.add(failure_key)
 
         if depth == 0 and self._uses_production_strategy:
             proof = prove_required_board_threat(
@@ -1133,7 +1140,7 @@ class ActionPlanner:
             if tracker.check_time(local_deadline):
                 return found_completion
             if proof is not None:
-                failed_states.add(key)
+                cache_failure()
                 return False
 
         movable = ActionRules.movable_boards(
@@ -1148,7 +1155,7 @@ class ActionPlanner:
                 and tracker.termination_reason is None
                 and tracker.depth_cutoffs == depth_cutoffs_before
             ):
-                failed_states.add(key)
+                cache_failure()
             return found_completion
 
         ordered_boards = tuple(
@@ -1166,16 +1173,30 @@ class ActionPlanner:
         one_move_probe = depth_limit == 1 and (
             self._uses_production_strategy or self._strategy == "probe_then_depth_first"
         )
-        if self._strategy == "probe_then_depth_first":
+        if one_move_probe and self._strategy == "probe_then_depth_first":
+            # Deep search already checks direct threats on each executed
+            # child and orders required defenses first. Recomputing this
+            # all-history certificate at every depth duplicates that work.
             fixed_attackers = fixed_successor_attackers(
                 state, lambda: tracker.check_time(local_deadline),
             )
             if fixed_attackers is None:
                 return found_completion
 
+        branch_attackers = {}
+
         def skip_probe_move(move):
             if move_exposes_fixed_attacker(move, fixed_attackers):
                 return True
+            if one_move_probe and move.is_branching:
+                target = move.destination.board
+                if target not in branch_attackers:
+                    branch_attackers[target] = fixed_branch_arrival_attackers(
+                        state, target, lambda: tracker.check_time(local_deadline),
+                    )
+                attackers = branch_attackers[target]
+                if attackers is None or any(move.destination != square for square in attackers):
+                    return True
             if (
                 one_move_probe
                 and not move.is_branching
@@ -1404,6 +1425,7 @@ class ActionPlanner:
                         found_completion = True
 
         if len(required) == 2:
+            targeted_pair = self._uses_production_strategy
             required_moves: list[Move] = []
             optional_progress_moves: list[Move] = []
             optional_boards: list[BoardCoord] = []
@@ -1424,7 +1446,14 @@ class ActionPlanner:
                         if move.destination.board in required
                     )
                     continue
-                required_moves_for_board = state.get_legal_moves(position)
+                # First enumerate arrivals on the two remaining boards. A
+                # direct completion must be among these; generating every
+                # historical target first can spend the remaining budget
+                # before even trying that already-reachable witness.
+                required_moves_for_board = (
+                    _legal_moves_into(state, position, required)
+                    if targeted_pair else state.get_legal_moves(position)
+                )
                 if cooperative_checks and tracker.check_time(local_deadline):
                     return found_completion
                 required_moves.extend(required_moves_for_board)
@@ -1487,11 +1516,32 @@ class ActionPlanner:
                     continue
                 prepared_moves.append((2, move, child))
 
+            if targeted_pair:
+                seen = {MoveSpec.from_move(move) for move in required_moves}
+                for board in ordered_boards:
+                    if board not in required:
+                        continue
+                    if tracker.check(depth, depth_limit, local_deadline):
+                        return found_completion
+                    position = state._resolve_position(board)
+                    if position is None:
+                        continue
+                    remaining = state.get_legal_moves(position)
+                    if tracker.check_time(local_deadline):
+                        return found_completion
+                    prepared_moves.extend(
+                        (2, move, None) for move in remaining
+                        if MoveSpec.from_move(move) not in seen
+                    )
+
             prepared_moves.extend(
                 (1, move, None)
                 for move in ordered_optional_progress_moves
             )
-            prepared_moves.sort(key=lambda item: item[0])
+            prepared_moves.sort(key=(
+                (lambda item: (item[0], _required_move_sort_key(item[1], required)))
+                if targeted_pair else (lambda item: item[0])
+            ))
 
             for _, move, child in prepared_moves:
                 if tracker.check(depth, depth_limit, local_deadline):
@@ -1663,7 +1713,7 @@ class ActionPlanner:
             and not tracker.phase_interrupted
             and tracker.depth_cutoffs == depth_cutoffs_before
         ):
-            failed_states.add(key)
+            cache_failure()
         return found_completion
 
 

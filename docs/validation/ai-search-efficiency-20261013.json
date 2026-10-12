@@ -1,0 +1,402 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-12T16:30:59.977891+00:00",
+  "objective": "Optimize AI search within the existing budgets; complete the saved long game.",
+  "base_commit": "c19132778188e808f4d59b61bd64440967638d32",
+  "environment": {
+    "python": "3.11.9",
+    "system": "Windows-10-10.0.26200-SP0",
+    "measurement": "Sequential local runs; no simultaneous CPU benchmarks; unchanged GC configuration."
+  },
+  "source_sha256": {
+    "src/ai/action_planner.py": "69eda26ba89cce6ad0d95d2241f5e32efd31936646df4d23b65fd04e6b39028a",
+    "src/ai/alpha_beta.py": "e16407bc282188b6ae96c460ee4e220f38da15582cec56ec276c30923fd8eb48",
+    "src/engine/action_search.py": "18eb806269b0bb95c3f61b516cd7f4c4c45e7fc81b5d99681912ee851a8bdfe0",
+    "src/engine/board.py": "023f9150b0afebe12130879bf34a92174b4c36b6e3f955e0f604714bc82b923f",
+    "src/engine/multiverse.py": "67ca23e4aa187931606decc82ac1cc0180749df7464265bf957a64a10b61ad8a",
+    "scripts/validate_long_replay.py": "7d9d97034e13010a7ccd54334d92281fe5dfd7d2c1d86855a7a3403252baa209",
+    "tests/fixtures/hard_replay_169_state.json.gz": "f00f75bfea952aea105d253aa207c3a3bff5e742f281c60689beb759faad18d4",
+    "tests/fixtures/hard_replay_200_state.json.gz": "db5b6217bd489e901a6746b18979d902ce86ed1d5a0b0e844e23ec565738088f",
+    "tests/test_minimax_planner_budget.py": "0f64d323bd58f797d2197f764e03ce7eea6436952fff2630cc5f00222dba5eaf",
+    "tests/test_action_search_replay_metadata.py": "c38805474ec676ebf88fe03fc2dcb42bca1e71bde0aec39eb178a4f479c5b48a",
+    "tests/test_action_planner_direct_completion.py": "9ff85e2dbee7d44388424b47c6828a79d5b08ce4e33261ecb954d6218d7beea5",
+    "tests/test_ai_replay_metadata.py": "1ee99a712723f54e75bee8a5133ebbf59c35fb1b6a8511e087baa475fbe49d6b",
+    "tests/test_action_planner_transposition.py": "d7bc5e9fbbbe57254c7a2f0da4ca1a45a4ab66095ea7bf9c1a5302baada6504c",
+    "src/engine/action_proof.py": "c802cf7ac4b071af548861777704749828583a841e65b9a75e6bebc49fb21ff6",
+    "src/engine/engine.py": "04bc4066dc1a95ff36f904ac63a31b808f9939296499ca756337c3981d0f80a0",
+    "src/engine/royal_rules.py": "d6e57ce91dbc0bef625726271793808dbc439909a728c8506944dac9fa15a273",
+    "src/modes/replay.py": "051ac9f33d2dd280f6d9cce7cb1b8fe01047db1a25a9ae29bc2f1a7250311dc0",
+    "src/data/online_save.py": "388e1f4129cf5290c8e067b56c6b367326b23d54b3512fa78f3e91efa65d448b"
+  },
+  "baseline": {
+    "fixture": "tests/fixtures/hard_replay_169_state.json.gz",
+    "moves": 169,
+    "timelines": 18,
+    "required_boards": 16,
+    "planner_seconds": 5.229118700000981,
+    "candidates": 0,
+    "termination": "time_budget",
+    "budget": {
+      "max_seconds": 5.0,
+      "max_states": 1024,
+      "max_actions": 24,
+      "max_move_depth": 32
+    },
+    "later_web_boundary": {
+      "fixture": "tests/fixtures/hard_replay_200_state.json.gz",
+      "moves": 200,
+      "timelines": 22,
+      "required_boards": 20,
+      "max_seconds": 2.0,
+      "full_collection_failed_before_final_optimizations": true
+    }
+  },
+  "changes": [
+    "Use defense and required-board ordering in both hybrid phases, with one shared deadline and state counter.",
+    "Skip the one-Move probe only when existing allocation/activity proof makes it impossible.",
+    "Use the same hybrid ordering for multi-board Web HardAI without increasing its 2-second budget.",
+    "Try direct two-board completion with targeted generation before enumerating historical destinations; keep the remaining legal moves.",
+    "Serialize historical failed-state keys only when looking up an existing failure or recording a proven failure; preserve the same transposition equivalence.",
+    "Do not duplicate archive-only metadata while cloning a canonical search root; preserve subclass fallback and unknown-state rejection.",
+    "Copy already-normalized Pawn state once and reuse validated board coordinates; keep mutable Position fields isolated.",
+    "Correct the long-game validation script to check the existing P2P error field code for a finished game."
+  ],
+  "validation": {
+    "full_suite": "874 passed, 1 skipped, 1 warning in 218.24s (0:03:38)",
+    "full_log": ".planner-work/ai-efficiency-final-tests.log",
+    "canonical_action_and_source_isolation": true,
+    "web_and_hybrid_budgets_unchanged": true,
+    "checks": "compileall and git diff --check passed"
+  },
+  "final_continuation": {
+    "schema_version": 1,
+    "created_at": "2026-10-12T16:28:38.426136+00:00",
+    "source": "tests\\fixtures\\hard_replay_169_state.json.gz",
+    "source_actions": 140,
+    "source_moves": 169,
+    "ai": "HardAI vs HardAI",
+    "profile": "web",
+    "requested_actions": 12,
+    "actions": [
+      {
+        "action": 141,
+        "moves": 181,
+        "timelines": 18,
+        "state": "PLAYING",
+        "search_seconds": 2.0516910000005737,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 27,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 142,
+        "moves": 182,
+        "timelines": 19,
+        "state": "PLAYING",
+        "search_seconds": 2.4348304999948596,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 14,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 143,
+        "moves": 183,
+        "timelines": 19,
+        "state": "PLAYING",
+        "search_seconds": 2.111145100003341,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 19,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 144,
+        "moves": 184,
+        "timelines": 20,
+        "state": "PLAYING",
+        "search_seconds": 3.4082943000030355,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 13,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 145,
+        "moves": 185,
+        "timelines": 20,
+        "state": "PLAYING",
+        "search_seconds": 2.3420439999972587,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 22,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 146,
+        "moves": 196,
+        "timelines": 20,
+        "state": "PLAYING",
+        "search_seconds": 2.3287610999977915,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 23,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 147,
+        "moves": 197,
+        "timelines": 21,
+        "state": "PLAYING",
+        "search_seconds": 2.3628943000003346,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 14,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 148,
+        "moves": 198,
+        "timelines": 21,
+        "state": "PLAYING",
+        "search_seconds": 2.1131998999990174,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 24,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 149,
+        "moves": 199,
+        "timelines": 22,
+        "state": "PLAYING",
+        "search_seconds": 3.2492878999983077,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 13,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 150,
+        "moves": 200,
+        "timelines": 22,
+        "state": "PLAYING",
+        "search_seconds": 2.373921899998095,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 12,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 151,
+        "moves": 213,
+        "timelines": 22,
+        "state": "PLAYING",
+        "search_seconds": 2.449110400004429,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 24,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      },
+      {
+        "action": 152,
+        "moves": 214,
+        "timelines": 23,
+        "state": "CHECKMATE",
+        "search_seconds": 2.7393072999984724,
+        "budget": {
+          "max_states": 1536,
+          "max_actions": 12,
+          "max_move_depth": 32,
+          "max_seconds": 2.0
+        },
+        "metadata": {
+          "explored_states": 14,
+          "candidate_count": 12,
+          "search_depth": 4,
+          "search_complete": false,
+          "selected_index": 0,
+          "repetition_prior_occurrences": 0,
+          "repetition_penalty": 0.0
+        },
+        "resume_equal": true
+      }
+    ],
+    "last_search_preserved_source": true,
+    "replay": {
+      "frames_verified": 215,
+      "submitted_actions": 152,
+      "multi_move_actions": 10,
+      "timelines": 23,
+      "positions": 1564,
+      "archive_bytes": 1019114,
+      "archive_sha256": "b7f2c3b96a14933e13a439601d0787226a0e492e0b90414b53eeed7f3a312b2e",
+      "read_seconds": 0.11315370000374969,
+      "rebuild_seconds": 4.084569500002544,
+      "forward": {
+        "count": 214,
+        "total_seconds": 1.9381101000399212,
+        "max_seconds": 0.6564536000005319
+      },
+      "backward": {
+        "count": 214,
+        "total_seconds": 2.5699635999772,
+        "max_seconds": 0.6685395999957109
+      },
+      "jump": {
+        "count": 215,
+        "total_seconds": 1.8963629000791116,
+        "max_seconds": 0.673935499995423
+      },
+      "http_load_seconds": 4.619678199996997,
+      "http_jumps": {
+        "count": 7,
+        "total_seconds": 0.16117999998823507,
+        "max_seconds": 0.040174999994633254
+      },
+      "http_resume_seconds": 0.07120160000340547,
+      "http_resume": "finished_game_rejected",
+      "file_unchanged": true,
+      "final_state_sha256": "ae69a587837ecba489dbe03818edfbcde556b867969c2bd28995bec26210a4db"
+    },
+    "status": "passed"
+  },
+  "limitations": [
+    "The search deadline is cooperative; move validation, outcome evaluation, scoring and serialization add wall time to a complete request.",
+    "Finite search still cannot guarantee a witness in every possible future position; budget exhaustion without a candidate remains unknown, not mate.",
+    "No commit, push or release was performed in this goal."
+  ]
+}

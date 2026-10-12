@@ -114,3 +114,25 @@ def test_later_direct_completion_timeout_keeps_an_earlier_witness(monkeypatch):
     assert len(result.candidates) == 1
     assert result.candidates[0][0].destination.x == 0
     assert engine.label == 'root'
+
+
+def test_hybrid_tries_two_board_completion_before_generating_history(monkeypatch):
+    required = (REQUIRED_A, REQUIRED_B)
+    monkeypatch.setattr(ActionRules, 'required_boards', staticmethod(
+        lambda action, timelines: required if action == 'root' else ()))
+    monkeypatch.setattr(ActionRules, 'movable_boards', staticmethod(
+        lambda action, timelines: required if action == 'root' else ()))
+    monkeypatch.setattr(ActionSearch, '_state_key', staticmethod(lambda state: (state.label,)))
+
+    def targeted(self, position, boards):
+        assert set(boards) == set(required)
+        return [_king_move(0), _king_move(1)] if position == REQUIRED_A else []
+
+    def forbidden_history(self, position):
+        raise AssertionError('a direct completion must be tried before all historical moves')
+
+    monkeypatch.setattr(_FakeEngine, 'get_legal_moves_to_boards', targeted, raising=False)
+    monkeypatch.setattr(_FakeEngine, 'get_legal_moves', forbidden_history)
+    result = ActionPlanner(ActionSearchBudget(8, 1, 4, None),
+                           strategy='probe_then_depth_first').search(_FakeEngine())
+    assert result.candidates and result.candidates[0][0].destination.x == 1

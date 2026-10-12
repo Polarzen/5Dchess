@@ -106,12 +106,7 @@ class MultiverseBoardView:
             return None
         time_point = timeline.latest_time
         position = timeline.positions[time_point]
-        self._validate_stored_position(timeline_id, time_point, position)
-        return BoardCoord.from_legacy_time_point(
-            timeline=timeline_id,
-            time_point=time_point,
-            side=position.turn,
-        )
+        return self._validate_stored_position(timeline_id, time_point, position)
 
     def iter_boards(
         self,
@@ -128,15 +123,10 @@ class MultiverseBoardView:
 
             for time_point in sorted(timeline.positions):
                 position = timeline.positions[time_point]
-                self._validate_stored_position(timeline_id, time_point, position)
+                coord = self._validate_stored_position(timeline_id, time_point, position)
                 if side is not None and position.turn != side:
                     continue
 
-                coord = BoardCoord.from_legacy_time_point(
-                    timeline=timeline_id,
-                    time_point=time_point,
-                    side=position.turn,
-                )
                 role = (
                     BoardRole.PLAYABLE
                     if time_point == timeline.latest_time
@@ -157,7 +147,7 @@ class MultiverseBoardView:
         timeline_id: int,
         time_point: int,
         position: Position,
-    ) -> None:
+    ) -> BoardCoord:
         if position.timeline_id != timeline_id:
             raise ValueError(
                 f"timeline {timeline_id} stores position for timeline "
@@ -168,7 +158,7 @@ class MultiverseBoardView:
                 f"timeline key {time_point} stores position time "
                 f"{position.time_point}"
             )
-        BoardCoord.from_legacy_time_point(
+        return BoardCoord.from_legacy_time_point(
             timeline=timeline_id,
             time_point=time_point,
             side=position.turn,

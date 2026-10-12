@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-12T15:47:52.671121+00:00",
+  "base_commit": "c19132778188e808f4d59b61bd64440967638d32",
+  "environment": {
+    "python": "3.11.9",
+    "system": "Windows-10-10.0.26200-SP0",
+    "measurement": "sequential local processes; no concurrent CPU benchmarks"
+  },
+  "source_sha256": {
+    "src/ai/action_planner.py": "13f454abe5b77349a5a7666101b6a616ce154731a2ae44afdbd4c150ad671b77",
+    "src/engine/action_proof.py": "c802cf7ac4b071af548861777704749828583a841e65b9a75e6bebc49fb21ff6",
+    "src/engine/engine.py": "04bc4066dc1a95ff36f904ac63a31b808f9939296499ca756337c3981d0f80a0",
+    "src/data/online_save.py": "388e1f4129cf5290c8e067b56c6b367326b23d54b3512fa78f3e91efa65d448b",
+    "src/modes/replay.py": "051ac9f33d2dd280f6d9cce7cb1b8fe01047db1a25a9ae29bc2f1a7250311dc0",
+    "scripts/validate_long_replay.py": "8a6298bff42b8456c60f9aba1b0488d063a2229c5f612faf3400a88ab4841631"
+  },
+  "ai_regression": {
+    "fixture": "tests/fixtures/hard20_eight_required_rewind_state.json.gz",
+    "baseline_full_suite": "846 passed, 1 skipped, 1 failed (captured HardAI primary-budget regression)",
+    "baseline_file_only": {
+      "gc_objects_before": 43788,
+      "gc_seconds": 1.1025034000704181,
+      "collections": [
+        3362,
+        305,
+        27
+      ],
+      "seconds": 5.040280299996084,
+      "candidates": 20,
+      "states": 95,
+      "termination": "time_budget",
+      "first_candidate_seconds": null,
+      "probe_child_executions": 0,
+      "probe_candidates": 20
+    },
+    "baseline_full_collection": {
+      "gc_objects_before": 217568,
+      "gc_seconds": 1.6015997001886717,
+      "collections": [
+        2644,
+        240,
+        13
+      ],
+      "seconds": 5.01854650000314,
+      "candidates": 9,
+      "states": 80,
+      "termination": "time_budget",
+      "first_candidate_seconds": 0.7710481000030995,
+      "probe_child_executions": 40,
+      "probe_candidates": 9
+    },
+    "after_full_collection": {
+      "gc_objects_before": 217570,
+      "gc_seconds": 1.5036103999300394,
+      "collections": [
+        2569,
+        233,
+        12
+      ],
+      "seconds": 5.010260499999276,
+      "candidates": 20,
+      "states": 81,
+      "termination": "time_budget",
+      "first_candidate_seconds": 0.3973143000039272,
+      "probe_child_executions": 33,
+      "probe_candidates": 20
+    },
+    "inference": "Full collection retains about five times as many GC-tracked objects. Clone-heavy unsafe branch arrivals consume much of the fixed one-second probe; increased GC pressure reduces the margin before its first valid Action. The deep phase did not recover a candidate in the remaining budget.",
+    "profiling_note": "A cProfile-instrumented pre-fix run reproduced zero candidates. Profiler overhead is not a normal wall-time benchmark. Unprofiled pre-fix diagnostic runs sometimes passed; the baseline full suite failed twice.",
+    "fix": "Certify immutable royal attacks on hypothetical branch arrivals before cloning; retain captures of the attacker and defer inconclusive paths to canonical execution.",
+    "budgets_unchanged": {
+      "probe_seconds": 1.0,
+      "global_seconds": 5.0,
+      "states": 1024,
+      "actions": 24,
+      "move_depth": 32
+    }
+  },
+  "long_replay": {
+    "initial_source": "hard20_eight_required_rewind_state: 118 Actions, 122 Moves, 9 timelines",
+    "ai_profile": "HardAI vs HardAI, depth 2, existing 1024/24/32/5s hybrid search configuration",
+    "new_ai_actions": 22,
+    "every_new_action_restored_and_applied_identically": true,
+    "before_144": {
+      "frames_verified": 145,
+      "submitted_actions": 130,
+      "multi_move_actions": 5,
+      "timelines": 14,
+      "positions": 884,
+      "archive_bytes": 600546,
+      "archive_sha256": "6e985173fe5f0f8cf4c2375b2b0fe95fbeabd2a525d884bd8f220df84db8fdbc",
+      "read_seconds": 0.1315651999975671,
+      "rebuild_seconds": 12.39454459999979,
+      "forward": {
+        "count": 144,
+        "total_seconds": 1.1511293000585283,
+        "max_seconds": 0.27739359999395674
+      },
+      "backward": {
+        "count": 144,
+        "total_seconds": 0.9299782000525738,
+        "max_seconds": 0.29378239999641664
+      },
+      "jump": {
+        "count": 145,
+        "total_seconds": 0.6984496999721159,
+        "max_seconds": 0.019732100001419894
+      },
+      "http_load_seconds": 12.638857500001905,
+      "http_jumps": {
+        "count": 7,
+        "total_seconds": 0.20163730000786018,
+        "max_seconds": 0.058410199999343604
+      },
+      "http_resume_seconds": 0.15923849999671802,
+      "http_resume": "exact_saved_final_state",
+      "file_unchanged": true,
+      "final_state_sha256": "0f878c763b4344cb4bc3ce039e49384be6a7c220ef23fae3d1b2ac77f1df8302"
+    },
+    "after_144": {
+      "frames_verified": 145,
+      "submitted_actions": 130,
+      "multi_move_actions": 5,
+      "timelines": 14,
+      "positions": 884,
+      "archive_bytes": 600546,
+      "archive_sha256": "d194f00b85efe747d7821eed5833d4161df73ead92446f40977211625dbfeffc",
+      "read_seconds": 0.0882733999969787,
+      "rebuild_seconds": 2.6349621999979718,
+      "forward": {
+        "count": 144,
+        "total_seconds": 1.1485726000319119,
+        "max_seconds": 0.2749995999984094
+      },
+      "backward": {
+        "count": 144,
+        "total_seconds": 1.1797958000097424,
+        "max_seconds": 0.2844933000014862
+      },
+      "jump": {
+        "count": 145,
+        "total_seconds": 0.8579988999917987,
+        "max_seconds": 0.27321110000048066
+      },
+      "http_load_seconds": 3.0010781999953906,
+      "http_jumps": {
+        "count": 7,
+        "total_seconds": 0.1563110999923083,
+        "max_seconds": 0.041930799998226576
+      },
+      "http_resume_seconds": 0.18458169999939855,
+      "http_resume": "exact_saved_final_state",
+      "file_unchanged": true,
+      "final_state_sha256": "0f878c763b4344cb4bc3ce039e49384be6a7c220ef23fae3d1b2ac77f1df8302"
+    },
+    "after_169": {
+      "frames_verified": 170,
+      "submitted_actions": 140,
+      "multi_move_actions": 7,
+      "timelines": 18,
+      "positions": 1172,
+      "archive_bytes": 774532,
+      "archive_sha256": "d6c75aabf99433aa71c3199243104952597c679a651f576baaaa9fe458c67570",
+      "read_seconds": 0.1274877000032575,
+      "rebuild_seconds": 5.144498599998769,
+      "forward": {
+        "count": 169,
+        "total_seconds": 1.8581491000004462,
+        "max_seconds": 0.4491418999969028
+      },
+      "backward": {
+        "count": 169,
+        "total_seconds": 1.3662898999609752,
+        "max_seconds": 0.44152509999548784
+      },
+      "jump": {
+        "count": 170,
+        "total_seconds": 1.8580725000138045,
+        "max_seconds": 0.47256389999529347
+      },
+      "http_load_seconds": 5.886155599997437,
+      "http_jumps": {
+        "count": 7,
+        "total_seconds": 0.1958297999954084,
+        "max_seconds": 0.05661590000090655
+      },
+      "http_resume_seconds": 0.2474988999965717,
+      "http_resume": "exact_saved_final_state",
+      "file_unchanged": true,
+      "final_state_sha256": "3fbe931721c3c35b19f6a05e1689dc16f9af3c4a592f6526ddbfdd2d4a8c47df"
+    },
+    "reference": "Independent sequential canonical replay; compare every full-state hash on forward, backward and shuffled jumps. HTTP replay/jump/resume use Flask test_client with an isolated file store, not a running network server.",
+    "fixes": [
+      "Normalize numeric JSON map keys before checksum sorting; verify legacy wire-order hashes without rewriting files.",
+      "Use subsequent canonically validated complete Actions as nonterminal witnesses; keep original outcome checking when a historical move cannot serve as a current-rules witness, and always check the last submitted Action.",
+      "Use the existing archive-aware isolated clone boundary for AI roots; retain replay origin on the caller and reject other unknown dynamic state."
+    ],
+    "fixture": "tests/fixtures/hard_replay_169_state.json.gz",
+    "fixture_sha256": "f00f75bfea952aea105d253aa207c3a3bff5e742f281c60689beb759faad18d4"
+  },
+  "remaining_limitations": [
+    "At the captured 169-Move, 18-timeline state (16 required boards), the next HardAI plan still exhausts the fixed five-second budget. This is a separate large-frontier search limit, not claimed fixed by the full-suite regression change. The last committed file remains exact and fully replayable; the game is not adjudicated terminal on timeout.",
+    "The old hard20_twenty_three_required_state diagnostic (28 timelines) contains a historical Action that fails current royal-safe submission. Both reference replay and optimized replay reject it. It is not counted as a successful long-replay validation.",
+    "Legacy captures can contain moves from older local rules (including castling). They retain the old replay/outcome-check path and cannot be used to bypass terminal checks.",
+    "These timings are from one local machine and Flask test clients, not remote two-machine or browser-rendering latency; arbitrary longer games are not guaranteed to load within the UI timeout."
+  ],
+  "validation": {
+    "full_suite": "865 passed, 1 skipped, 1 warning in 287.91s (0:04:47)",
+    "full_log": ".planner-work/ai-replay-final-tests.log",
+    "focused_ai": "81 passed",
+    "save_recovery": "26 passed",
+    "replay_before_final_added_legacy_rejection_test": "24 passed",
+    "git_diff_check": "passed",
+    "compileall": "passed",
+    "remaining_limit_retry": {
+      "status": "failed",
+      "error": "ActionPlanningError: unable to plan a complete Action: time_budget (incomplete=True)",
+      "last_search_preserved_source": true
+    }
+  }
+}

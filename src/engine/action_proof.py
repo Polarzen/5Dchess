@@ -76,6 +76,49 @@ def move_exposes_fixed_attacker(move: "Move", attackers) -> bool:
                for board in boards for target in attackers.get(board, ()))
 
 
+def fixed_branch_arrival_attackers(engine, destination: BoardCoord, interrupted):
+    """Certify enemy pieces a branch arrival must capture to remain royal-safe.
+
+    A branch copies the historical destination onto a new lane. Enemy pieces
+    surviving on its successor can immediately attack an existing King on the
+    enemy phase. Prove only paths through boards already present in the source
+    multiverse: neither the arrival nor later actor Moves can modify those
+    boards. Missing/new-lane paths are inconclusive and left to canonical
+    execution. Returned squares use the old destination coordinates so a Move
+    capturing the certified attacker is retained. None means interrupted.
+    """
+    if interrupted():
+        return None
+    manager = engine.timeline_manager
+    color = engine.current_turn_color
+    rules = RoyalRules(manager.timelines)
+    position = rules.board_view.resolve(destination)
+    if position is None or destination.side != color:
+        return frozenset()
+    direction = 1 if color == ChessColor.WHITE else -1
+    lane = manager._next_positive_id if direction == 1 else manager._next_negative_id
+    while lane in manager.timelines:
+        if interrupted():
+            return None
+        lane += direction
+    successor = BoardCoord(lane, destination.turn, destination.side).next()
+    kings = tuple(square for square in rules.king_squares(color)
+                  if square.side == color.opposite())
+    attackers = set()
+    for x, y, piece in position.get_all_pieces(color.opposite()):
+        # Keep special pawn captures outside this certificate.
+        if piece.piece_type == PieceType.PAWN:
+            continue
+        source = Square5D(successor, x, y)
+        for king in kings:
+            if interrupted():
+                return None
+            if rules._attacks_prevalidated_square_with_view(piece, source, king, rules.board_view):
+                attackers.add(Square5D(destination, x, y))
+                break
+    return None if interrupted() else frozenset(attackers)
+
+
 @dataclass(frozen=True, slots=True)
 class RequiredBoardThreatProof:
     board: BoardCoord

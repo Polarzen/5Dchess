@@ -68,8 +68,9 @@ def test_canonical_action_search_fast_path_never_uses_generic_deepcopy(monkeypat
     assert result.has_legal_action
 
 
-def test_replay_origin_uses_one_conservative_root_deepcopy_only(monkeypatch):
-    engine = FiveDEngine()
+@pytest.mark.parametrize('engine_type,expected_calls', [(FiveDEngine, 0), (type('ExtendedEngine', (FiveDEngine,), {}), 1)])
+def test_replay_origin_only_deepcopies_noncanonical_roots(monkeypatch, engine_type, expected_calls):
+    engine = engine_type()
     GameArchive.set_replay_origin(engine)
     original = action_search_module.deepcopy
     calls = 0
@@ -83,4 +84,4 @@ def test_replay_origin_uses_one_conservative_root_deepcopy_only(monkeypatch):
     result = ActionSearch(**_limits()).find_legal_action(engine)
 
     assert result.has_legal_action
-    assert calls == 1
+    assert calls == expected_calls
