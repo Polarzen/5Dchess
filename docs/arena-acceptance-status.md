@@ -4,6 +4,34 @@ This document is the durable status for the Planner reliability work around
 PR #24. The original baseline was `70a5f495`; durable baseline run
 `34745200932` is retained as a historical reference. Current acceptance is below.
 
+## Main integration and CI (2026-10-12)
+
+The integration includes the optional training tools, multiverse rule and
+bounded-search corrections, interactive tutorials, and Action/Move display
+fixes. Model weights and generated training datasets are not included. Neural
+AI remains an optional experiment rather than the Web difficulty default.
+
+CI, Local AI Training v2 CI and Planner Regression now cover pushes and PRs
+targeting `main` and `feat/local-ai-training-v2`. Tutorial syntax and browser
+tests run in ordinary CI. Training smoke has no path filter: engine and AI
+changes must also preserve the training interface.
+
+Planner Regression now runs committed captured-position, canonical replay,
+terminal-proof, deadline and shared-budget tests. This replaces the old
+before/after Arena job that downloaded the expired Stage 1 artifact from run
+`34028226472`. It does not claim to reproduce that model's complete games.
+Legacy captures that violate all-King safety must produce their canonical
+terminal proof, rather than an unsafe completion. The ordinary full suite
+also retains these fixtures; production budgets and assertions are unchanged.
+Model-quality Arena validation remains a separate manual workflow using an
+explicit, available checkpoint. Older Arena reports below are historical
+evidence and are not silently relabeled as current CI results.
+
+The application revision `d4002ae0` passed 731 local tests (2 skipped), all
+three Node regressions, CI run `38212437090`, and training CI run
+`38212440330`. The integration only changes CI configuration and documentation;
+its exact-commit remote checks are recorded in PR #25 and PR #24.
+
 ## Terminal scoring and CI follow-up (2026-10-12)
 
 Medium/Hard previously assigned a win to stalemate below the root, and used
@@ -32,10 +60,10 @@ Only pure geometry is globally cached; no mutable board or result is cached.
 Exhaustive displacement checks and canonical threat-list comparisons cover the
 optimization. No budget, safety check or acceptance threshold is relaxed.
 
-The tutorial's two additional workflow lines remain a local patch because
-GitHub rejected the OAuth credential's missing `workflow` scope. Application
-code and tests are pushed; existing CI is explicitly dispatched on this branch.
-All three JavaScript regressions are run locally, including the tutorial.
+The tutorial's two additional workflow lines were initially retained locally
+because the Git OAuth credential lacked `workflow` scope. Commit `5e76c053`
+subsequently published them through the existing GitHub connector. All three
+JavaScript regressions now run in CI, including the tutorial.
 
 Final local regression for this scoring/scan follow-up: **730 passed, 2 skipped**,
 one existing telemetry warning, 131.36 seconds. Compilation and all three Node

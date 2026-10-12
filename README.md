@@ -6,9 +6,9 @@
 
 > **当前状态：已实现核心规则、Web 5D Interaction、Local Hotseat PvP、Online P2P 与 Replay / Storage v2。规则修正与长局验证的结果和限制见 [验收记录](docs/arena-acceptance-status.md)。**
 >
-> 当前主线不再包含 EXE 打包计划；本地模型训练继续保留在独立的 `feat/local-ai-training-v2` 实验分支中。
+> 主线包含可选的本地 AI 训练工具；普通游戏安装不需要 PyTorch，也不附带模型权重。EXE 打包已移出项目范围。
 >
-> **当前 `feat/local-ai-training-v2` 仅为实验训练分支，未合并 `main`。Windows 本地训练步骤见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。**
+> **Windows 本地训练步骤见 [`docs/LOCAL_AI_TRAINING.md`](docs/LOCAL_AI_TRAINING.md)。训练模型仍需独立评测，不替换 Web 的默认 Easy / Medium / Hard AI。**
 
 ---
 
@@ -412,17 +412,12 @@ PvE 现在使用 canonical Action 级 AI。AI 在引擎快照上规划一个可�
 
 搜索由状态数、候选 Action 数、单 Action Move 深度和单调时钟共同设限。预算耗尽不会被误判为将杀、逼和或“无合法 Action”：已有完整候选时从中安全选择；尚无完整候选时返回明确的 bounded-search failure 并停止本次 AI 执行。早期 `choose_move()` 和单 Move Opening Book 仅作为兼容接口保留，不进入 canonical PvE 主路径。
 
-AI Local Training、自对弈数据、模型结构与 checkpoint 管理尚未进入主线。当前实验分支为：
+主线的 `src/training/` 提供可选的本地训练、自对弈数据生成、模型结构与 checkpoint 管理。
+训练依赖通过 `requirements-training.txt` 单独安装；普通游戏不会加载 PyTorch，模型权重和训练数据不随源码分发。
 
-```text
-feat/local-ai-training-v2
-```
-
-规则、Web 与 Replay / Storage 主线不会直接混入本地训练实现。
-
-该实验分支提供手动触发的 **Local AI Cloud Training**：GitHub-hosted CPU runner 可独立完成
+手动触发的 **Local AI Cloud Training** 可让 GitHub-hosted CPU runner 独立完成
 canonical self-play、训练、Arena 与可续训 Artifact；启动后本地浏览器和电脑均可关闭。它不表示
-训练模型已完成，也不会把权重或训练代码自动合并到 `main`。详见训练文档。
+模型已达到可发布棋力，也不会自动部署权重或替换 Web 默认 AI。详见训练文档。
 
 ---
 
@@ -460,6 +455,7 @@ src/
 │   ├── async_writer.py
 │   └── db.py
 ├── gui/                  # legacy Pygame prototype
+├── training/             # optional local / cloud training tools
 ├── ai/
 └── main.py
 
@@ -504,7 +500,7 @@ python src/main.py --web
 
 ## 🧪 GitHub Actions
 
-Pull Request / `main` 更新会运行 Python 3.11 + MySQL 8.0 CI，验证：
+面向 `main` 或整合分支 `feat/local-ai-training-v2` 的 Pull Request，以及这两个分支的更新，会运行 Python 3.11 + MySQL 8.0 CI，验证：
 
 ```text
 MySQL 8.0 service
@@ -512,6 +508,12 @@ MySQL 8.0 service
 pip install -r requirements.txt
         ↓
 python -m compileall -q src
+        ↓
+Browser / tutorial regressions
+├── JavaScript syntax checks
+├── node tests/test_browser_reliability.js
+├── node tests/test_p2p_invite.js
+└── node tests/test_tutorial_browser.js
         ↓
 Action loop regression
 └── timeout 60s python -m pytest -q tests/test_action_loop_guards.py tests/test_action_warning_web.py
@@ -533,6 +535,10 @@ full pytest
 ```
 
 P2P 回归覆盖房间创建 / 加入、8 秒 player lease、30 秒 reconnect grace、同色 token 恢复、waiting 与 temporarily offline / reconnecting 状态、stale host cleanup、对手离线时暂停 Move / Submit Action、room-code-only 邀请 URL、非法 query 降级以及 Hotseat / Online 模式隔离。
+
+同样的分支和 PR 还会运行 **Local AI Training v2 CI**（CPU 训练 smoke）与 **Planner Regression**。
+Planner 使用仓库内的故障局面和 canonical 回放测试，不依赖会过期的模型 Artifact；它验证规划正确性、预算和终局证明，不代表完整对局棋力。
+训练 smoke 始终运行，确保引擎与 AI 改动也覆盖训练兼容性。长时间训练和模型 Arena 仍需手动触发。
 
 开发流程：
 
@@ -568,7 +574,7 @@ Local Hotseat PvP              ✅
 Online P2P / Cloudflare Tunnel ✅
 Canonical Action AI / PvE      ✅
 
-AI Local Training              独立分支 / 下一大阶段
+AI Local Training              可选训练工具已提供；模型棋力继续评测
 EXE                            已移出项目范围
 ```
 
