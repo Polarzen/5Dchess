@@ -4,20 +4,28 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时线棋局 · 多时间线国际象棋</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=12">
-    <link rel="stylesheet" href="/static/css/p2p.css?v=2">
+    <meta name="theme-color" content="#f7e9ee">
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
+    <link rel="stylesheet" href="/static/css/p2p.css?v=3">
 </head>
 <body>
 <div id="app">
     <section id="menu-screen" class="screen active">
+        <header class="lobby-header"><a class="brand" href="/" aria-label="时线棋局首页"><span class="brand-mark" aria-hidden="true">♘</span><span>时线棋局<small>多时间线国际象棋</small></span></a><span class="edition-mark">每一步，都有另一种可能</span></header>
+        <div class="lobby-layout">
         <div class="menu-hero">
-            <div class="brand-mark">时线</div>
-            <div>
-                <h1>时线棋局</h1>
-                <p>多时间线国际象棋 · 独立开源实现</p>
-                <p><small>非官方项目，与灵感来源游戏的开发者、发行商无关联。</small></p>
+            <span class="eyebrow">超越棋盘 · 遇见时间</span>
+            <h1>在时间的分岔处，<br><em>落下一步。</em></h1>
+            <p class="hero-description">让棋子穿行于过去与现在。<br>创造新的时间线，重新想象一盘棋。</p>
+            <div class="time-art" aria-hidden="true">
+                <svg class="orbit-art" viewBox="0 0 520 320" fill="none"><ellipse cx="256" cy="171" rx="230" ry="118" stroke="currentColor"/><ellipse cx="256" cy="171" rx="230" ry="75" transform="rotate(-26 256 171)" stroke="currentColor"/><path d="M20 240H178Q205 240 205 210V96Q205 72 238 72H498" stroke="currentColor" stroke-dasharray="5 7"/><circle cx="42" cy="166" r="5" fill="currentColor"/><circle cx="475" cy="109" r="4" fill="currentColor"/></svg>
+                <div class="art-board art-past"><span>♙</span></div><div class="art-board art-now"><span>♘</span></div>
+                <span class="art-label art-label-past">过去 / L0</span><span class="art-label art-label-now">另一种未来 / L+1</span>
             </div>
+            <div class="hero-notes"><span><b>01</b> 空间走子</span><span><b>02</b> 穿越时间</span><span><b>03</b> 分岔世界</span></div>
         </div>
+        <div class="lobby-play">
+        <div class="section-heading"><span class="eyebrow">从这里出发</span><h2>开启你的棋局</h2><p>邀请朋友，或与电脑练习。</p></div>
         <div class="menu-grid">
             <button class="menu-card tutorial-entry" onclick="openTutorial()">
                 <span class="menu-icon">◎</span>
@@ -25,7 +33,7 @@
                 <small>13 课互动入门 · 从认识棋子到独立完成行动</small>
             </button>
             <button class="menu-card primary" onclick="startGame('pvp')">
-                <span class="menu-icon">👥</span>
+                <span class="menu-icon" aria-hidden="true">♟</span>
                 <strong>同屏双人对弈</strong>
                 <small>同屏双人对弈 · 同一浏览器轮流行动</small>
             </button>
@@ -44,23 +52,27 @@
                 <strong>存档与回放</strong>
                 <small>选择存档 · 继续对局或观看回放 · 房主本机操作</small>
             </button>
+            <div class="menu-divider">人机对弈 <span>选择对手难度</span></div>
             <button class="menu-card" onclick="startGame('pve', 'easy')">
                 <span class="menu-icon">♞</span>
                 <strong>人机 · 简单</strong>
-                <small>人机对弈</small>
+                <small>从容熟悉规则</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'medium')">
                 <span class="menu-icon">♝</span>
                 <strong>人机 · 中等</strong>
-                <small>人机对弈</small>
+                <small>尝试新的策略</small>
             </button>
             <button class="menu-card" onclick="startGame('pve', 'hard')">
                 <span class="menu-icon">♛</span>
                 <strong>人机 · 困难</strong>
-                <small>人机对弈</small>
+                <small>挑战复杂时线</small>
             </button>
         </div>
         <p id="p2p-recovery-note" role="status"></p>
+        </div>
+        </div>
+        <footer class="lobby-footer"><span>时线棋局 · 独立开源实现</span><span>非官方项目，与灵感来源游戏的开发者、发行商无关联。</span></footer>
     </section>
 
     <section id="game-screen" class="screen">
@@ -97,6 +109,7 @@
                         <div id="timeline-lanes"></div>
                     </div>
                 </div>
+                <div class="canvas-caption"><span>选择棋子 → 选择落点 → 提交行动</span><span>滚动探索时线 · ＋ / − 缩放</span></div>
             </main>
 
             <aside id="side-panel">
@@ -183,6 +196,17 @@
     </footer>
 </dialog>
 <div id="toast" role="status"></div>
+<div id="interaction-status" role="status" aria-live="polite" hidden><span class="activity-dot" aria-hidden="true"></span><span id="interaction-label"></span></div>
+<dialog id="join-room-dialog" aria-labelledby="join-room-title">
+    <span class="eyebrow">与朋友一起，穿越时间</span>
+    <h2 id="join-room-title">加入在线房间</h2>
+    <p>先打开房主分享的网址，再填写房间码。</p>
+    <form onsubmit="event.preventDefault(); joinRoomFromDialog()">
+        <label for="join-room-code">6 位房间码</label>
+        <input id="join-room-code" name="room" type="text" required minlength="6" maxlength="6" pattern="[A-Za-z0-9]{6}" autocomplete="off" spellcheck="false" placeholder="输入字母或数字" autofocus>
+        <div class="save-actions"><button type="button" class="ghost-btn" onclick="document.getElementById('join-room-dialog').close()">取消</button><button class="submit-btn" type="submit">加入棋局 →</button></div>
+    </form>
+</dialog>
 <dialog id="p2p-save-dialog" aria-labelledby="p2p-save-title">
     <h2 id="p2p-save-title">存档与回放</h2>
     <p id="p2p-save-detail" role="status"></p>
@@ -195,10 +219,10 @@
     </div>
     <p><button class="ghost-btn" onclick="openLegacyReplay()">其他棋谱（.5dpgn）</button></p>
 </dialog>
-<script src="/static/js/game.js?v=11"></script>
-<script src="/static/js/p2p.js?v=7"></script>
+<script src="/static/js/game.js?v=12"></script>
+<script src="/static/js/p2p.js?v=8"></script>
 <script src="/static/js/replay_controls.js?v=1"></script>
-<script src="/static/js/p2p_invite.js?v=2"></script>
+<script src="/static/js/p2p_invite.js?v=3"></script>
 <script src="/static/js/tutorial.js?v=2"></script>
 </body>
 </html>

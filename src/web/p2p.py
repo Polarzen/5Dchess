@@ -236,13 +236,15 @@ def register_p2p_routes(
             return None, _error("invalid_request", 400)
         return data, None
 
-    def room_state_for(color: ChessColor) -> dict[str, Any]:
+    def room_state_for(color: ChessColor, *, unchanged: bool = False) -> dict[str, Any]:
         assert _room is not None
         instance = game_session.get("mode_instance")
         if instance is None:
             raise RuntimeError("P2P game session is unavailable")
         engine = instance.engine
-        state = get_game_state()
+        # Authentication and lease maintenance happen before the version check.
+        # An idle heartbeat need not serialize every historical board again.
+        state = {"unchanged": True} if unchanged else get_game_state()
         state["mode"] = "p2p"
         state["player_color"] = color.value
 
@@ -497,7 +499,10 @@ def register_p2p_routes(
             if auth_error:
                 return auth_error
             try:
-                return jsonify(room_state_for(color))
+                known_version = data.get("known_version")
+                unchanged = (type(known_version) is int
+                             and known_version == _room["version"])
+                return jsonify(room_state_for(color, unchanged=unchanged))
             except Exception:
                 return internal_error("P2P state failed")
 

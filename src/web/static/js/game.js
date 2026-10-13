@@ -5,7 +5,7 @@ let mode = null;
 let selectedSource = null;   // { boardKey, x, y }
 let legalMoves = [];         // canonical Move payloads
 let focusedBoardKey = null;
-let boardZoom = 192;
+let boardZoom = 224;
 let toastTimer = null;
 let lastRuleWarning = null;
 let aiRequestInFlight = false;
@@ -164,7 +164,34 @@ function stateFingerprint() {
     ]);
 }
 
+let interactionOwner = null;
+let interactionSource = null;
+
+function beginInteraction(owner, message, source = null) {
+    endInteraction();
+    interactionOwner = owner;
+    const status = document.getElementById('interaction-status');
+    const label = document.getElementById('interaction-label');
+    if (label) label.textContent = message;
+    if (status) status.hidden = false;
+    if (source) {
+        const card = document.querySelector(`.board-card[data-board-key="${cssEscape(source.boardKey)}"]`);
+        interactionSource = card?._cells?.[source.y * 8 + source.x] || null;
+        interactionSource?.classList.add('pending-source');
+    }
+}
+
+function endInteraction(owner = null) {
+    if (owner && interactionOwner !== owner) return;
+    interactionSource?.classList.remove('pending-source');
+    interactionSource = null;
+    interactionOwner = null;
+    const status = document.getElementById('interaction-status');
+    if (status) status.hidden = true;
+}
+
 function invalidateSession() {
+    endInteraction();
     sessionGeneration += 1;
     stateReadSequence += 1;
     mutationOwner = null;
@@ -189,6 +216,8 @@ function acquireMutation(context) {
     stateReadSequence += 1;
     const owner = { id: ++operationSequence, context };
     mutationOwner = owner;
+    beginInteraction(owner, '正在同步行动…');
+    renderActionPanel();
     return owner;
 }
 
@@ -199,6 +228,7 @@ function ownsMutation(owner) {
 function releaseMutation(owner) {
     if (mutationOwner !== owner) return;
     mutationOwner = null;
+    endInteraction(owner);
     // The successful mutation rendered while it still owned the lock, so the
     // submit/retry controls must be refreshed once ownership is released.
     if (isCurrentSession(owner.context) && gameState) updateAll();
@@ -321,6 +351,7 @@ async function startGame(nextMode, difficulty = 'medium') {
     const context = captureSession();
     const owner = { id: ++operationSequence, context };
     startOperationOwner = owner;
+    beginInteraction(owner, '正在准备棋局…');
     try {
         const result = await api('/api/game/start', 'POST', {
             mode: nextMode,
@@ -347,6 +378,7 @@ async function startGame(nextMode, difficulty = 'medium') {
     } catch (error) {
         if (isCurrentSession(context)) showToast('启动失败：无法连接服务器，请稍后重试', true);
     } finally {
+        endInteraction(owner);
         if (startOperationOwner === owner) startOperationOwner = null;
     }
 }
@@ -574,6 +606,11 @@ async function selectSource(board, x, y) {
     const readId = ++stateReadSequence;
     const owner = { id: ++operationSequence, context, readId, fingerprint: stateFingerprint() };
     selectionOwner = owner;
+    const hadSelection = Boolean(selectedSource);
+    selectedSource = null;
+    legalMoves = [];
+    beginInteraction(owner, '正在读取合法落点…', {boardKey: board.key, x, y});
+    if (hadSelection) { renderMultiverse(); renderInspector(); }
     try {
         const result = await api('/api/game/legal_moves_5d', 'POST', {
             board: board.coord,
@@ -608,6 +645,7 @@ async function selectSource(board, x, y) {
             showToast('无法读取合法走子，请稍后重试', true);
         }
     } finally {
+        endInteraction(owner);
         if (selectionOwner === owner) selectionOwner = null;
     }
 }
@@ -655,6 +693,7 @@ async function executeCanonicalMove(move, context = captureSession(), fingerprin
 }
 
 function clearSelection(render = true) {
+    if (selectionOwner) endInteraction(selectionOwner);
     selectionOwner = null;
     selectedSource = null;
     legalMoves = [];
@@ -679,7 +718,7 @@ function focusBoard(boardKey, scroll = true) {
     const target = document.querySelector(`.board-card[data-board-key="${cssEscape(boardKey)}"]`);
     if (target) {
         target.classList.add('focused');
-        if (scroll) target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        if (scroll) target.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center', inline: 'center' });
     }
     renderInspector();
 }
@@ -827,131 +866,178 @@ function renderTopStatus() {
     }
 }
 
+// Preserve immutable history DOM across selection, polling and new moves.
+const boardViews = new Map();
+const laneViews = new Map();
+let renderedGeneration = -1;
+let renderedMove = null;
+let linksQueued = false;
+
+function queueLinkDraw() {
+    if (linksQueued) return;
+    linksQueued = true;
+    requestAnimationFrame(() => { linksQueued = false; drawLinks(); });
+}
+
+function prefersReducedMotion() {
+    return Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+}
+
 function renderMultiverse() {
     const container = document.getElementById('timeline-lanes');
-    const viewport = document.getElementById('multiverse-viewport');
-    const savedLeft = viewport.scrollLeft;
-    const savedTop = viewport.scrollTop;
-    container.innerHTML = '';
-
+    if (renderedGeneration !== sessionGeneration) {
+        container.replaceChildren();
+        boardViews.clear();
+        laneViews.clear();
+        renderedGeneration = sessionGeneration;
+        renderedMove = null;
+    }
     const boards = gameState.boards || [];
     const timelines = [...(gameState.timelines || [])].sort((a, b) => b.id - a.id);
     if (!boards.length || !timelines.length) {
-        container.innerHTML = '<div class="muted">当前没有可显示的棋盘。</div>';
+        container.textContent = '当前没有可显示的棋盘。';
+        boardViews.clear(); laneViews.clear(); renderedMove = null;
+        const svg = document.getElementById('timeline-links');
+        if (svg) svg.innerHTML = '';
         return;
     }
-
-    const times = boards.map(board => board.coord.time_point);
-    const minTime = Math.min(...times);
-    const maxTime = Math.max(...times);
-    const columnCount = Math.max(1, maxTime - minTime + 1);
-    const targetBoardKeys = new Set(legalMoves.map(move => move.destination.board.key));
-
-    for (const timeline of timelines) {
-        const lane = document.createElement('section');
-        lane.className = `timeline-lane ${timeline.is_active ? 'active' : 'inactive'}`;
-        lane.dataset.timelineId = timeline.id;
-
-        const label = document.createElement('div');
-        label.className = 'lane-label';
-        label.innerHTML = `<strong>${escapeHtml(timeline.name)}</strong><small>${timeline.is_active ? '活动' : '非活动'}${timeline.owner ? ` · ${escapeHtml(colorLabel(timeline.owner))}` : ''}</small>`;
-        lane.appendChild(label);
-
-        const track = document.createElement('div');
-        track.className = 'lane-track';
-        track.style.gridTemplateColumns = `repeat(${columnCount}, var(--board-size))`;
-
-        const laneBoards = boards
-            .filter(board => board.coord.timeline === timeline.id)
-            .sort((a, b) => a.coord.time_point - b.coord.time_point);
-        for (const board of laneBoards) {
-            const card = createBoardCard(board, targetBoardKeys);
-            card.style.gridColumn = String(board.coord.time_point - minTime + 1);
-            track.appendChild(card);
-        }
-
-        lane.appendChild(track);
-        container.appendChild(lane);
+    if (!laneViews.size) container.replaceChildren();
+    let minTime = Infinity, maxTime = -Infinity;
+    const boardsByLane = new Map();
+    for (const board of boards) {
+        minTime = Math.min(minTime, board.coord.time_point);
+        maxTime = Math.max(maxTime, board.coord.time_point);
+        if (!boardsByLane.has(board.coord.timeline)) boardsByLane.set(board.coord.timeline, []);
+        boardsByLane.get(board.coord.timeline).push(board);
     }
-
-    viewport.scrollLeft = savedLeft;
-    viewport.scrollTop = savedTop;
-    requestAnimationFrame(drawLinks);
+    const targets = new Map();
+    for (const move of legalMoves) {
+        const key = move.destination.board.key;
+        if (!targets.has(key)) targets.set(key, new Map());
+        targets.get(key).set(move.destination.y * 8 + move.destination.x, move.is_branching);
+    }
+    const activeBoards = new Set();
+    const activeLanes = new Set();
+    const last = gameState.last_move;
+    const arrival = moveArrivalBoardKey(last);
+    const moveIdentity = JSON.stringify([gameState.move_counter, last]);
+    const newMove = renderedMove !== null && renderedMove !== moveIdentity;
+    timelines.forEach((timeline, index) => {
+        activeLanes.add(timeline.id);
+        let laneView = laneViews.get(timeline.id);
+        if (!laneView) {
+            const lane = document.createElement('section');
+            lane.dataset.timelineId = timeline.id;
+            const label = document.createElement('div'); label.className = 'lane-label';
+            const track = document.createElement('div'); track.className = 'lane-track';
+            lane.appendChild(label); lane.appendChild(track);
+            laneView = { lane, label, track, labelText: null };
+            laneViews.set(timeline.id, laneView);
+        }
+        const {lane, label, track} = laneView;
+        lane.className = `timeline-lane ${timeline.is_active ? 'active' : 'inactive'}`;
+        const labelText = `<strong>${escapeHtml(timeline.name)}</strong><small>${timeline.is_active ? '活动' : '非活动'}${timeline.owner ? ` · ${escapeHtml(colorLabel(timeline.owner))}` : ''}</small>`;
+        if (labelText !== laneView.labelText) { label.innerHTML = labelText; laneView.labelText = labelText; }
+        track.style.gridTemplateColumns = `repeat(${maxTime - minTime + 1}, var(--board-size))`;
+        if (container.children[index] !== lane) container.insertBefore(lane, container.children[index] || null);
+        const laneBoards = (boardsByLane.get(timeline.id) || []).sort((a, b) => a.coord.time_point - b.coord.time_point);
+        laneBoards.forEach((board, boardIndex) => {
+            activeBoards.add(board.key);
+            let view = boardViews.get(board.key);
+            const isNew = !view;
+            if (!view) {
+                view = { card: createBoardCard(board), model: null, signature: null };
+                boardViews.set(board.key, view);
+            }
+            if (view.model !== board) {
+                view.base = JSON.stringify([board.board, board.coord, board.role, board.timeline_active, board.is_present,
+                    board.is_required, board.is_movable, board.playable, board.historical]);
+                view.model = board;
+            }
+            const boardTargets = targets.get(board.key);
+            const source = selectedSource?.boardKey === board.key ? selectedSource : null;
+            const lastSource = last?.source?.board?.key === board.key ? last.source : null;
+            const lastTarget = arrival === board.key ? last.destination : null;
+            const signature = view.base + JSON.stringify([focusedBoardKey === board.key,
+                source && [source.x, source.y], boardTargets ? [...boardTargets] : null,
+                lastSource && [lastSource.x, lastSource.y], lastTarget && [lastTarget.x, lastTarget.y]]);
+            if (view.signature !== signature) {
+                updateBoardCard(view.card, board, boardTargets, source, lastSource, lastTarget);
+                view.signature = signature;
+            }
+            view.card.style.gridColumn = String(board.coord.time_point - minTime + 1);
+            if (track.children[boardIndex] !== view.card) track.insertBefore(view.card, track.children[boardIndex] || null);
+            if (newMove && !prefersReducedMotion()) {
+                if (isNew) view.card.animate?.([{opacity: .35}, {opacity: 1}], {duration: 180});
+                if (lastTarget) view.card._cells[lastTarget.y * 8 + lastTarget.x].firstChild.animate?.(
+                    [{transform: 'translateY(-10px) scale(.85)', opacity: .4}, {transform: 'none', opacity: 1}],
+                    {duration: 240, easing: 'cubic-bezier(.2,.8,.2,1)'});
+            }
+        });
+    });
+    for (const [key, view] of boardViews) if (!activeBoards.has(key)) { view.card.remove(); boardViews.delete(key); }
+    for (const [key, view] of laneViews) if (!activeLanes.has(key)) { view.lane.remove(); laneViews.delete(key); }
+    renderedMove = moveIdentity;
+    queueLinkDraw();
 }
 
-function createBoardCard(board, targetBoardKeys) {
+function createBoardCard(board) {
     const card = document.createElement('article');
+    card.dataset.boardKey = board.key;
+    const header = document.createElement('header'); header.className = 'board-card-header';
+    header.onclick = event => { event.stopPropagation(); focusBoard(board.key); };
+    card._header = header; card.appendChild(header);
+    const grid = document.createElement('div'); grid.className = 'mini-board';
+    card._cells = [];
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        const cell = document.createElement('button'); cell.type = 'button';
+        const glyph = document.createElement('span'); glyph.className = 'piece-glyph';
+        cell.appendChild(glyph);
+        cell.onclick = event => { event.stopPropagation(); handleCellClick(board.key, x, y); };
+        grid.appendChild(cell); card._cells.push(cell);
+    }
+    card.appendChild(grid);
+    return card;
+}
+
+function updateBoardCard(card, board, targets, source, lastSource, lastTarget) {
     const classes = ['board-card', board.role];
     if (!board.timeline_active) classes.push('inactive');
     if (board.is_present) classes.push('present');
     if (board.is_required) classes.push('required');
     if (board.is_movable) classes.push('movable');
     if (focusedBoardKey === board.key) classes.push('focused');
-    if (targetBoardKeys.has(board.key)) classes.push('target-board');
-    card.className = classes.join(' ');
-    card.dataset.boardKey = board.key;
-
-    const header = document.createElement('header');
-    header.className = 'board-card-header';
-    header.onclick = event => {
-        event.stopPropagation();
-        focusBoard(board.key);
-    };
+    if (targets) classes.push('target-board');
+    if (card.className !== classes.join(' ')) card.className = classes.join(' ');
     const laneName = board.coord.timeline === 0 ? 'L0' : `L${board.coord.timeline > 0 ? '+' : ''}${board.coord.timeline}`;
-    header.innerHTML = `<span class="board-coord-label">${laneName} · 回合 T${board.coord.turn} · ${escapeHtml(colorLabel(board.coord.side))}</span>`;
-
-    const badges = document.createElement('span');
-    badges.className = 'board-badges';
-    if (board.is_present) badges.appendChild(makeBadge('当前时刻', 'present'));
-    if (board.is_required) badges.appendChild(makeBadge('必须推进', 'required'));
-    if (board.playable && !board.is_required) badges.appendChild(makeBadge(board.is_movable ? '可选走子' : '等待对手', 'playable'));
-    if (board.historical) badges.appendChild(makeBadge('历史 · 仅可落子', 'historical'));
-    if (!board.timeline_active) badges.appendChild(makeBadge('非活动', 'inactive'));
-    header.appendChild(badges);
-    card.appendChild(header);
-
-    const grid = document.createElement('div');
-    grid.className = 'mini-board';
-    for (let y = 0; y < 8; y++) {
-        for (let x = 0; x < 8; x++) {
-            const cell = document.createElement('div');
-            const ch = board.board?.[y]?.[x] || '';
-            cell.className = `mini-cell ${(x + y) % 2 === 0 ? 'light' : 'dark'}`;
-            if (ch) {
-                cell.textContent = pieceSymbols[ch] || ch;
-                cell.classList.add(pieceColor(ch) === 'white' ? 'white-piece' : 'black-piece', 'has-piece');
-            }
-
-            if (selectedSource && selectedSource.boardKey === board.key && selectedSource.x === x && selectedSource.y === y) {
-                cell.classList.add('source-selected');
-            }
-
-            const target = legalMoves.find(move =>
-                move.destination.board.key === board.key &&
-                move.destination.x === x && move.destination.y === y
-            );
-            if (target) {
-                cell.classList.add('valid-target');
-                if (target.is_branching) cell.classList.add('branch-target');
-            }
-
-            const last = gameState.last_move;
-            if (last?.source?.board?.key === board.key && last.source.x === x && last.source.y === y) {
-                cell.classList.add('last-source');
-            }
-            if (moveArrivalBoardKey(last) === board.key && last.destination.x === x && last.destination.y === y) {
-                cell.classList.add('last-target');
-            }
-
-            cell.onclick = event => {
-                event.stopPropagation();
-                handleCellClick(board.key, x, y);
-            };
-            grid.appendChild(cell);
-        }
+    const title = `${laneName} · 回合 T${board.coord.turn} · ${colorLabel(board.coord.side)}`;
+    const badges = [];
+    if (board.is_present) badges.push(['当前时刻', 'present']);
+    if (board.is_required) badges.push(['必须推进', 'required']);
+    if (board.playable && !board.is_required) badges.push([board.is_movable ? '可选走子' : '等待对手', 'playable']);
+    if (board.historical) badges.push(['历史 · 仅可落子', 'historical']);
+    if (!board.timeline_active) badges.push(['非活动', 'inactive']);
+    const headerHTML = `<span class="board-coord-label">${escapeHtml(title)}</span><span class="board-badges">${badges.map(([text, cls]) => `<span class="board-badge ${cls}">${text}</span>`).join('')}</span>`;
+    if (card._headerHTML !== headerHTML) { card._header.innerHTML = headerHTML; card._headerHTML = headerHTML; }
+    const names = {k: '王', q: '后', r: '车', b: '象', n: '马', p: '兵'};
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        const cell = card._cells[y * 8 + x];
+        const ch = board.board?.[y]?.[x] || '';
+        const classes = ['mini-cell', (x + y) % 2 === 0 ? 'light' : 'dark'];
+        if (ch) classes.push(pieceColor(ch) === 'white' ? 'white-piece' : 'black-piece', 'has-piece');
+        if (source?.x === x && source?.y === y) classes.push('source-selected');
+        const target = targets?.has(y * 8 + x);
+        if (target) classes.push('valid-target');
+        if (targets?.get(y * 8 + x)) classes.push('branch-target');
+        if (lastSource?.x === x && lastSource?.y === y) classes.push('last-source');
+        if (lastTarget?.x === x && lastTarget?.y === y) classes.push('last-target');
+        if (cell === interactionSource) classes.push('pending-source');
+        const glyph = pieceSymbols[ch] || ch;
+        if (cell.firstChild.textContent !== glyph) cell.firstChild.textContent = glyph;
+        if (cell.className !== classes.join(' ')) cell.className = classes.join(' ');
+        cell.tabIndex = target || (board.is_movable && ch) ? 0 : -1;
+        cell.setAttribute('aria-label', `${title} ${String.fromCharCode(97 + x)}${8 - y}${ch ? ` ${colorLabel(pieceColor(ch))}${names[ch.toLowerCase()] || ''}` : ' 空格'}${target ? ' 可落子' : ''}`);
     }
-    card.appendChild(grid);
-    return card;
 }
 
 function makeBadge(text, cls) {
@@ -1117,7 +1203,7 @@ function renderActionPanel() {
         ? `回合 T${present.turn} / 时刻 t${present.time_point} / ${colorLabel(present.side)}`
         : '—';
     summary.innerHTML = `
-        <div class="action-row"><span>玩家</span><strong>${escapeHtml(colorLabel(action.color || gameState.turn))}</strong></div>
+        <div class="action-row"><span>行动方</span><strong>${escapeHtml(colorLabel(action.color || gameState.turn))}</strong></div>
         <div class="action-row"><span>当前时刻</span><strong>${escapeHtml(presentText)}</strong></div>
         <div class="action-row"><span>行动走子数</span><strong>${action.move_count || 0}</strong></div>
         <div class="action-row"><span>必须推进</span><strong>${required.length}</strong></div>
@@ -1352,11 +1438,14 @@ function cssEscape(value) {
 }
 
 window.addEventListener('resize', () => {
-    if (gameState) requestAnimationFrame(drawLinks);
+    if (gameState) queueLinkDraw();
 });
 
 document.addEventListener('keydown', event => {
-    if (document.getElementById('tutorial-dialog')?.open) return;
+    if (document.querySelector('dialog[open]')) return;
+    // Native buttons use Enter/Space themselves. Do not also submit a turn
+    // when a keyboard player activates a square or another control.
+    if (event.target?.closest?.('button, input, select, textarea, a, [contenteditable="true"]')) return;
     if (!gameState) return;
     if (event.key === 'Escape') clearSelection();
     if (event.key === 'Enter' && mode === 'pvp' && gameState.action?.can_submit) submitAction();

@@ -29,13 +29,14 @@ function element() {
 function loadClient(includeP2P = false) {
     const elements = new Map();
     const document = {
+        listeners: new Map(),
         getElementById(id) {
             if (!elements.has(id)) elements.set(id, element());
             return elements.get(id);
         },
         querySelector() { return null; },
         querySelectorAll() { return []; },
-        addEventListener() {},
+        addEventListener(name, callback) { this.listeners.set(name, callback); },
         createElement() { return element(); },
         createElementNS() { return element(); },
         body: { appendChild() {} },
@@ -733,7 +734,138 @@ async function testSavedReplaySelectionAndPlaybackOwnership() {
     assert.equal(overlaysRemoved, 1);
 }
 
+function testIncrementalBoardRendering() {
+    const context = loadClient();
+    let created = 0;
+    let animations = 0;
+    function domElement() {
+        created++;
+        const node = element();
+        node.children = []; node.dataset = {}; node.attributes = {}; node.className = '';
+        node.appendChild = child => node.insertBefore(child, null);
+        node.insertBefore = (child, next) => {
+            child.remove();
+            const index = next ? node.children.indexOf(next) : node.children.length;
+            node.children.splice(index, 0, child); child.parentNode = node;
+            return child;
+        };
+        node.remove = () => {
+            if (node.parentNode) node.parentNode.children.splice(node.parentNode.children.indexOf(node), 1);
+            node.parentNode = null;
+        };
+        node.replaceChildren = () => { node.children.forEach(child => {child.parentNode = null;}); node.children = []; };
+        node.setAttribute = (key, value) => {node.attributes[key] = value;};
+        node.animate = () => { animations++; };
+        Object.defineProperty(node, 'firstChild', {get: () => node.children[0]});
+        return node;
+    }
+    const container = domElement();
+    const originalGet = context.document.getElementById;
+    context.document.getElementById = id => id === 'timeline-lanes' ? container : originalGet(id);
+    context.document.createElement = domElement;
+    vm.runInContext(`queueLinkDraw = () => {}; mode = 'pvp';
+        __boards = Array.from({length: 120}, (_, i) => ({key: '0:' + i,
+            coord: {timeline: 0, time_point: i, turn: Math.floor(i/2), side: i%2 ? 'black' : 'white'},
+            board: Array.from({length: 8}, () => Array(8).fill('')), timeline_active: true,
+            role: i === 119 ? 'playable' : 'historical', is_movable: i === 119, historical: i < 119}));
+        gameState = {boards: __boards, timelines: [{id: 0, name: 'L0', is_active: true}], move_counter: 0};
+        renderMultiverse(); __oldCells = boardViews.get('0:119').card._cells.slice();
+        __oldCard = boardViews.get('0:0').card;`, context);
+    const initialCreated = created;
+    vm.runInContext(`selectedSource = {boardKey: '0:119', x: 3, y: 4};
+        legalMoves = [{destination: {board: {key: '0:0'}, x: 5, y: 3}, is_branching: true},
+                      {destination: {board: {key: '0:119'}, x: 4, y: 4}, is_branching: false}];
+        renderMultiverse();`, context);
+    assert.equal(created, initialCreated, 'Selecting on 120 boards must create zero elements');
+    assert.equal(vm.runInContext("boardViews.get('0:0').card === __oldCard", context), true);
+    assert.equal(vm.runInContext("boardViews.get('0:119').card._cells.every((c, i) => c === __oldCells[i])", context), true);
+    assert.match(vm.runInContext("boardViews.get('0:0').card._cells[29].className", context), /branch-target/);
+    assert.match(vm.runInContext("boardViews.get('0:119').card._cells[35].className", context), /source-selected/);
+    // A full network snapshot recreates JS objects, but preserves historical DOM and scroll position.
+    const viewport = originalGet('multiverse-viewport'); viewport.scrollLeft = 200; viewport.scrollTop = 100;
+    vm.runInContext(`gameState.boards = JSON.parse(JSON.stringify(__boards));
+        gameState.boards.push({...__boards[119], key: '0:120', coord: {...__boards[119].coord, time_point: 120}});
+        gameState.move_counter = 1;
+        gameState.last_move = {source: {board: {key: '0:119'}, x: 3, y: 4},
+            destination: {board: {key: '0:119'}, x: 4, y: 4}, result_destination_board: {key: '0:120'}};
+        clearSelection(false); renderMultiverse();`, context);
+    assert.ok(created - initialCreated < 140, 'Only one new board is created');
+    assert.equal(vm.runInContext("boardViews.get('0:0').card === __oldCard", context), true);
+    assert.doesNotMatch(vm.runInContext("boardViews.get('0:0').card._cells[29].className", context), /target/);
+    assert.equal(viewport.scrollLeft, 200); assert.equal(viewport.scrollTop, 100);
+    assert.equal(animations, 2, 'Animate only the new board and accepted arrival');
+    vm.runInContext('renderMultiverse()', context);
+    assert.equal(animations, 2, 'Mutation release must not replay the arrival');
+    context.window.matchMedia = () => ({matches: true});
+    vm.runInContext(`gameState.move_counter = 2; gameState.boards.push({...__boards[119], key: '0:121',
+        coord: {...__boards[119].coord, time_point: 121}}); renderMultiverse();`, context);
+    assert.equal(animations, 2, 'Respect reduced motion for board and piece animations');
+    vm.runInContext('gameState.boards = gameState.boards.slice(0, 2); renderMultiverse();', context);
+    assert.equal(vm.runInContext('boardViews.size', context), 2);
+    assert.equal(container.children[0].children[1].children.length, 2);
+    vm.runInContext('invalidateSession(); renderMultiverse();', context);
+    assert.equal(vm.runInContext("boardViews.get('0:0').card === __oldCard", context), false);
+}
+
+function testKeyboardControlsDoNotAlsoSubmitTurn() {
+    const context = loadClient();
+    vm.runInContext(`mode = 'pvp'; gameState = {action: {can_submit: true}};
+        __submitted = 0; submitAction = () => { __submitted++; };`, context);
+    const keydown = context.document.listeners.get('keydown');
+    keydown({key: 'Enter', target: {closest: () => ({})}});
+    assert.equal(vm.runInContext('__submitted', context), 0, 'Native square/button Enter owns its click');
+    keydown({key: 'Enter', target: {closest: () => null}});
+    assert.equal(vm.runInContext('__submitted', context), 1, 'Background Enter shortcut remains available');
+}
+
+async function testDelayedSelectionFeedbackAndOwnership() {
+    for (const online of [false, true]) {
+        const context = loadClient(online);
+        vm.runInContext(`mode = ${online ? "'p2p'" : "'pvp'"};
+            gameState = {move_counter: 0, turn: 'white', game_state: 'PLAYING'};
+            renderMultiverse = () => {}; renderInspector = () => {};
+            __board = {key: '0:0', coord: {timeline: 0, time_point: 0}};
+            ${online ? 'p2pMovesForSelection' : 'api'} = () => new Promise(resolve => {__resolveSelection = resolve;});`, context);
+        const pending = vm.runInContext('selectSource(__board, 6, 7)', context);
+        assert.equal(context.document.getElementById('interaction-status').hidden, false);
+        assert.match(context.document.getElementById('interaction-label').textContent, /合法落点/);
+        assert.equal(vm.runInContext('selectedSource', context), null, 'No speculative legal state');
+        vm.runInContext(`invalidateSession(); __newOwner = {}; beginInteraction(__newOwner, '正在同步行动…');
+            __resolveSelection({moves: [{destination: {board: {key: '0:0'}, x: 5, y: 5}}]});`, context);
+        await pending;
+        assert.equal(context.document.getElementById('interaction-status').hidden, false, 'Late response cannot dismiss newer feedback');
+        assert.equal(vm.runInContext('selectedSource', context), null);
+        vm.runInContext('endInteraction(__newOwner)', context);
+        assert.equal(context.document.getElementById('interaction-status').hidden, true);
+    }
+}
+
+async function testCompactPollPreservesBoardsAndRejectsLateVersion() {
+    const context = loadClient(true);
+    vm.runInContext(`mode = 'p2p'; p2pRoomCode = 'ABC123'; p2pPlayerToken = 'fixture';
+        __boards = [{key: '0:0'}]; __selection = {boardKey: '0:0', x: 6, y: 7};
+        gameState = {boards: __boards, move_counter: 2, p2p: {room_code: 'ABC123', state_version: 5}};
+        selectedSource = __selection; __renders = 0; updateAll = () => { __renders++; };
+        api = async (path, method, body) => { __pollBody = body;
+            return {unchanged: true, p2p: {room_code: 'ABC123', state_version: 5}}; };`, context);
+    await vm.runInContext('pollP2PState()', context);
+    assert.equal(vm.runInContext('__pollBody.known_version', context), 5);
+    assert.equal(vm.runInContext('gameState.boards === __boards && selectedSource === __selection', context), true);
+    assert.equal(vm.runInContext('__renders', context), 0);
+    assert.equal(vm.runInContext(`applyP2PState({unchanged: true, p2p: {room_code: 'ABC123', state_version: 4}},
+        captureSession(), null, {preserveSelection: true})`, context), false);
+    assert.equal(vm.runInContext(`applyP2PState({unchanged: true, p2p: {room_code: 'OTHER1', state_version: 5}},
+        captureSession(), null, {preserveSelection: true})`, context), false);
+    assert.equal(vm.runInContext(`applyP2PState({unchanged: true, p2p: {room_code: 'ABC123', state_version: 6}},
+        captureSession(), null, {preserveSelection: true})`, context), false);
+    assert.equal(vm.runInContext('gameState.move_counter', context), 2);
+}
+
 (async () => {
+    testIncrementalBoardRendering();
+    testKeyboardControlsDoNotAlsoSubmitTurn();
+    await testDelayedSelectionFeedbackAndOwnership();
+    await testCompactPollPreservesBoardsAndRejectsLateVersion();
     await testSavedReplaySelectionAndPlaybackOwnership();
     await testReconnectCountdownAndSameVersionRecoveryControls();
     await testSavedGameRestoreOwnershipAndTerminalInstructions();

@@ -171,7 +171,7 @@ function noteP2PPollFailure() {
         void 'Waiting for opponent';
         showToast('在线同步暂时中断，正在自动重试…', true);
     }
-    clearSelection(false);
+    clearSelection(mode === 'p2p');
     if (mode === 'p2p' && gameState) renderActionPanel();
     renderP2PConnection();
 }
@@ -196,6 +196,16 @@ function applyP2PState(result, context = captureSession(), owner = null, options
     const sameVersion = Number.isFinite(currentVersion)
         && Number.isFinite(incomingVersion)
         && currentVersion === incomingVersion;
+    // A compact heartbeat is valid only for the exact state and room already rendered.
+    // Never let a pre-move heartbeat replace a newer accepted mutation or clear selection.
+    if (result.unchanged === true) {
+        if (!options.preserveSelection || !sameVersion || !gameState
+            || result.p2p?.room_code !== p2pRoomCode) return false;
+        gameState.p2p = result.p2p;
+        p2pLastStateAt = Date.now();
+        renderP2PConnection();
+        return true;
+    }
     gameState = result;
     p2pLastStateAt = Date.now();
     renderP2PConnection();
@@ -334,6 +344,7 @@ async function createP2PRoom() {
     const context = captureSession();
     const owner = { id: ++operationSequence, context };
     p2pRoomOperation = owner;
+    beginInteraction(owner, '正在创建在线房间…');
     try {
         const result = await api('/api/p2p/create', 'POST', {});
         if (!isCurrentSession(context) || p2pRoomOperation !== owner) return;
@@ -346,14 +357,21 @@ async function createP2PRoom() {
     } catch (error) {
         if (p2pRoomOperation === owner && isCurrentSession(context)) showToast('创建房间失败，请稍后重试', true);
     } finally {
+        endInteraction(owner);
         if (p2pRoomOperation === owner) p2pRoomOperation = null;
     }
 }
 
 async function joinP2PRoom() {
-    const raw = prompt('请输入 6 位房间码：');
-    if (!raw) return;
-    await joinP2PRoomCode(raw.trim().toUpperCase());
+    if (p2pRoomOperation) return;
+    document.getElementById('join-room-dialog').showModal();
+}
+
+async function joinRoomFromDialog() {
+    const code = document.getElementById('join-room-code').value.trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(code)) return;
+    document.getElementById('join-room-dialog').close();
+    await joinP2PRoomCode(code);
 }
 
 async function joinP2PRoomCode(roomCode) {
@@ -361,6 +379,7 @@ async function joinP2PRoomCode(roomCode) {
     const context = captureSession();
     const owner = { id: ++operationSequence, context, roomCode };
     p2pRoomOperation = owner;
+    beginInteraction(owner, '正在加入棋局…');
     const saved = readStoredP2PSession(roomCode);
     try {
         const result = await api('/api/p2p/join', 'POST', {
@@ -379,6 +398,7 @@ async function joinP2PRoomCode(roomCode) {
     } catch (error) {
         if (p2pRoomOperation === owner && isCurrentSession(context)) showToast('加入房间失败，请稍后重试', true);
     } finally {
+        endInteraction(owner);
         if (p2pRoomOperation === owner) p2pRoomOperation = null;
     }
 }
@@ -394,7 +414,7 @@ async function pollP2PState() {
     const previousVersion = gameState?.p2p?.state_version;
     const previousOpponent = Boolean(gameState?.p2p?.opponent_connected);
     try {
-        const result = await api('/api/p2p/state', 'POST', p2pCredentials(), P2P_POLL_TIMEOUT_MS);
+        const result = await api('/api/p2p/state', 'POST', {...p2pCredentials(), known_version: previousVersion}, P2P_POLL_TIMEOUT_MS);
         if (!isCurrentSession(context) || p2pPollOwner !== owner) return;
         if (isErrorResult(result)) {
             if (!isTerminalP2PError(result)) noteP2PPollFailure();
@@ -461,6 +481,11 @@ selectSource = async function(board, x, y) {
     const readId = ++stateReadSequence;
     const owner = { id: ++operationSequence, context, readId, fingerprint: stateFingerprint() };
     selectionOwner = owner;
+    const hadSelection = Boolean(selectedSource);
+    selectedSource = null;
+    legalMoves = [];
+    beginInteraction(owner, '正在读取合法落点…', {boardKey: board.key, x, y});
+    if (hadSelection) { renderMultiverse(); renderInspector(); }
     try {
         const result = await p2pMovesForSelection(board, x, y);
         if (selectionOwner !== owner || !isCurrentSession(context)
@@ -488,6 +513,7 @@ selectSource = async function(board, x, y) {
     } catch (error) {
         if (selectionOwner === owner && isCurrentSession(context)) showToast('无法读取合法走子，请稍后重试', true);
     } finally {
+        endInteraction(owner);
         if (selectionOwner === owner) selectionOwner = null;
     }
 };
@@ -562,7 +588,8 @@ renderTopStatus = function() {
     const status = document.getElementById('top-status');
     if (!status) return;
 
-    const room = document.createElement('span');
+    const room = document.createElement('button');
+    room.type = 'button';
     room.className = 'status-pill emphasis';
     room.textContent = `房间 ${gameState.p2p.room_code}`;
     room.title = '点击复制房间码';
@@ -587,7 +614,7 @@ renderTopStatus = function() {
         offline: `你执${colorLabel(gameState.player_color)} · 对手离线，等待重连`,
     };
     const peer = document.createElement('span');
-    peer.className = `status-pill ${opponentStatus === 'connected' ? '' : 'danger'}`.trim();
+    peer.className = `status-pill identity ${opponentStatus === 'connected' ? '' : 'danger'}`.trim();
     peer.textContent = peerLabels[opponentStatus] || peerLabels.not_connected;
     status.appendChild(peer);
 };

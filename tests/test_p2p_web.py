@@ -68,6 +68,68 @@ def _pair():
     return host, guest, created, joined, _credentials(created), _credentials(joined)
 
 
+def test_compact_poll_skips_board_serialization_and_retains_auth(monkeypatch):
+    host, _guest, _created, _joined, auth, _guest_auth = _pair()
+    full = host.post('/api/p2p/state', json=auth)
+    version = full.json['p2p']['state_version']
+    original = web_app_module._get_game_state_unlocked
+    calls = []
+
+    def counted(instance):
+        calls.append(instance)
+        return original(instance)
+
+    monkeypatch.setattr(web_app_module, '_get_game_state_unlocked', counted)
+    compact = host.post('/api/p2p/state', json={**auth, 'known_version': version})
+    assert compact.status_code == 200
+    assert compact.json['unchanged'] is True
+    assert compact.json['p2p'] == full.json['p2p']
+    assert 'boards' not in compact.json
+    assert not calls
+    assert len(compact.data) < len(full.data) / 3
+    invalid = host.post('/api/p2p/state', json={**auth, 'player_token': 'invalid', 'known_version': version})
+    assert invalid.status_code == 401
+    # Old clients and a lost/out-of-date snapshot still receive the complete contract.
+    for known in [None, str(version), True, version - 1, version + 1]:
+        state = host.post('/api/p2p/state', json={**auth, 'known_version': known})
+        assert state.status_code == 200 and state.json['boards']
+        assert 'unchanged' not in state.json
+    assert len(calls) == 5
+
+
+def test_compact_poll_renews_leases_and_offline_transition_sends_full_state(isolated_p2p):
+    host, guest, _created, _joined, auth, guest_auth = _pair()
+    version = host.post('/api/p2p/state', json=auth).json['p2p']['state_version']
+    for _ in range(8):
+        isolated_p2p.advance(4)
+        for client, credentials in [(host, auth), (guest, guest_auth)]:
+            state = client.post('/api/p2p/state', json={**credentials, 'known_version': version})
+            assert state.json['unchanged'] is True
+            assert state.json['p2p']['opponent_connected'] is True
+    isolated_p2p.advance(p2p_module.PLAYER_LEASE_SECONDS + 1)
+    state = host.post('/api/p2p/state', json={**auth, 'known_version': version})
+    assert 'unchanged' not in state.json and state.json['boards']
+    assert state.json['p2p']['opponent_status'] == 'offline'
+    offline_version = state.json['p2p']['state_version']
+    assert offline_version > version
+    reconnected = guest.post('/api/p2p/state', json={**guest_auth, 'known_version': offline_version})
+    assert reconnected.json['p2p']['state_version'] > offline_version
+    assert 'unchanged' not in reconnected.json
+
+
+def test_compact_poll_after_move_sends_new_authoritative_boards():
+    host, _guest, _created, _joined, auth, _guest_auth = _pair()
+    state = host.post('/api/p2p/state', json=auth).json
+    coord = state['boards'][0]['coord']
+    move = host.post('/api/p2p/legal_moves', json={**auth, 'board': coord, 'x': 6, 'y': 7}).json['moves'][0]
+    moved = host.post('/api/p2p/move', json={**auth, **move})
+    assert moved.status_code == 200
+    refreshed = host.post('/api/p2p/state', json={**auth, 'known_version': state['p2p']['state_version']})
+    assert refreshed.json['boards'] == moved.json['boards']
+    assert refreshed.json['last_move'] == moved.json['last_move']
+    assert 'unchanged' not in refreshed.json
+
+
 def test_tutorial_isolated_from_online_room_and_branch_response_is_recorded():
     from tests.test_travelling_kings import engine_with, position
     from src.ai.action_planner import engine_state_signature

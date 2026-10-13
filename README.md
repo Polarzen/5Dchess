@@ -2,6 +2,8 @@
 
 在多个时间与平行时间线之间走棋的国际象棋游戏。浏览器界面支持人机对弈、同屏双人、局域网及异地联机，并提供互动教程和棋谱回放。
 
+界面采用浅粉色时空主题，支持手机布局、即时操作反馈和减少动态效果。历史棋盘复用已有格子，联机空闲轮询只交换连接状态，避免重复传输整盘历史。见 [界面与性能验证](docs/validation/WEB_REDESIGN.md)。
+
 **[下载 Windows 一键启动 ZIP](https://github.com/Polarzen/5Dchess/releases/latest/download/5DChess-Windows.zip)** · [所有版本](https://github.com/Polarzen/5Dchess/releases) · [使用说明](使用说明.txt) · [文档目录](docs/README.md)
 
 ## 下载与启动

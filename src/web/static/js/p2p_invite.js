@@ -124,7 +124,8 @@ if (typeof window !== 'undefined') {
 
         const status = document.getElementById('top-status');
         if (!status) return;
-        const invite = document.createElement('span');
+        const invite = document.createElement('button');
+        invite.type = 'button';
         invite.className = 'status-pill emphasis';
         const isLocal = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location?.hostname);
         invite.textContent = isLocal ? '复制房间码' : '复制邀请链接';
