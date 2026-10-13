@@ -1,196 +1,279 @@
-/** Isolated practice: snapshots come from canonical engine moves, never live mutations. */
-const TUTORIAL_STORAGE_KEY = '5dchess.tutorial.v1';
-const tutorialLessons = [
-    {
-        title: '1 · 走子与提交',
-        description: '一次“走子”只推进相关棋盘；一次“行动”可以包含多次走子。最后点击“提交行动”，才会换人。',
-        select: '点击亮框中的白兵（e2）。', target: '点击蓝色落点 e4，让白兵前进两格。',
-        moved: '白兵已在新棋盘上。白方仍在行动，但红框已清空，现在点击“提交行动”。',
-        done: '提交成功，轮到黑方。旧棋盘保留历史，新棋盘显示走子结果。',
-    },
-    {
-        title: '2 · 跨时间线移动',
-        description: 'L0 和 L+1 是两条时间线。车沿时间线维度移动时，格子位置保持不变；这里两张最新棋盘都轮到白方。',
-        select: '点击 L0 棋盘上的白车。两张红框棋盘都需要推进。',
-        target: '点击 L+1 棋盘上相同位置的蓝色格子。',
-        moved: '车离开 L0，进入 L+1；两张棋盘都产生后继棋盘，红框同时清空。点击“提交行动”。',
-        done: '一次跨线走子推进了两张棋盘。移动前后的棋盘都被保留，轮到黑方。',
-    },
-    {
-        title: '3 · 回到历史，生成分支',
-        description: '横向是时间，纵向是时间线。只能从最新且轮到己方的棋盘选子；同色阶段的历史棋盘可以成为合法落点。',
-        select: '点击 T1（较新棋盘）上的白车。左侧 T0 是历史，不能从那里选子。',
-        target: '点击 T0 历史棋盘上的蓝色格子。车沿时间维度回到过去。',
-        moved: 'L+1 分支已生成，白车出现在分支的新棋盘上；L0 的原历史没有被改写。现在提交行动。',
-        done: '本课已完成！分支可能把“当前时刻”拉回过去；后续回合总是看最新红框，不能只看最右边的棋盘。',
-    },
-];
+/** Isolated practice; all snapshots and permitted choices come from the engine. */
+const TUTORIAL_STORAGE_KEY = '5dchess.tutorial.v2';
 let tutorialData = null;
 let tutorialIndex = 0;
-let tutorialPhase = 'select';
+let tutorialPhase = 'quiz';
 let tutorialRequest = 0;
 let tutorialOpener = null;
+let tutorialMoves = [];
+let tutorialSelection = null;
+let tutorialHint = false;
+let tutorialFeedback = '';
 const tutorialCompleted = new Set();
 
-function tutorialSeen() {
-    try { return Boolean(localStorage.getItem(TUTORIAL_STORAGE_KEY)); } catch (_) { return false; }
+function tutorialSaved() {
+    try { return JSON.parse(localStorage.getItem(TUTORIAL_STORAGE_KEY) || 'null'); }
+    catch (_) { return null; }
 }
-
-function markTutorialSeen(value) {
-    try { localStorage.setItem(TUTORIAL_STORAGE_KEY, value); } catch (_) { /* optional preference */ }
+function tutorialSeen() { return Boolean(tutorialSaved()); }
+function saveTutorialProgress(status = 'learning') {
+    try {
+        localStorage.setItem(TUTORIAL_STORAGE_KEY, JSON.stringify({
+            status, lesson: tutorialData?.[tutorialIndex]?.id, completed: [...tutorialCompleted],
+        }));
+    } catch (_) { /* The course also works when browser storage is unavailable. */ }
 }
-
 async function openTutorial() {
     const dialog = document.getElementById('tutorial-dialog');
     if (dialog.open) return;
     tutorialOpener = document.activeElement;
     dialog.showModal();
-    if (tutorialData) {
-        renderTutorial();
-        return;
-    }
+    if (tutorialData) { renderTutorial(); return; }
     await loadTutorial();
 }
-
 async function loadTutorial() {
     const owner = ++tutorialRequest;
     const content = document.getElementById('tutorial-content');
     content.setAttribute('aria-busy', 'true');
     content.textContent = '正在准备练习棋盘…';
-    document.getElementById('tutorial-next').disabled = true;
-    document.getElementById('tutorial-reset').disabled = true;
+    for (const id of ['tutorial-next', 'tutorial-reset', 'tutorial-prev']) document.getElementById(id).disabled = true;
     const result = await api('/api/tutorial');
     if (owner !== tutorialRequest || !document.getElementById('tutorial-dialog').open) return;
     content.setAttribute('aria-busy', 'false');
-    if (isErrorResult(result) || !Array.isArray(result?.lessons) || result.lessons.length !== 3) {
+    if (isErrorResult(result) || result?.version !== 2 || !Array.isArray(result?.lessons) || !result.lessons.length) {
         content.innerHTML = '<p role="alert">练习暂时无法加载。你的对局未受影响，可以重试或稍后再学。</p><button class="ghost-btn" onclick="loadTutorial()">重新加载</button>';
         return;
     }
     tutorialData = result.lessons;
-    renderTutorial();
+    const saved = tutorialSaved();
+    if (Array.isArray(saved?.completed)) {
+        for (const lesson of tutorialData) if (saved.completed.includes(lesson.id)) tutorialCompleted.add(lesson.id);
+    }
+    tutorialIndex = Math.max(0, tutorialData.findIndex(lesson => lesson.id === saved?.lesson));
+    resetTutorialLesson();
 }
-
-function closeTutorial(completed = false) {
+function closeTutorial() {
     ++tutorialRequest;
-    markTutorialSeen(completed ? 'completed' : 'dismissed');
+    saveTutorialProgress(tutorialData && tutorialCompleted.size === tutorialData.length ? 'completed' : 'dismissed');
     document.getElementById('tutorial-dialog').close();
     tutorialOpener?.focus();
 }
-
 function resetTutorialLesson() {
     if (!tutorialData) return;
-    tutorialPhase = 'select';
+    tutorialMoves = [];
+    tutorialSelection = null;
+    tutorialHint = false;
+    tutorialFeedback = '';
+    tutorialPhase = tutorialData[tutorialIndex].plans ? 'select' : 'quiz';
     renderTutorial();
+    saveTutorialProgress();
     document.getElementById('tutorial-dialog').scrollTop = 0;
     document.getElementById('tutorial-title').focus({preventScroll: true});
 }
-
-function nextTutorialLesson() {
-    if (tutorialPhase !== 'done') return;
-    if (tutorialIndex === 2) {
-        closeTutorial(tutorialCompleted.size === 3);
-        return;
-    }
-    tutorialIndex += 1;
+function goTutorialLesson(index) {
+    if (!tutorialData || index < 0 || index >= tutorialData.length) return;
+    tutorialIndex = index;
     resetTutorialLesson();
 }
-
+function nextTutorialLesson() {
+    if (tutorialPhase !== 'done') return;
+    if (tutorialIndex < tutorialData.length - 1) { goTutorialLesson(tutorialIndex + 1); return; }
+    const missing = tutorialData.findIndex(lesson => !tutorialCompleted.has(lesson.id));
+    if (missing >= 0) { goTutorialLesson(missing); return; }
+    closeTutorial();
+}
+function tutorialSameSquare(a, b) { return a?.board.key === b?.board.key && a?.x === b?.x && a?.y === b?.y; }
+function tutorialSameMove(a, b) { return tutorialSameSquare(a.source, b.source) && tutorialSameSquare(a.destination, b.destination); }
+function tutorialPlans() {
+    return (tutorialData[tutorialIndex].plans || []).filter(plan =>
+        tutorialMoves.every((move, i) => tutorialSameMove(move, plan.steps[i].move)));
+}
+function tutorialChoices() {
+    return tutorialPlans().flatMap(plan => plan.steps[tutorialMoves.length] ? [plan.steps[tutorialMoves.length].move] : []);
+}
+function tutorialState() {
+    const lesson = tutorialData[tutorialIndex];
+    if (!lesson.plans) return lesson.snapshot;
+    const plan = tutorialPlans()[0];
+    if (['quiz', 'done'].includes(tutorialPhase)) return plan.after_submit;
+    return tutorialMoves.length ? plan.steps[tutorialMoves.length - 1].after_move : plan.steps[0].before;
+}
+function tutorialSquareLabel(square) {
+    return `${coordLabel(square.board)} · ${'abcdefgh'[square.x]}${8 - square.y}`;
+}
 function tutorialCell(key, x, y) {
-    const move = tutorialData?.[tutorialIndex]?.move;
-    if (!move) return;
-    const expected = tutorialPhase === 'select' ? move.source : tutorialPhase === 'target' ? move.destination : null;
-    if (!expected || expected.board.key !== key || expected.x !== x || expected.y !== y) return;
-    tutorialPhase = tutorialPhase === 'select' ? 'target' : 'submit';
+    if (!['select', 'target'].includes(tutorialPhase)) return;
+    const square = {board: {key}, x, y};
+    const choices = tutorialChoices();
+    if (tutorialSelection) {
+        const move = choices.find(item => tutorialSameSquare(item.source, tutorialSelection) && tutorialSameSquare(item.destination, square));
+        if (move) {
+            tutorialMoves.push(move);
+            tutorialSelection = null;
+            tutorialHint = false;
+            tutorialFeedback = `已走：${move.display_notation}`;
+            tutorialPhase = tutorialMoves.length === tutorialPlans()[0].steps.length ? 'submit' : 'select';
+            renderTutorial();
+            document.getElementById(tutorialPhase === 'submit' ? 'tutorial-submit' : 'tutorial-instruction')?.focus();
+            return;
+        }
+    }
+    const source = choices.find(item => tutorialSameSquare(item.source, square));
+    if (source) {
+        tutorialSelection = source.source;
+        tutorialPhase = 'target';
+        tutorialFeedback = '';
+    } else {
+        const board = tutorialState()?.boards.find(item => item.key === key);
+        tutorialFeedback = board?.historical ? '这是历史棋盘，不能从这里选子；只有蓝色落点才可进入历史。'
+            : '本课只练习指定棋子和目标。请按任务选子，或使用“给我提示”；正式对局会提供全部合法走法。';
+    }
+    renderTutorial();
+    if (source) document.querySelector('#tutorial-boards .target')?.focus();
+}
+function undoTutorialMove() {
+    if (!tutorialMoves.length || ['quiz', 'done'].includes(tutorialPhase)) return;
+    tutorialMoves.pop();
+    tutorialSelection = null;
+    tutorialFeedback = '已撤回练习中的一步，真实对局未受影响。';
+    tutorialPhase = 'select';
     renderTutorial();
 }
-
+function hintTutorial() {
+    tutorialHint = true;
+    renderTutorial();
+    document.getElementById('tutorial-instruction')?.focus();
+}
 function submitTutorialAction() {
-    if (tutorialPhase !== 'submit' || !tutorialData?.[tutorialIndex]?.after_move.can_submit) return;
-    tutorialPhase = 'done';
-    tutorialCompleted.add(tutorialIndex);
+    if (tutorialPhase !== 'submit' || !tutorialState()?.can_submit) return;
+    tutorialPhase = 'quiz';
+    tutorialFeedback = '';
     renderTutorial();
-    document.getElementById('tutorial-next').focus();
+    document.getElementById('tutorial-question')?.focus();
 }
-
+function answerTutorial(index) {
+    if (tutorialPhase !== 'quiz') return;
+    const lesson = tutorialData[tutorialIndex];
+    if (index !== lesson.quiz.correct) {
+        tutorialFeedback = `再想一想：${lesson.quiz.explanation}`;
+    } else {
+        tutorialPhase = 'done';
+        tutorialCompleted.add(lesson.id);
+        tutorialFeedback = `答对了！${lesson.quiz.explanation}`;
+        saveTutorialProgress(tutorialCompleted.size === tutorialData.length ? 'completed' : 'learning');
+    }
+    renderTutorial();
+    document.getElementById(tutorialPhase === 'done' ? 'tutorial-next' : 'tutorial-question').focus();
+}
+function tutorialInstruction(lesson, state) {
+    if (['quiz', 'done'].includes(tutorialPhase)) return lesson.plans ? lesson.success : '读完说明后，回答下方的问题，检查自己是否理解。';
+    if (tutorialPhase === 'submit') return '红框已清空，王安全检查通过。现在点击“提交行动”，结束白方行动。';
+    if (tutorialSelection) {
+        const destinations = tutorialChoices().filter(move => tutorialSameSquare(move.source, tutorialSelection));
+        return `已选 ${tutorialSquareLabel(tutorialSelection)}。请选择蓝色落点：${[...new Set(destinations.map(move => tutorialSquareLabel(move.destination)))].join(' 或 ')}。`;
+    }
+    if (lesson.independent && !tutorialHint) return `还有 ${state.required_count} 张棋盘需推进。请自己找到白兵，选择走子顺序。`;
+    return `第 ${tutorialMoves.length + 1} 手：选择 ${tutorialSquareLabel(tutorialChoices()[0].source)} 的亮框棋子。`;
+}
 function renderTutorial() {
     if (!tutorialData) return;
     const lesson = tutorialData[tutorialIndex];
-    const copy = tutorialLessons[tutorialIndex];
-    const moved = ['submit', 'done'].includes(tutorialPhase);
-    const state = tutorialPhase === 'done' ? lesson.after_submit : moved ? lesson.after_move : lesson.before;
-    document.getElementById('tutorial-title').textContent = copy.title;
+    const state = tutorialState();
+    const title = document.getElementById('tutorial-title');
+    title.textContent = `${tutorialIndex + 1} · ${lesson.title}`;
+    document.getElementById('tutorial-progress').textContent = `${lesson.stage} · 第 ${tutorialIndex + 1} / ${tutorialData.length} 课 · 已掌握 ${tutorialCompleted.size} / ${tutorialData.length}`;
     const nav = document.getElementById('tutorial-steps');
     nav.replaceChildren();
-    tutorialLessons.forEach((item, index) => {
+    tutorialData.forEach((item, index) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'tutorial-tab';
-        button.textContent = `${tutorialCompleted.has(index) ? '✓ ' : ''}${item.title}`;
+        button.textContent = `${tutorialCompleted.has(item.id) ? '✓ ' : ''}${index + 1} ${item.title}`;
         button.setAttribute('aria-current', index === tutorialIndex ? 'step' : 'false');
-        button.onclick = () => { tutorialIndex = index; resetTutorialLesson(); };
+        button.onclick = () => goTutorialLesson(index);
         nav.appendChild(button);
     });
-    const instruction = tutorialPhase === 'select' ? copy.select : tutorialPhase === 'target' ? copy.target : tutorialPhase === 'submit' ? copy.moved : copy.done;
+    const showQuiz = ['quiz', 'done'].includes(tutorialPhase);
     const content = document.getElementById('tutorial-content');
-    content.innerHTML = `<p class="tutorial-description">${escapeHtml(copy.description)}</p>
-        <p class="tutorial-instruction" role="status">${escapeHtml(instruction)}</p>
-        <div class="tutorial-state"><span>行动方：<strong>${colorLabel(state.turn)}</strong></span><span>当前需推进：<strong>${state.required_count} 张棋盘</strong></span></div>
-        <div id="tutorial-boards" class="tutorial-boards"></div>
-        <button id="tutorial-submit" class="submit-btn" onclick="submitTutorialAction()" ${tutorialPhase !== 'submit' ? 'disabled' : ''}>${tutorialPhase === 'done' ? '已提交 · 轮到黑方' : '提交行动'}</button>
-        <details class="tutorial-rules"><summary>随时查阅：棋子与提交规则</summary>
-            <p>棋子可沿棋盘横、纵、时间、时间线四个维度移动。车沿一维；象沿两维等距；后沿一至四维等距；王走同类方向一步；马在两维走 1+2。车、象、后的路径不能穿过棋子或缺失棋盘，马可以跳跃。</p>
-            <p>兵直行、斜吃，不能倒退。跨线时白兵向更小的 L、黑兵向更大的 L 前进；跨时空吃子同时改变时间与时间线各一步。以选子后的合法落点为准。</p>
-            <p>红框表示当前时刻需要推进的棋盘，移动后会重新计算。非活动时间线是可选走子，不决定当前时刻；新增分支也可能改变活动状态。</p>
-            <p>提交时必须保护所有王，包括同一棋盘上的多个王和历史中的王。没有红框却仍不能提交时，请查看右侧的王安全提示。</p>
-        </details>`;
-    const keys = moved
-        ? [lesson.move.result_source_board.key, lesson.move.result_destination_board.key,
-            ...(tutorialIndex === 2 ? [lesson.move.destination.board.key] : [])]
-        : [lesson.move.source.board.key, lesson.move.destination.board.key];
-    const boards = document.getElementById('tutorial-boards');
-    for (const key of [...new Set(keys)].sort((a, b) => Number(a.split(':')[0]) - Number(b.split(':')[0]) || Number(a.split(':')[1]) - Number(b.split(':')[1]))) {
-        const board = state.boards.find(item => item.key === key);
-        if (!board) continue;
-        const card = document.createElement('section');
-        card.className = `tutorial-board ${board.is_required ? 'required' : ''}`;
-        const title = document.createElement('h3');
-        title.textContent = `${coordLabel(board.coord)} · ${board.historical ? '历史' : '最新'}`;
-        card.appendChild(title);
-        const grid = document.createElement('div');
-        grid.className = 'tutorial-grid';
-        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
-            const cell = document.createElement('button');
-            cell.type = 'button';
-            const ch = board.board[y][x];
-            const source = lesson.move.source, target = lesson.move.destination;
-            const isSource = !moved && key === source.board.key && x === source.x && y === source.y;
-            const isTarget = tutorialPhase === 'target' && key === target.board.key && x === target.x && y === target.y;
-            const arrival = moved && key === lesson.move.result_destination_board.key && x === target.x && y === target.y;
-            cell.className = `tutorial-cell ${(x + y) % 2 ? 'dark' : 'light'} ${ch ? pieceColor(ch) + '-piece' : ''}`;
-            if (isSource) cell.classList.add('source');
-            if (isTarget) cell.classList.add('target');
-            if (arrival) cell.classList.add('arrival');
-            cell.textContent = pieceSymbols[ch] || (isTarget ? '●' : '');
-            cell.setAttribute('aria-label', `${coordLabel(board.coord)} ${'abcdefgh'[x]}${8-y}${isSource ? ' 选择棋子' : isTarget ? ' 移动到这里' : ''}`);
-            cell.disabled = !(tutorialPhase === 'select' && isSource || isTarget);
-            cell.onclick = () => tutorialCell(key, x, y);
-            grid.appendChild(cell);
-        }
-        card.appendChild(grid);
-        boards.appendChild(card);
-    }
+    content.innerHTML = `<p class="tutorial-description">${escapeHtml(lesson.description)}</p>
+        <ul class="tutorial-points">${lesson.points.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
+        ${lesson.piece_guide ? `<div class="tutorial-table-wrap"><table class="tutorial-table"><caption>棋子走法对照（四个方向：横、纵、时间、时间线）</caption><thead><tr><th>棋子</th><th>普通国际象棋</th><th>增加时空之后</th></tr></thead><tbody>${lesson.piece_guide.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}
+        <p id="tutorial-instruction" class="tutorial-instruction" role="status" tabindex="-1">${escapeHtml(tutorialInstruction(lesson, state))}</p>
+        ${state ? `<div class="tutorial-state"><span>行动方：<strong>${colorLabel(state.turn)}</strong></span><span>当前需推进：<strong>${state.required_count} 张棋盘</strong></span><span>${showQuiz && lesson.plans ? '已提交，轮到对手' : state.can_submit ? '可以提交' : '尚不能提交'}</span></div>
+        <p class="tutorial-legend">红框：必须推进 · 紫色：当前时刻 · 灰色：历史 · 蓝色格：本课落点 · 绿色格：刚刚到达。同一行可左右滑动查看历史。</p><div id="tutorial-boards" class="tutorial-boards"></div>` : ''}
+        ${lesson.plans ? `<div class="tutorial-practice-actions"><button id="tutorial-hint" class="ghost-btn" onclick="hintTutorial()" ${showQuiz || tutorialPhase === 'submit' ? 'disabled' : ''}>给我提示</button><button id="tutorial-undo" class="ghost-btn" onclick="undoTutorialMove()" ${!tutorialMoves.length || showQuiz ? 'disabled' : ''}>撤回练习一步</button><button id="tutorial-submit" class="submit-btn" onclick="submitTutorialAction()" ${tutorialPhase !== 'submit' ? 'disabled' : ''}>${showQuiz ? '已提交 · 轮到黑方' : '提交行动'}</button></div><p class="tutorial-scope">练习只开放本课走法；正式对局会显示全部合法落点。练习撤回仅用于教学。</p>` : ''}
+        ${showQuiz ? `<section class="tutorial-quiz" aria-labelledby="tutorial-question"><h3 id="tutorial-question" tabindex="-1">理解检查：${escapeHtml(lesson.quiz.prompt)}</h3><div class="tutorial-answers">${lesson.quiz.answers.map((answer, i) => `<button class="ghost-btn" onclick="answerTutorial(${i})" ${tutorialPhase === 'done' ? 'disabled' : ''}>${escapeHtml(answer)}</button>`).join('')}</div></section>` : ''}
+        <p id="tutorial-feedback" class="tutorial-feedback" role="status">${escapeHtml(tutorialFeedback)}</p>
+        ${tutorialIndex === tutorialData.length - 1 && tutorialPhase === 'done' && tutorialCompleted.size === tutorialData.length ? '<div class="tutorial-graduation"><h3>已完成全部课程，可以开始实战了</h3><p>回到主页选择“人机对弈”，从简单难度开始。每回合按“红框 → 选子 → 落点 → 王安全 → 提交”检查。棋盘多时使用缩放与“当前时刻”定位；菜单或对局顶部都能重开教程。</p></div>' : ''}`;
+    if (state) renderTutorialBoards(state);
     const next = document.getElementById('tutorial-next');
     next.disabled = tutorialPhase !== 'done';
-    next.textContent = tutorialPhase !== 'done' ? '完成本课后继续' : tutorialIndex === 2 ? '回到游戏' : '下一课 →';
+    next.textContent = tutorialPhase !== 'done' ? '完成练习与问答后继续' : tutorialIndex < tutorialData.length - 1 ? '下一课 →'
+        : tutorialCompleted.size === tutorialData.length ? '完成教程，回到游戏' : '继续未完成的课程';
+    document.getElementById('tutorial-prev').disabled = tutorialIndex === 0;
     document.getElementById('tutorial-reset').disabled = false;
-    document.getElementById('tutorial-close').textContent = tutorialPhase === 'done' && tutorialIndex === 2 ? '关闭教程' : '稍后再学';
-    // Keep keyboard users on the next actionable square after rebuilding boards.
-    if (tutorialPhase === 'target') content.querySelector('.tutorial-cell.target')?.focus();
-    if (tutorialPhase === 'submit') document.getElementById('tutorial-submit').focus();
 }
-
+function renderTutorialBoards(state) {
+    const lesson = tutorialData[tutorialIndex];
+    const choices = ['select', 'target'].includes(tutorialPhase) ? tutorialChoices() : [];
+    const recent = tutorialMoves.at(-1);
+    const host = document.getElementById('tutorial-boards');
+    // A row per timeline preserves the horizontal time / vertical timeline map.
+    for (const lane of [...new Set(state.boards.map(board => board.coord.timeline))].sort((a, b) => a - b)) {
+        const row = document.createElement('div');
+        row.className = 'tutorial-lane';
+        row.setAttribute('aria-label', `时间线 ${lane}`);
+        const label = document.createElement('p');
+        label.className = 'tutorial-lane-label';
+        label.textContent = `L${lane > 0 ? '+' : ''}${lane} · 时间向右 →`;
+        row.appendChild(label);
+        const strip = document.createElement('div');
+        strip.className = 'tutorial-lane-boards';
+        let visibleCard = null;
+        for (const board of state.boards.filter(item => item.coord.timeline === lane).sort((a, b) => a.coord.time_point - b.coord.time_point)) {
+            const card = document.createElement('section');
+            card.className = `tutorial-board ${board.is_required ? 'required' : ''} ${board.historical ? 'historical' : ''}`;
+            const heading = document.createElement('h3');
+            heading.textContent = `${coordLabel(board.coord)} · ${board.historical ? '历史' : '最新'}`;
+            card.appendChild(heading);
+            const badge = document.createElement('p');
+            badge.className = `tutorial-board-status ${board.is_present ? 'at-present' : ''}`;
+            badge.textContent = [board.is_present ? '当前时刻' : '', board.is_required ? '必须推进' : '', !board.timeline_active ? '非活动' : '', board.is_movable && !board.is_required ? '可选走子' : '', recent?.created_timeline === lane ? '新分支' : ''].filter(Boolean).join(' · ') || (board.historical ? '只可作为落点' : '等待对手阶段');
+            card.appendChild(badge);
+            const grid = document.createElement('div');
+            grid.className = 'tutorial-grid';
+            for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                const square = {board: board.coord, x, y};
+                const ch = board.board[y][x];
+                const isSource = choices.some(move => tutorialSameSquare(move.source, square));
+                const isTarget = tutorialSelection && choices.some(move => tutorialSameSquare(move.source, tutorialSelection) && tutorialSameSquare(move.destination, square));
+                const arrival = recent && board.key === recent.result_destination_board.key && x === recent.destination.x && y === recent.destination.y;
+                const cell = document.createElement('button');
+                cell.type = 'button';
+                cell.className = `tutorial-cell ${(x + y) % 2 ? 'dark' : 'light'} ${ch ? pieceColor(ch) + '-piece' : ''}`;
+                if (isSource && (!lesson.independent || tutorialHint || tutorialSameSquare(square, tutorialSelection))) cell.classList.add('source');
+                if (isTarget) cell.classList.add('target');
+                if (arrival) cell.classList.add('arrival');
+                cell.innerHTML = `${pieceSymbols[ch] || (isTarget ? '●' : '')}${x === 0 ? `<small class="tutorial-rank">${8-y}</small>` : ''}${y === 7 ? `<small class="tutorial-file">${'abcdefgh'[x]}</small>` : ''}`;
+                cell.setAttribute('aria-label', `${tutorialSquareLabel(square)}${ch ? ' ' + colorLabel(pieceColor(ch)) + ({K:'王',Q:'后',R:'车',B:'象',N:'马',P:'兵'}[ch.toUpperCase()]) : ' 空格'}${isSource ? ' 可选择棋子' : isTarget ? ' 可移动到这里' : ''}`);
+                cell.disabled = !['select', 'target'].includes(tutorialPhase);
+                cell.tabIndex = isSource || isTarget ? 0 : -1;
+                cell.onclick = () => tutorialCell(board.key, x, y);
+                grid.appendChild(cell);
+            }
+            card.appendChild(grid);
+            strip.appendChild(card);
+            if (board.key === recent?.result_source_board?.key || board.key === recent?.result_destination_board.key ||
+                choices.some(move => move.source.board.key === board.key)) visibleCard = card;
+        }
+        row.appendChild(strip);
+        host.appendChild(row);
+        // Keep the current source/result visible on narrow screens without
+        // scrolling the entire dialog past the lesson explanation.
+        if (visibleCard) strip.scrollLeft = visibleCard.offsetLeft;
+    }
+}
 document.getElementById('tutorial-dialog').addEventListener('cancel', event => {
-    event.preventDefault();
-    closeTutorial();
+    event.preventDefault(); closeTutorial();
 });
 if (!tutorialSeen() && !window.location.search) openTutorial();

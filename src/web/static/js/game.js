@@ -973,22 +973,31 @@ function drawLinks() {
     svg.style.height = `${height}px`;
     svg.innerHTML = '';
 
+    const canvasRect = canvas.getBoundingClientRect();
+    const boardRects = new Map(Array.from(document.querySelectorAll('.board-card'), card => {
+        const rect = card.getBoundingClientRect();
+        return [card.dataset.boardKey, {
+            left: rect.left - canvasRect.left, right: rect.right - canvasRect.left,
+            top: rect.top - canvasRect.top, bottom: rect.bottom - canvasRect.top,
+        }];
+    }));
+
     const defs = document.createElementNS(SVG_NS, 'defs');
-    defs.appendChild(makeArrowMarker('branch-arrow', '#76548f'));
-    defs.appendChild(makeArrowMarker('move-arrow', '#6d6af0'));
-    defs.appendChild(makeArrowMarker('candidate-arrow', '#3d6ee8'));
+    defs.appendChild(makeArrowMarker('branch-arrow', '#713d91'));
+    defs.appendChild(makeArrowMarker('move-arrow', '#5148d5'));
+    defs.appendChild(makeArrowMarker('candidate-arrow', '#245cce'));
     svg.appendChild(defs);
 
     for (const timeline of gameState.timelines || []) {
         if (timeline.branch_from?.key && timeline.branch_to?.key) {
-            appendCurve(svg, timeline.branch_from.key, timeline.branch_to.key, 'branch-link', 'branch-arrow');
+            appendCurve(svg, timeline.branch_from.key, timeline.branch_to.key, 'branch-link', 'branch-arrow', boardRects);
         }
     }
 
     const last = gameState.last_move;
     if (last?.source?.board?.key && last?.destination?.board?.key &&
         last.source.board.key !== last.destination.board.key) {
-        appendCurve(svg, last.source.board.key, moveArrivalBoardKey(last), 'last-move-link', 'move-arrow');
+        appendCurve(svg, last.source.board.key, moveArrivalBoardKey(last), 'last-move-link', 'move-arrow', boardRects);
     }
 
     if (selectedSource) {
@@ -998,7 +1007,7 @@ function drawLinks() {
                 .filter(key => key !== selectedSource.boardKey)
         )];
         for (const targetKey of uniqueTargets) {
-            appendCurve(svg, selectedSource.boardKey, targetKey, 'candidate-link', 'candidate-arrow');
+            appendCurve(svg, selectedSource.boardKey, targetKey, 'candidate-link', 'candidate-arrow', boardRects);
         }
     }
 }
@@ -1008,10 +1017,11 @@ function makeArrowMarker(id, color) {
     marker.setAttribute('id', id);
     marker.setAttribute('markerWidth', '10');
     marker.setAttribute('markerHeight', '10');
-    marker.setAttribute('refX', '8');
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '10');
     marker.setAttribute('refY', '5');
     marker.setAttribute('orient', 'auto');
-    marker.setAttribute('markerUnits', 'strokeWidth');
+    marker.setAttribute('markerUnits', 'userSpaceOnUse');
     const path = document.createElementNS(SVG_NS, 'path');
     path.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
     path.setAttribute('fill', color);
@@ -1019,27 +1029,82 @@ function makeArrowMarker(id, color) {
     return marker;
 }
 
-function appendCurve(svg, fromKey, toKey, className, markerId) {
-    const from = document.querySelector(`.board-card[data-board-key="${cssEscape(fromKey)}"]`);
-    const to = document.querySelector(`.board-card[data-board-key="${cssEscape(toKey)}"]`);
-    const canvas = document.getElementById('timeline-canvas');
-    if (!from || !to || !canvas) return;
+function linkWaypoints(a, b, boards) {
+    // Use the gutters instead of crossing board interiors. The clearance also
+    // leaves room for selection outlines, shadows and the small hover lift.
+    const clearance = 14;
+    const gutter = 30;
+    const x1 = (a.left + a.right) / 2;
+    const x2 = (b.left + b.right) / 2;
+    const rowFor = rect => boards.filter(r => r.top < rect.bottom && r.bottom > rect.top);
+    const sourceRow = rowFor(a);
+    const targetRow = rowFor(b);
+    if (a.top < b.bottom && b.top < a.bottom) {
+        const y = Math.min(...sourceRow.map(r => r.top)) - gutter;
+        return [[x1, a.top - clearance], [x1, y], [x2, y], [x2, b.top - clearance]];
+    }
 
-    const canvasRect = canvas.getBoundingClientRect();
-    const a = from.getBoundingClientRect();
-    const b = to.getBoundingClientRect();
-    const x1 = a.left - canvasRect.left + a.width * 0.72;
-    const y1 = a.top - canvasRect.top + a.height * 0.55;
-    const x2 = b.left - canvasRect.left + b.width * 0.28;
-    const y2 = b.top - canvasRect.top + b.height * 0.45;
-    const bend = Math.max(70, Math.abs(x2 - x1) * 0.42);
-    const direction = x2 >= x1 ? 1 : -1;
+    const downward = b.top > a.top;
+    const y1 = downward ? a.bottom + clearance : a.top - clearance;
+    const y2 = downward ? b.top - clearance : b.bottom + clearance;
+    const gapTop = downward ? Math.max(...sourceRow.map(r => r.bottom)) : Math.max(...targetRow.map(r => r.bottom));
+    const gapBottom = downward ? Math.min(...targetRow.map(r => r.top)) : Math.min(...sourceRow.map(r => r.top));
+    if (!boards.some(r => r.top > gapTop && r.bottom < gapBottom)) {
+        const y = (gapTop + gapBottom) / 2;
+        return [[x1, y1], [x1, y], [x2, y], [x2, y2]];
+    }
+
+    // A jump across several lanes uses the vertical gap beside the destination
+    // column, so intermediate timeline boards never hide the connection.
+    const columnRight = Math.max(...boards.filter(r => r.left <= x2 && r.right >= x2).map(r => r.right));
+    const nextColumn = Math.min(...boards.filter(r => r.left > columnRight).map(r => r.left));
+    const x = Number.isFinite(nextColumn) ? (columnRight + nextColumn) / 2 : columnRight + 27;
+    const sourceY = downward ? gapTop + gutter : gapBottom - gutter;
+    const targetY = downward ? gapBottom - gutter : gapTop + gutter;
+    return [[x1, y1], [x1, sourceY], [x, sourceY], [x, targetY], [x2, targetY], [x2, y2]];
+}
+
+function roundedLinkPath(points) {
+    const unique = points.filter((p, i) => i === 0 || p[0] !== points[i - 1][0] || p[1] !== points[i - 1][1]);
+    let path = `M ${unique[0].join(' ')}`;
+    for (let i = 1; i < unique.length - 1; i++) {
+        const [prev, corner, next] = [unique[i - 1], unique[i], unique[i + 1]];
+        const incoming = Math.hypot(corner[0] - prev[0], corner[1] - prev[1]);
+        const outgoing = Math.hypot(next[0] - corner[0], next[1] - corner[1]);
+        const radius = Math.min(10, incoming / 2, outgoing / 2);
+        const before = corner.map((v, axis) => v + (prev[axis] - v) * radius / incoming);
+        const after = corner.map((v, axis) => v + (next[axis] - v) * radius / outgoing);
+        path += ` L ${before.join(' ')} Q ${corner.join(' ')} ${after.join(' ')}`;
+    }
+    return `${path} L ${unique[unique.length - 1].join(' ')}`;
+}
+
+function appendCurve(svg, fromKey, toKey, className, markerId, boardRects) {
+    const a = boardRects.get(fromKey);
+    const b = boardRects.get(toKey);
+    if (!a || !b || fromKey === toKey) return;
+    const points = linkWaypoints(a, b, Array.from(boardRects.values()));
+    const shape = roundedLinkPath(points);
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('data-source-board', fromKey);
+    group.setAttribute('data-target-board', toKey);
+    const halo = document.createElementNS(SVG_NS, 'path');
+    halo.setAttribute('d', shape);
+    halo.setAttribute('class', 'link-halo');
+    group.appendChild(halo);
 
     const path = document.createElementNS(SVG_NS, 'path');
-    path.setAttribute('d', `M ${x1} ${y1} C ${x1 + bend * direction} ${y1}, ${x2 - bend * direction} ${y2}, ${x2} ${y2}`);
+    path.setAttribute('d', shape);
     path.setAttribute('class', className);
     path.setAttribute('marker-end', `url(#${markerId})`);
-    svg.appendChild(path);
+    group.appendChild(path);
+    const origin = document.createElementNS(SVG_NS, 'circle');
+    origin.setAttribute('cx', points[0][0]);
+    origin.setAttribute('cy', points[0][1]);
+    origin.setAttribute('r', '3');
+    origin.setAttribute('class', `link-origin ${className}`);
+    group.appendChild(origin);
+    svg.appendChild(group);
 }
 
 function renderActionPanel() {

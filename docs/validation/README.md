@@ -12,6 +12,7 @@
 | [P2P 验收](P2P_ACCEPTANCE.md) | 安装、公网、局域网、端口冲突与已验证范围 |
 | [在线存档与恢复](P2P_RECOVERY.md) | 自动存档、进程重启、断线提示，以及待完成的异地双机步骤 |
 | [Web 可靠性](WEB_RELIABILITY.md) | 请求、轮询、教程、超时与规则修复记录 |
+| [13 课新手教程](TUTORIAL.md) | 规则对照、独立练习、进度保存和浏览器验收 |
 | [AI / Arena 汇总](arena-acceptance-status.md) | 历次规则、规划和长对局测评，包含历史失败边界 |
 | [规则与循环](rules-loop-validation-20261012.json) | 规则修正和长局检查 |
 | [规划超时](planner-timeout-fix-20261012.json) | 超时故障和修复验证 |

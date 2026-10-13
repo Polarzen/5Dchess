@@ -505,6 +505,7 @@ def api_tutorial():
     from src.web.tutorial import build_lessons
 
     def serialize(engine):
+        engine.timeline_manager.refresh_activity()
         return {
             "boards": _board_payloads(engine, interactive=True),
             "turn": engine.current_turn_color.value,
@@ -512,7 +513,7 @@ def api_tutorial():
             "can_submit": engine.can_submit_action(),
         }
 
-    return jsonify({"lessons": build_lessons(serialize, _move_payload)})
+    return jsonify({"version": 2, "lessons": build_lessons(serialize, _move_payload)})
 
 
 # Compatibility endpoint used by older clients/tests.

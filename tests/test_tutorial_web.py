@@ -23,17 +23,26 @@ def test_tutorial_uses_canonical_transitions_and_never_mutates_live_game(client)
     before = deepcopy(instance.engine.to_dict())
     response = client.get('/api/tutorial')
     assert response.status_code == 200
-    lessons = response.json['lessons']
-    assert [row['id'] for row in lessons] == ['first-turn', 'cross-board', 'history']
-    for lesson in lessons:
-        assert lesson['before']['turn'] == lesson['after_move']['turn'] == 'white'
-        assert not lesson['before']['can_submit']
-        assert lesson['after_move']['can_submit']
-        assert lesson['after_move']['required_count'] == 0
-        assert lesson['after_submit']['turn'] == 'black'
-        assert not lesson['after_submit']['can_submit']
-    assert lessons[1]['before']['required_count'] == 2
-    branch = lessons[2]
+    assert response.json['version'] == 2
+    lessons = {row['id']: row for row in response.json['lessons']}
+    assert list(lessons) == ['welcome', 'read-boards', 'first-turn', 'pieces', 'many-moves',
+                             'cross-board', 'history', 'bishop', 'knight', 'pawn', 'present',
+                             'king-safety', 'challenge']
+    for lesson in lessons.values():
+        assert lesson['quiz']['explanation']
+        assert 0 <= lesson['quiz']['correct'] < len(lesson['quiz']['answers'])
+        for plan in lesson.get('plans', []):
+            for i, step in enumerate(plan['steps']):
+                assert step['before']['turn'] == step['after_move']['turn'] == 'white'
+                assert not step['before']['can_submit']
+                assert step['after_move']['can_submit'] == (i == len(plan['steps']) - 1)
+                if i:
+                    assert step['before'] == plan['steps'][i-1]['after_move']
+            assert plan['steps'][-1]['after_move']['required_count'] == 0
+            assert plan['after_submit']['turn'] == 'black'
+            assert not plan['after_submit']['can_submit']
+    assert lessons['cross-board']['plans'][0]['steps'][0]['before']['required_count'] == 2
+    branch = lessons['history']['plans'][0]['steps'][0]
     assert branch['move']['created_timeline'] == 1
     assert branch['move']['result_destination_board']['key'] == '1:1'
     old = next(b for b in branch['before']['boards'] if b['key'] == '0:0')
@@ -41,6 +50,45 @@ def test_tutorial_uses_canonical_transitions_and_never_mutates_live_game(client)
     assert old['board'] == preserved['board']
     assert _game_session['mode_instance'] is instance
     assert instance.engine.to_dict() == before
+
+
+def test_curriculum_teaches_multiple_moves_piece_geometry_and_submission_blockers(client):
+    lessons = {row['id']: row for row in client.get('/api/tutorial').json['lessons']}
+    multi = lessons['many-moves']['plans'][0]
+    assert [multi['steps'][0]['before']['required_count']] + [step['after_move']['required_count'] for step in multi['steps']] == [2, 1, 0]
+    bishop = lessons['bishop']['plans'][0]['steps'][0]['move']
+    knight = lessons['knight']['plans'][0]['steps'][0]['move']
+    assert bishop['to_timeline'] - bishop['from_timeline'] == 1
+    assert bishop['to'][0] - bishop['from'][0] == 1
+    assert knight['to_timeline'] - knight['from_timeline'] == 1
+    assert knight['to'][0] - knight['from'][0] == 2
+    assert lessons['pawn']['plans'][0]['steps'][0]['move']['captured'] == 'P'
+    present = lessons['present']['snapshot']
+    assert [b['coord']['timeline'] for b in present['boards'] if b['is_required']] == [1]
+    assert not next(b for b in present['boards'] if b['coord']['timeline'] == 2)['timeline_active']
+    unsafe = lessons['king-safety']['snapshot']
+    assert unsafe['required_count'] == 0 and not unsafe['can_submit']
+    # Independent check of the diagram's attack, rather than just a false button.
+    from src.engine.royal_rules import RoyalRules
+    from src.web.tutorial import _engine, _position
+    from src.utils.constants import ChessColor
+    assert RoyalRules(_engine(_position(0, 1, {(7, 7): 'r'})).timeline_manager.timelines).is_in_check(ChessColor.WHITE)
+
+
+def test_final_practice_supports_both_board_orders_and_pawn_distances(client):
+    lesson = client.get('/api/tutorial').json['lessons'][-1]
+    assert lesson['independent']
+    choices = set()
+    for plan in lesson['plans']:
+        steps = plan['steps']
+        choices.add(tuple((step['move']['from_timeline'], step['move']['to'][1]) for step in steps))
+        assert len(steps) == 2
+        assert steps[0]['after_move']['required_count'] == 1
+        assert not steps[0]['after_move']['can_submit']
+        assert plan['after_submit']['turn'] == 'black'
+    assert len(choices) == 8
+    assert {choice[0][0] for choice in choices} == {0, 1}
+    assert {move[1] for choice in choices for move in choice} == {4, 5}
 
 
 def test_branch_response_points_to_arrival_and_requires_explicit_submit(client):
