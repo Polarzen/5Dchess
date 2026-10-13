@@ -4,7 +4,7 @@
 
 ## 安装和启动
 
-- 官方 Windows amd64 程序安装在 `D:\p2p\cloudflared\cloudflared.exe`，SHA-256 与 `scripts/p2p/cloudflared-release.json` 一致。
+- 官方 Windows amd64 程序安装在 `<TOOLS_ROOT>/cloudflared/cloudflared.exe`，SHA-256 与 `scripts/p2p/cloudflared-release.json` 一致。`<TOOLS_ROOT>` 为此次验证使用的外部工具目录；2026-10-13 已将原本机路径脱敏，安装和测试结果不变。当前版本的默认安装位置请参见 [联机指南](../guides/P2P_CLOUDFLARE.md)。
 - 依赖位于项目 `.venv311`；启动器实际使用此环境，未使用系统默认 Python 3.14。
 - 重复执行安装脚本复用已校验的软件，不重复下载；`-Check` 成功且不启动服务。
 - 真实启动验证覆盖 Windows 虚拟环境的解释器子进程，就绪校验通过。

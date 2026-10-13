@@ -12,18 +12,28 @@ function Resolve-P2PPython {
     throw 'Project Python missing. Run scripts/setup_p2p.ps1 first, or specify -PythonPath.'
 }
 
+function Resolve-P2PSoftwareDirectory {
+    param([string]$ProjectRoot, [string]$SoftwareDirectory)
+    if (-not $SoftwareDirectory) { $SoftwareDirectory = '.runtime' }
+    if (-not [IO.Path]::IsPathRooted($SoftwareDirectory)) {
+        $SoftwareDirectory = Join-Path $ProjectRoot $SoftwareDirectory
+    }
+    return [IO.Path]::GetFullPath($SoftwareDirectory)
+}
+
 function Resolve-P2PCloudflared {
     param([string]$ProjectRoot, [string]$CloudflaredPath)
     if ($CloudflaredPath) {
         if (-not (Test-Path -LiteralPath $CloudflaredPath -PathType Leaf)) { throw "cloudflared not found: $CloudflaredPath" }
         return (Resolve-Path -LiteralPath $CloudflaredPath).Path
     }
-    foreach ($candidate in @('D:\p2p\cloudflared\cloudflared.exe', (Join-Path $ProjectRoot 'cloudflared.exe'))) {
+    foreach ($relative in @('.runtime\cloudflared\cloudflared.exe', 'cloudflared.exe')) {
+        $candidate = Join-Path $ProjectRoot $relative
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     }
     $command = Get-Command cloudflared -CommandType Application -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
-    throw 'cloudflared missing. Run scripts/setup_p2p.ps1 first, or use -LanOnly for LAN play.'
+    throw 'cloudflared missing. Run scripts/setup_p2p.ps1, specify -CloudflaredPath, or use -LanOnly for LAN play.'
 }
 
 function Test-P2PProcessOwnership {

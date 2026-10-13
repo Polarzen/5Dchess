@@ -447,7 +447,7 @@
       "medium": {
         "seconds": 7.67200000000048,
         "arena": {
-          "checkpoint": "D:\\code\\5D\u8c61\u68cb\\.planner-work\\checkpoint\\best",
+          "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
           "opponent": "medium",
           "games": 2,
           "wins": 0,
@@ -579,7 +579,7 @@
       "hard": {
         "seconds": 72.48399999999947,
         "arena": {
-          "checkpoint": "D:\\code\\5D\u8c61\u68cb\\.planner-work\\checkpoint\\best",
+          "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
           "opponent": "hard",
           "games": 2,
           "wins": 0,

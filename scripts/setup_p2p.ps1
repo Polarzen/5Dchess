@@ -1,11 +1,12 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$SoftwareDirectory = 'D:\p2p',
+    [string]$SoftwareDirectory,
     [string]$PythonPath
 )
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'p2p_common.ps1')
+$SoftwareDirectory = Resolve-P2PSoftwareDirectory -ProjectRoot $ProjectRoot -SoftwareDirectory $SoftwareDirectory
 
 # Pin the official release and verify bytes before executing or replacing it.
 $release = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'p2p/cloudflared-release.json') -Raw | ConvertFrom-Json
@@ -47,7 +48,7 @@ if ($PythonPath) {
     $basePython = $projectPython
 } else {
     $launcher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $launcher) { throw 'Install Python 3.11 first (new software belongs in D:\p2p), or specify -PythonPath.' }
+    if (-not $launcher) { throw 'Install Python 3.11 first, specify -PythonPath, or use the one-click launcher.' }
     $basePython = [string](& $launcher.Source -3.11 -c 'import sys; print(sys.executable)')
     if ($LASTEXITCODE -ne 0 -or -not $basePython) { throw 'Python 3.11 missing; install it or specify -PythonPath.' }
 }
@@ -61,4 +62,4 @@ if (-not (Test-Path -LiteralPath $projectPython)) {
 if ($LASTEXITCODE -ne 0) { throw 'Project dependency installation failed.' }
 & (Join-Path $PSScriptRoot 'start_p2p.ps1') -Check -PythonPath $projectPython -CloudflaredPath $executable
 Write-Host 'Ready. Start online play: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_p2p.ps1'
-if ($SoftwareDirectory -ne 'D:\p2p') { Write-Host "Custom installation: pass -CloudflaredPath `"$executable`" when starting." }
+if ($SoftwareDirectory -ne (Resolve-P2PSoftwareDirectory -ProjectRoot $ProjectRoot)) { Write-Host "Custom installation: pass -CloudflaredPath `"$executable`" when starting." }

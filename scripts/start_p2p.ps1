@@ -10,8 +10,8 @@ param(
     [ValidateRange(1, 5)][int]$TunnelAttempts = 3
 )
 $ErrorActionPreference = "Stop"
-$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-Set-Location $ProjectRoot
+$ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+Set-Location -LiteralPath $ProjectRoot
 . (Join-Path $PSScriptRoot 'p2p_common.ps1')
 
 $pythonExecutable = Resolve-P2PPython -ProjectRoot $ProjectRoot -PythonPath $PythonPath

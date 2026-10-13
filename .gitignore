@@ -18,8 +18,20 @@ build/
 # 日志
 logs/
 saves/
-# Optional legacy local Cloudflare binary; managed installation lives in D:\p2p.
+# Optional legacy local Cloudflare binary; managed installation lives in .runtime/.
 cloudflared.exe
+
+# Local credentials and private key containers (never commit real secrets)
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 
 # 测试缓存
 .pytest_cache/

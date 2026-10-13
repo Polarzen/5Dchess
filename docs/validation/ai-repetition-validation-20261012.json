@@ -244,7 +244,7 @@
     "easy": {
       "seconds": 72.48499999998603,
       "arena": {
-        "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+        "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
         "opponent": "easy",
         "games": 4,
         "wins": 2,
@@ -760,7 +760,7 @@
     "medium": {
       "seconds": 18.32800000003772,
       "arena": {
-        "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+        "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
         "opponent": "medium",
         "games": 4,
         "wins": 0,
@@ -1005,7 +1005,7 @@
     "hard": {
       "seconds": 1407.4529999999795,
       "arena": {
-        "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+        "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
         "opponent": "hard",
         "games": 20,
         "wins": 5,
@@ -2375,7 +2375,7 @@
   "earlier_hard20_source": "docs/rules-loop-validation-20261012.json; before timeout follow-up",
   "source_unchanged_during_runs": true,
   "model_unchanged_during_runs": true,
-  "regression_log": "........................................................................ [ 10%]\n........................................................................ [ 21%]\n........................................................................ [ 32%]\n........................................................................ [ 42%]\n........................................................................ [ 53%]\n........................................................................ [ 64%]\n........................................................................ [ 74%]\n............................s........................................... [ 85%]\n........................................................................ [ 96%]\n...................s......                                               [100%]\n============================== warnings summary ===============================\ntests/training/test_planner_complex_fixture.py::test_complex_fixture_ordering_ab_telemetry_only\n  D:\\code\\5D象棋\\tests\\training\\test_planner_complex_fixture.py:204: UserWarning: DETERMINISTIC_COMPLEX_PLANNER_TELEMETRY={\"current\": {\"budget\": 0.5, \"candidate_count\": 24, \"explored_states\": 33, \"first_candidate_ms\": 64.83669998124242, \"termination\": \"action_budget\", \"wall_ms\": 321.59449998289347}, \"legacy\": {\"budget\": 0.5, \"candidate_count\": 24, \"explored_states\": 33, \"first_candidate_ms\": 68.60200001392514, \"termination\": \"action_budget\", \"wall_ms\": 309.82140003470704}, \"required_boards\": 16, \"timelines\": 32}\n    warnings.warn(\"DETERMINISTIC_COMPLEX_PLANNER_TELEMETRY=\" + json.dumps({\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n672 passed, 2 skipped, 1 warning in 289.17s (0:04:49)\n",
+  "regression_log": "........................................................................ [ 10%]\n........................................................................ [ 21%]\n........................................................................ [ 32%]\n........................................................................ [ 42%]\n........................................................................ [ 53%]\n........................................................................ [ 64%]\n........................................................................ [ 74%]\n............................s........................................... [ 85%]\n........................................................................ [ 96%]\n...................s......                                               [100%]\n============================== warnings summary ===============================\ntests/training/test_planner_complex_fixture.py::test_complex_fixture_ordering_ab_telemetry_only\n  <PROJECT_ROOT>\\tests\\training\\test_planner_complex_fixture.py:204: UserWarning: DETERMINISTIC_COMPLEX_PLANNER_TELEMETRY={\"current\": {\"budget\": 0.5, \"candidate_count\": 24, \"explored_states\": 33, \"first_candidate_ms\": 64.83669998124242, \"termination\": \"action_budget\", \"wall_ms\": 321.59449998289347}, \"legacy\": {\"budget\": 0.5, \"candidate_count\": 24, \"explored_states\": 33, \"first_candidate_ms\": 68.60200001392514, \"termination\": \"action_budget\", \"wall_ms\": 309.82140003470704}, \"required_boards\": 16, \"timelines\": 32}\n    warnings.warn(\"DETERMINISTIC_COMPLEX_PLANNER_TELEMETRY=\" + json.dumps({\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n672 passed, 2 skipped, 1 warning in 289.17s (0:04:49)\n",
   "scripted_recurrence": {
     "scripted_actions": 200,
     "warning_boundaries": 193,

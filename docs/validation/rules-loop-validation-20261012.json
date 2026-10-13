@@ -111,7 +111,7 @@
     "easy": {
       "seconds": 428.93699999997625,
       "arena": {
-        "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+        "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
         "opponent": "easy",
         "games": 20,
         "wins": 14,
@@ -148,7 +148,7 @@
           "exception_class": "ActionPlanningError",
           "exception_qualified_class": "src.ai.action_planner.ActionPlanningError",
           "message": "unable to plan a complete Action: time_budget (incomplete=True)",
-          "traceback": "Traceback (most recent call last):\n  File \"D:\\code\\5D象棋\\src\\training\\arena.py\", line 485, in evaluate_arena\n    plan = neural.plan_action(engine)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\code\\5D象棋\\src\\training\\agent.py\", line 95, in plan_action\n    result, decision = self.score_candidates(engine)\n                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\code\\5D象棋\\src\\training\\agent.py\", line 61, in score_candidates\n    raise ActionPlanningError(\nsrc.ai.action_planner.ActionPlanningError: unable to plan a complete Action: time_budget (incomplete=True)\n",
+          "traceback": "Traceback (most recent call last):\n  File \"<PROJECT_ROOT>\\src\\training\\arena.py\", line 485, in evaluate_arena\n    plan = neural.plan_action(engine)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<PROJECT_ROOT>\\src\\training\\agent.py\", line 95, in plan_action\n    result, decision = self.score_candidates(engine)\n                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<PROJECT_ROOT>\\src\\training\\agent.py\", line 61, in score_candidates\n    raise ActionPlanningError(\nsrc.ai.action_planner.ActionPlanningError: unable to plan a complete Action: time_budget (incomplete=True)\n",
           "planning_reason": "time_budget",
           "planning_incomplete": true,
           "explored_states": 88,
@@ -421,7 +421,7 @@
     "medium": {
       "seconds": 113.18699999997625,
       "arena": {
-        "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+        "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
         "opponent": "medium",
         "games": 20,
         "wins": 0,
@@ -696,7 +696,7 @@
     "hard": {
       "seconds": 1669.0310000000172,
       "arena": {
-        "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+        "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
         "opponent": "hard",
         "games": 20,
         "wins": 3,
@@ -1031,7 +1031,7 @@
   },
   "isolated_reproduction": {
     "result": {
-      "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+      "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
       "opponent": "easy",
       "games": 1,
       "wins": 0,

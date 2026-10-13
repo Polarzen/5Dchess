@@ -366,7 +366,7 @@
   },
   "model_sha256": "de4997302ab767a797ee91da1b2aa2f73576b17a7174a65c800ae0f1d04e2e55",
   "confirmation": {
-    "checkpoint": "D:\\code\\5D象棋\\.planner-work\\checkpoint\\best",
+    "checkpoint": "<PROJECT_ROOT>\\.planner-work\\checkpoint\\best",
     "opponent": "easy",
     "games": 1,
     "wins": 0,

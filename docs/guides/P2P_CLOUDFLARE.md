@@ -38,23 +38,23 @@ Windows 10/11 x64 用户先将整个 ZIP 解压，再双击根目录的 `本地.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1
 ```
 
-以下手动安装脚本的默认位置（与上面的一键入口独立）：
+以下手动安装脚本的默认位置（均以项目根目录为基准，与一键入口共用 Cloudflare 程序）：
 
 | 内容 | 位置 |
 | --- | --- |
-| Cloudflare 软件 | `D:\p2p\cloudflared\cloudflared.exe` |
+| Cloudflare 软件 | `.runtime/cloudflared/cloudflared.exe` |
 | 项目 Python 依赖 | 项目内 `.venv311` |
 | 安装、启动、检查脚本 | 项目内 `scripts/` |
 | 官方版本及 SHA-256 清单 | `scripts/p2p/cloudflared-release.json` |
 | 运行日志 | 项目内 `logs/p2p/`（Git 忽略） |
 
-安装脚本下载清单中固定版本的官方 Windows amd64 程序，校验 SHA-256 后才安装；相同版本重复执行会复用。替换已有不同版本时会先保存备份。它不修改系统 PATH、不注册开机服务。Python 3.11 已安装时直接复用；尚未安装时，可先将 Python 3.11 安装到 `D:\p2p\Python311`，再运行：
+安装脚本下载清单中固定版本的官方 Windows amd64 程序，校验 SHA-256 后才安装；相同版本重复执行会复用。替换已有不同版本时会先保存备份。它不修改系统 PATH、不注册开机服务。已安装 Python 3.11 时通过 `py` 查找；也可指定 PATH 中的 Python 3.11 或更新版本：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1 -PythonPath 'D:\p2p\Python311\python.exe'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1 -PythonPath (Get-Command python -CommandType Application).Source
 ```
 
-可用 `-SoftwareDirectory` 指定其他软件目录；后续启动需要用 `-CloudflaredPath` 指向其中的程序。常规启动优先使用项目 `.venv311`，然后 `.venv`；Cloudflare 优先查找 `D:\p2p\cloudflared`，再查项目根目录和 PATH。显式指定的路径不存在时直接报错，不会偷偷换用别的程序。
+未安装 Python 时，推荐直接使用根目录的一键入口自动准备环境。可用 `-SoftwareDirectory` 指定其他软件目录；相对目录以项目根目录为基准，也接受用户明确指定的绝对目录。自定义目录安装后，启动时需要用 `-CloudflaredPath` 指向其中的程序。常规启动优先使用项目 `.venv311`，然后 `.venv`；Cloudflare 优先查找项目 `.runtime/cloudflared`，再查项目根目录和 PATH。旧版安装在项目外的程序也可通过 `-CloudflaredPath` 继续使用。显式指定的路径不存在时直接报错，不会偷偷换用别的程序。
 
 ### 异地联机
 
@@ -103,7 +103,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -Tun
 ```powershell
 .\.venv311\Scripts\python.exe scripts/run_p2p_server.py
 # 把网站日志中的实际端口填入下一条命令
-& 'D:\p2p\cloudflared\cloudflared.exe' tunnel --url http://127.0.0.1:<actual-port>
+& '.\.runtime\cloudflared\cloudflared.exe' tunnel --url http://127.0.0.1:<actual-port>
 ```
 
 直接运行 `run_p2p_server.py` 会自动寻找端口；给它传入 `--port N` 则严格绑定 N。该 Python 参数与 PowerShell 启动器的 `-Port N`（搜索起点）含义不同。
@@ -210,7 +210,7 @@ failed to read quick-tunnel response: context deadline exceeded (Client.Timeout 
 如果连主页或创建房间也很慢，先检查实际公网路径。可在本局结束后用 `-TunnelProtocol http2` 与默认 `auto` 对照，但切换协议不保证更快，也不会自动选择更近的节点。重启会产生新公网链接，需要重新邀请。排查时不要在正在玩的服务上运行 `check_p2p.py --exercise-room`。
 
 - 找不到项目 Python 或缺少依赖：执行 `scripts/setup_p2p.ps1`；新安装的 Python 可通过 `-PythonPath` 指定。
-- 找不到 `cloudflared`：执行 `scripts/setup_p2p.ps1`，默认安装到 `D:\p2p\cloudflared`；自定义位置使用 `-CloudflaredPath`。
+- 找不到 `cloudflared`：执行 `scripts/setup_p2p.ps1`，默认安装到项目 `.runtime/cloudflared`；自定义位置使用 `-CloudflaredPath`。
 - 创建房间提示已有在线房间：由原房主显式返回菜单关闭旧房间，或等待失联房间的 lease+grace 生命周期结束。
 - 邀请链接没有显示目标房间：确认 `?room=` 后是恰好 6 位 ASCII 字母或数字；非法参数会被安全忽略并回到手动输入流程。
 - 页面提示连接中断：确认房主进程和 Quick Tunnel 仍在运行，并重新打开同一 HTTPS 地址；浏览器中的房间码和令牌会用于同色恢复。

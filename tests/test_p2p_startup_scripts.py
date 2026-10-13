@@ -45,6 +45,51 @@ if ($explicit -ne {quoted(alternate)}) {{ throw 'Explicit interpreter ignored' }
 
 
 @pytest.mark.parametrize('shell', SHELLS)
+def test_cloudflared_discovery_is_project_relative_and_honors_explicit_path(shell, tmp_path):
+    project = tmp_path / '项目 [portable] with spaces'
+    runtime = project / '.runtime/cloudflared/cloudflared.exe'
+    legacy = project / 'cloudflared.exe'
+    explicit = tmp_path / 'custom/cloudflared.exe'
+    for path in (runtime, legacy, explicit):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    result = run(shell, f"""
+Set-Location -LiteralPath {quoted(tmp_path)}
+if ((Resolve-P2PCloudflared -ProjectRoot {quoted(project)}) -ne {quoted(runtime)}) {{ throw 'Project runtime not preferred' }}
+if ((Resolve-P2PCloudflared -ProjectRoot {quoted(project)} -CloudflaredPath {quoted(explicit)}) -ne {quoted(explicit)}) {{ throw 'Explicit path ignored' }}
+Remove-Item -LiteralPath {quoted(runtime)}
+if ((Resolve-P2PCloudflared -ProjectRoot {quoted(project)}) -ne {quoted(legacy)}) {{ throw 'Legacy project fallback broken' }}
+""")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_software_directory_uses_project_root_from_another_working_directory(shell, tmp_path):
+    project = tmp_path / '项目 [portable] with spaces'
+    project.mkdir()
+    custom = tmp_path / 'external tools'
+    result = run(shell, f"""
+Set-Location -LiteralPath {quoted(tmp_path)}
+if ((Resolve-P2PSoftwareDirectory -ProjectRoot {quoted(project)}) -ne {quoted(project / '.runtime')}) {{ throw 'Default directory not portable' }}
+if ((Resolve-P2PSoftwareDirectory -ProjectRoot {quoted(project)} -SoftwareDirectory 'tools') -ne {quoted(project / 'tools')}) {{ throw 'Relative directory not rooted at project' }}
+if ((Resolve-P2PSoftwareDirectory -ProjectRoot {quoted(project)} -SoftwareDirectory {quoted(custom)}) -ne {quoted(custom)}) {{ throw 'Explicit absolute directory changed' }}
+""")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_startup_check_from_project_path_with_brackets(shell, tmp_path):
+    project = tmp_path / '项目 [portable] with spaces'
+    scripts = project / 'scripts'
+    scripts.mkdir(parents=True)
+    for name in ('start_p2p.ps1', 'p2p_common.ps1'):
+        shutil.copyfile(ROOT / 'scripts' / name, scripts / name)
+    result = run(shell, f"& {quoted(scripts / 'start_p2p.ps1')} -LanOnly -Check -PythonPath {quoted(Path(sys.executable))}")
+    assert result.returncode == 0, result.stderr
+    assert b'P2P environment OK' in result.stdout
+
+
+@pytest.mark.parametrize('shell', SHELLS)
 @pytest.mark.parametrize('resolver,parameter', [('Resolve-P2PPython', 'PythonPath'), ('Resolve-P2PCloudflared', 'CloudflaredPath')])
 def test_explicit_missing_program_rejects_instead_of_falling_back(shell, resolver, parameter, tmp_path):
     result = run(shell, f"{resolver} -ProjectRoot {quoted(ROOT)} -{parameter} {quoted(tmp_path / 'missing.exe')}")
