@@ -47,6 +47,11 @@ def is_port_available(host: str, port: int) -> bool:
     _validate_port(port)
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            # Windows may otherwise let a wildcard bind coexist with an
+            # existing loopback listener (e.g. Werkzeug using SO_REUSEADDR).
+            # Readiness/tunnel traffic to 127.0.0.1 would reach that other app.
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             probe.bind((host, port))
         return True
     except OSError:

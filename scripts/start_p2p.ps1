@@ -1,23 +1,29 @@
 ﻿[CmdletBinding()]
 param(
     [switch]$LanOnly,
+    [switch]$ManualTunnel,
     [switch]$Check,
     [switch]$OpenBrowser,
     [ValidateRange(1, 65535)][int]$Port = 5050,
     [string]$PythonPath,
     [string]$CloudflaredPath,
     [ValidateSet('auto', 'http2', 'quic')][string]$TunnelProtocol = 'auto',
-    [ValidateRange(1, 5)][int]$TunnelAttempts = 3
+    [ValidateRange(1, 5)][int]$TunnelAttempts = 3,
+    [ValidateRange(10, 600)][int]$TunnelStartupSeconds = 180
 )
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $ProjectRoot
 . (Join-Path $PSScriptRoot 'p2p_common.ps1')
+if ($LanOnly -and $ManualTunnel) { throw 'LanOnly 与 ManualTunnel 不能同时指定。' }
+if ($ManualTunnel -and $CloudflaredPath) {
+    $manualExecutable = Resolve-P2PCloudflared -ProjectRoot $ProjectRoot -CloudflaredPath $CloudflaredPath
+}
 
 $pythonExecutable = Resolve-P2PPython -ProjectRoot $ProjectRoot -PythonPath $PythonPath
 & $pythonExecutable -X utf8 -c "import sys; assert sys.version_info >= (3, 11); import flask, numpy; print('Python dependencies OK: ' + sys.executable)"
 if ($LASTEXITCODE -ne 0) { throw 'Dependencies missing. Run scripts/setup_p2p.ps1.' }
-if (-not $LanOnly) {
+if (-not $LanOnly -and -not $ManualTunnel) {
     $cloudflaredExecutable = Resolve-P2PCloudflared -ProjectRoot $ProjectRoot -CloudflaredPath $CloudflaredPath
     & $cloudflaredExecutable --version
     if ($LASTEXITCODE -ne 0) { throw 'cloudflared version check failed.' }
@@ -130,10 +136,17 @@ try {
         foreach ($address in $addresses) { Write-Host "[时线棋局] 局域网地址：http://$($address.IPAddress):$Port" }
         Write-Host '[时线棋局] 双方打开房主的局域网地址；房主创建在线房间，再复制邀请链接。'
         if ($OpenBrowser) { Open-P2PBrowser -Url "http://127.0.0.1:$Port" }
+    } elseif ($ManualTunnel) {
+        if (-not $CloudflaredPath) {
+            $manualExecutable = 'cloudflared'
+            try { $manualExecutable = Resolve-P2PCloudflared -ProjectRoot $ProjectRoot } catch { }
+        }
+        Show-P2PManualConnection -Port $Port -Executable $manualExecutable
+        if ($OpenBrowser) { Open-P2PBrowser -Url "http://127.0.0.1:$Port" }
     } else {
-        Connect-P2PQuickTunnel -Executable $cloudflaredExecutable -ProjectRoot $ProjectRoot `
+        Start-P2PRemoteConnection -Executable $cloudflaredExecutable -ProjectRoot $ProjectRoot `
             -Port $Port -Protocol $TunnelProtocol -LogStem $logStem -Server $server `
-            -Tunnel ([ref]$tunnel) -MaxAttempts $TunnelAttempts -OpenBrowser:$OpenBrowser
+            -Tunnel ([ref]$tunnel) -MaxAttempts $TunnelAttempts -StartupTimeoutSeconds $TunnelStartupSeconds -OpenBrowser:$OpenBrowser
     }
 
     while ($true) {
@@ -143,7 +156,10 @@ try {
         if ($tunnel) {
             if ($tunnel.HasExited) {
                 $exitCode = if ($null -eq $tunnel.ExitCode) { '未知' } else { [string]$tunnel.ExitCode }
-                throw "Cloudflare Tunnel 已退出（退出码 $exitCode）；查看日志：$logStem-tunnel-attempt-*-error.log"
+                Write-Host "Cloudflare Tunnel 已退出（退出码 $exitCode）；查看日志：$logStem-tunnel-attempt-*-error.log" -ForegroundColor Yellow
+                $tunnel.Dispose()
+                $tunnel = $null
+                Show-P2PManualConnection -Port $Port -Executable $cloudflaredExecutable
             }
         }
         Start-Sleep -Milliseconds 500

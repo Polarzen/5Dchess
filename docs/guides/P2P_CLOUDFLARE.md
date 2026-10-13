@@ -58,6 +58,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_p2p.ps1 -Pyt
 
 ### 异地联机
 
+双击 `远程.bat` 后选择连接方式：回车默认项目 Cloudflare 自动协议；也可选 HTTP/2、QUIC、系统 PATH 中已有的 cloudflared，或只启动网站再手动接隧道。项目版本与系统版本可能不同，窗口会打印实际程序路径、版本和协议。手动模式不下载 Cloudflare，也不自动产生公网网址。
+
+无需交互菜单的完整命令（从解压目录运行，无需预装 Python）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_windows.ps1 -Mode Remote -Connection Auto
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_windows.ps1 -Mode Remote -Connection Http2
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_windows.ps1 -Mode Remote -Connection Quic
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_windows.ps1 -Mode Remote -Connection System
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_windows.ps1 -Mode Remote -Connection Manual
+```
+
+自动模式可额外传 `-CloudflaredPath '.\tools\cloudflared.exe'` 指定已有程序。文件不存在会提示并转入只运行网站的手动模式；不会偷偷改用其他 Cloudflare 程序。`-Check` 不显示菜单，也不启动网站或隧道。依赖准备仍可能需要下载。
+
+以下 `start_p2p.ps1` 命令适用于已经通过安装脚本准备 `.venv311` 的开发环境：
+
 ```powershell
 # 只检查环境，不启动服务或隧道
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -Check
@@ -92,11 +108,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_p2p.ps1 -Tun
 
 启动器先通过 `run_p2p_server.py --select-port` 取得具体端口，再严格传给网站和 Tunnel，避免二者指向不同端口。启动前的端口探测不构成预留；最终绑定发生竞争会报错，需要重新启动。
 
-网站使用 `debug=False`，不会启动开发调试器或重载进程。启动器用一次性的 launch identity 和实际服务 PID 确认就绪，兼容 Windows 虚拟环境解释器的子进程；identity 只经环境传递，不写入 URL。网站就绪最多等 30 秒，每次隧道启动最多等 90 秒。
+网站使用 `debug=False`，不会启动开发调试器或重载进程。启动器用一次性的 launch identity 和实际服务 PID 确认就绪，兼容 Windows 虚拟环境解释器的子进程；identity 只经环境传递，不写入 URL。网站就绪最多等 30 秒，每次隧道启动默认最多等 180 秒，开发入口可通过 `-TunnelStartupSeconds 300` 调整（10–600 秒）。
 
-申请临时网址遇到超时、网络中断或接口 429/5xx，且尚未取得网址时，启动器默认最多尝试 3 次（首次失败后等 2 秒，再次失败后等 4 秒），期间本地网站继续运行。可通过 `-TunnelAttempts 1` 关闭重试，或设置为 1–5 次。每次尝试分别写入 `logs/p2p/*-tunnel-attempt-N-error.log`，保留之前的错误。配置、证书等错误不自动重试；已经取得网址或成功连接后的退出也不自动重建，以免更换邀请链接。达到重试上限、服务退出、启动超时或按 Ctrl+C 时会清理本次启动的进程。
+申请临时网址遇到超时、网络中断或接口 429/5xx，且尚未取得网址时，启动器默认最多尝试 3 次（首次失败后等 2 秒，再次失败后等 4 秒），期间本地网站继续运行。可通过 `-TunnelAttempts 1` 关闭重试，或设置为 1–5 次。每次尝试分别写入 `logs/p2p/*-tunnel-attempt-N-error.log` 及对应标准输出日志，两个日志一起判断就绪。配置、证书等错误不自动重试；已经取得网址或成功连接后的退出也不自动重建，以免更换邀请链接。
+
+隧道超过等待时间、重试耗尽或退出时，网站继续运行，窗口会生成带实际端口的 CMD/PowerShell 命令供手动重试；未连通的自动隧道会停止。按 Ctrl+C 或网站自身退出时才清理本启动器拥有的进程。手动终端里的隧道由用户在对应窗口停止。
 
 ### 手动启动
+
+下载 ZIP 的玩家可以双击 `远程.bat` 选 5，或运行上面的 `-Connection Manual` 命令；复制窗口中已经填好程序路径与实际端口的命令到第二个终端。
+
+如果已有系统 cloudflared，网站实际端口为 5050 时，在 CMD 中运行：
+
+```bat
+cloudflared tunnel --url http://127.0.0.1:5050
+```
+
+如果网站端口切换为 5051，就把命令端口同步改为 5051。也可用自己配置的其他隧道将此本机 HTTP 地址作为源站，双方仍需打开同一个公网入口。
+
+手动命令与临时地址的性质参见 [Cloudflare 官方 Quick Tunnels 说明](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)；临时入口没有可用性保证。协议选项见 [官方运行参数](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/)。改变协议不等于修复申请临时网址的 HTTPS 请求。
 
 在两个终端分别运行，并分别按 Ctrl+C 停止：
 
@@ -191,7 +221,7 @@ failed to read quick-tunnel response: context deadline exceeded (Client.Timeout 
 
 在 PowerShell 7 窗口里执行 `powershell ...` 仍会启动 Windows PowerShell 5.1；要使用当前 PowerShell 7，可直接执行 `& .\scripts\start_p2p.ps1`（受当前执行策略约束），或将命令开头换成 `pwsh`。启动器支持两者；切换 PowerShell 版本不会修复网络连接问题。
 
-`-TunnelProtocol http2` 用于已取得网址后连接 Cloudflare 隧道的阶段，不能延长或改变申请网址这一步。所固定的 cloudflared 2026.10.0 在[官方实现](https://github.com/cloudflare/cloudflared/blob/2026.10.0/cmd/cloudflared/tunnel/quick_tunnel.go)中把申请请求超时设为 15 秒；启动器的 90 秒等待上限不会覆盖它。
+`-TunnelProtocol http2` 用于已取得网址后连接 Cloudflare 隧道的阶段，不能延长或改变申请网址这一步。所固定的 cloudflared 2026.10.0 在[官方实现](https://github.com/cloudflare/cloudflared/blob/2026.10.0/cmd/cloudflared/tunnel/quick_tunnel.go)中把申请请求超时设为 15 秒；启动器的 180 秒等待上限不会覆盖它。
 
 局域网玩家仍可使用 `-LanOnly`；异地玩家需要公网入口恢复后才能加入，局域网模式不能替代异地连接。
 

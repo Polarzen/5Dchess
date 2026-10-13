@@ -680,8 +680,7 @@ async function executeCanonicalMove(move, context = captureSession(), fingerprin
         clearSelection(false);
         updateAll();
         focusBoard(focusedBoardKey);
-        if (!gameState.rule_warning) showToast(localizePlayerText(
-            (result.move || result.last_move || move).display_notation, '走子完成'));
+        if (!gameState.rule_warning) showToast(moveFeedback(result.move || result.last_move || move));
     } catch (error) {
         if (ownsMutation(owner)) {
             showToast('走子失败，请稍后重试', true);
@@ -701,6 +700,14 @@ function clearSelection(render = true) {
         renderMultiverse();
         renderInspector();
     }
+}
+
+function moveFeedback(move) {
+    if (move?.is_branching && move.created_timeline !== null && move.created_timeline !== undefined) {
+        const line = `L${move.created_timeline > 0 ? '+' : ''}${move.created_timeline}`;
+        return `${move.captured ? '吃子已在' : '棋子已到达'}新支线 ${line}；原时间线保留。新棋盘轮到${colorLabel(move.result_destination_board?.side || (gameState.turn === 'white' ? 'black' : 'white'))}。`;
+    }
+    return localizePlayerText(move?.display_notation, '走子完成');
 }
 
 function moveArrivalBoardKey(move) {
@@ -936,7 +943,7 @@ function renderMultiverse() {
         }
         const {lane, label, track} = laneView;
         lane.className = `timeline-lane ${timeline.is_active ? 'active' : 'inactive'}`;
-        const labelText = `<strong>${escapeHtml(timeline.name)}</strong><small>${timeline.is_active ? '活动' : '非活动'}${timeline.owner ? ` · ${escapeHtml(colorLabel(timeline.owner))}` : ''}</small>`;
+        const labelText = `<strong>${escapeHtml(timeline.name)}</strong><small>${timeline.is_active ? '参与当前时刻' : '可选支线'}${timeline.owner ? ` · ${escapeHtml(colorLabel(timeline.owner))}创建` : ''}</small>`;
         if (labelText !== laneView.labelText) { label.innerHTML = labelText; laneView.labelText = labelText; }
         track.style.gridTemplateColumns = `repeat(${maxTime - minTime + 1}, var(--board-size))`;
         if (container.children[index] !== lane) container.insertBefore(lane, container.children[index] || null);
@@ -1014,9 +1021,9 @@ function updateBoardCard(card, board, targets, source, lastSource, lastTarget) {
     const badges = [];
     if (board.is_present) badges.push(['当前时刻', 'present']);
     if (board.is_required) badges.push(['必须推进', 'required']);
-    if (board.playable && !board.is_required) badges.push([board.is_movable ? '可选走子' : '等待对手', 'playable']);
+    if (board.playable && !board.is_required) badges.push([gameState.game_state !== 'PLAYING' ? '对局已结束' : board.is_movable ? '可选走子' : `轮到${colorLabel(board.coord.side)}`, 'playable']);
     if (board.historical) badges.push(['历史 · 仅可落子', 'historical']);
-    if (!board.timeline_active) badges.push(['非活动', 'inactive']);
+    if (!board.timeline_active) badges.push(['可选支线', 'inactive']);
     const headerHTML = `<span class="board-coord-label">${escapeHtml(title)}</span><span class="board-badges">${badges.map(([text, cls]) => `<span class="board-badge ${cls}">${text}</span>`).join('')}</span>`;
     if (card._headerHTML !== headerHTML) { card._header.innerHTML = headerHTML; card._headerHTML = headerHTML; }
     const names = {k: '王', q: '后', r: '车', b: '象', n: '马', p: '兵'};
@@ -1197,7 +1204,7 @@ function renderActionPanel() {
     const action = gameState.action || {};
     const present = gameState.present;
     const summary = document.getElementById('action-summary');
-    const required = action.required_boards || [];
+    const required = gameState.game_state === 'PLAYING' ? action.required_boards || [] : [];
 
     const presentText = present
         ? `回合 T${present.turn} / 时刻 t${present.time_point} / ${colorLabel(present.side)}`
@@ -1236,7 +1243,7 @@ function renderActionPanel() {
 
     const help = document.getElementById('action-help');
     if (mode === 'pvp') {
-        help.textContent = action.can_submit
+        help.textContent = gameState.game_state !== 'PLAYING' ? submissionHelp(action) : action.can_submit
             ? '可以提交；如有需要，可先在其他未来或非活动可走棋盘上完成可选走子。'
             : required.length
                 ? '红框棋盘必须继续推进；当前时刻到达对手且王安全后才能提交。'
@@ -1254,17 +1261,63 @@ function renderActionPanel() {
     }
 
     renderAIRetryControl(help);
+    renderMovableBoards();
 
     document.getElementById('check-badge')?.classList.toggle('hidden', !gameState.in_check);
 }
 
 function submissionHelp(action) {
-    if (gameState?.game_state !== 'PLAYING') return '对局已结束，可返回菜单开始新对局。';
+    if (gameState?.game_state !== 'PLAYING') return gameState?.game_state === 'CHECKMATE'
+        ? `${colorLabel(gameState.turn)}已被将杀，对局结束；所有棋盘停止走子，可从存档观看回放。`
+        : '对局已结束，可返回菜单开始新对局。';
     if (action.can_submit) return '本次行动已完成。点击“提交行动”后才轮到对手；也可以继续可选走子。';
     const count = action.required_boards?.length || 0;
     if (count) return `还需推进当前时刻的 ${count} 张红框棋盘。跨线移动可同时推进起点和落点棋盘；每次移动后请查看更新后的红框。`;
     if (action.submit_blocker === 'royal_safety') return '棋盘已推进，但仍有王受到跨时空攻击，暂不能提交。必须保护每一个王，包括历史棋盘上的王。';
     return '选择标记为“可行动”的棋盘走子；历史棋盘只能作为合法落点，不能从中选子。';
+}
+
+function renderMovableBoards() {
+    const container = document.getElementById('movable-board-list');
+    if (!container) return;
+    const boards = gameState.game_state === 'PLAYING' && mode !== 'replay'
+        ? (gameState.boards || []).filter(board => board.is_movable) : [];
+    const signature = JSON.stringify([mode, gameState.game_state, gameState.turn,
+        boards.map(board => [board.key, board.is_required, board.timeline_active]),
+        gameState.action?.can_submit, gameState.action?.submit_blocker]);
+    if (container._navigationSignature === signature) return;
+    container._navigationSignature = signature;
+    container.replaceChildren();
+    const label = document.createElement('p');
+    label.className = 'board-navigation-label';
+    label.textContent = mode === 'replay' ? '回放中：点击棋盘查看局面，使用回放按钮前进或后退。' : boards.length ? `${colorLabel(gameState.turn)}本回合可操作 ${boards.length} 张棋盘 · 点击定位` : submissionHelp(gameState.action || {});
+    container.appendChild(label);
+    for (const board of boards) {
+        const button = document.createElement('button');
+        button.className = `board-chip ${board.is_required ? 'required' : 'optional'}`;
+        button.textContent = `${coordLabel(board.coord)} · ${board.is_required ? '必须推进' : '可选走子'}`;
+        button.onclick = () => focusBoard(board.key);
+        container.appendChild(button);
+    }
+    if (boards.some(board => !board.timeline_active)) {
+        const note = document.createElement('p');
+        note.className = 'muted';
+        note.textContent = '可选支线也能走。它暂不推动当前时刻，不必等到“活动”才操作；在提交前选择是否走子。';
+        container.appendChild(note);
+    }
+}
+
+function boardInteractionHelp(board) {
+    if (gameState.game_state !== 'PLAYING') return submissionHelp(gameState.action || {});
+    if (mode === 'replay') return '正在观看回放，不能走子；退出回放后可从未结束的存档继续对局。';
+    if (board.historical) return '这是历史局面，只能作为合法落点，不能从这里选子。请到这条线最右端的最新棋盘操作。';
+    if (board.coord.side !== gameState.turn) return `这张棋盘轮到${colorLabel(board.coord.side)}，当前行动方是${colorLabel(gameState.turn)}。每次落子（包括跳跃）都会切换这张棋盘的行棋方，不能连续移动刚走过的棋子。`;
+    if ((mode === 'p2p' || mode === 'pve') && gameState.player_color !== gameState.turn) return `这张棋盘可由${colorLabel(gameState.turn)}操作；你执${colorLabel(gameState.player_color)}，请等待对手。`;
+    if (mode === 'p2p' && !gameState.p2p?.can_act) return '等待双方连接恢复后继续操作；棋盘不会因为位置较早而失效。';
+    if (board.is_movable) return board.timeline_active
+        ? '这条线的最新棋盘可以操作，不要求它比其他线的时间更晚。'
+        : '这张是可选支线的最新棋盘，现在可以走子；不参与当前时刻不等于不能操作。';
+    return '本张棋盘暂不能操作，请查看当前行动和可操作棋盘列表。';
 }
 
 function renderAIRetryControl(help) {
@@ -1291,8 +1344,8 @@ function renderInspector() {
 
     panel.className = 'inspector';
     const flags = [
-        board.playable ? '可走' : '历史',
-        board.timeline_active ? '活动' : '非活动',
+        board.playable ? '本线最新' : '历史',
+        board.timeline_active ? '参与当前时刻' : '可选支线',
         board.is_present ? '当前时刻' : null,
         board.is_required ? '必须推进' : null,
         board.is_movable ? '可行动' : null,
@@ -1310,7 +1363,25 @@ function renderInspector() {
         当前回合：T${board.coord.turn} · 颜色：${escapeHtml(colorLabel(board.coord.side))}<br>
         内部时间坐标：t${board.coord.time_point}<br>
         ${escapeHtml(flags)}${extra}
+        <p class="board-explanation">${escapeHtml(boardInteractionHelp(board))}</p>
     `;
+    if (board.historical) {
+        const latest = (gameState.boards || []).find(candidate => candidate.coord.timeline === board.coord.timeline && candidate.playable);
+        if (latest) {
+            const button = document.createElement('button');
+            button.className = 'ghost-btn';
+            button.textContent = `定位本线最新棋盘 · ${coordLabel(latest.coord)}`;
+            button.onclick = () => focusBoard(latest.key);
+            panel.appendChild(button);
+        }
+    }
+    const last = gameState.last_move;
+    if (last?.is_branching && last.created_timeline === board.coord.timeline) {
+        const note = document.createElement('p');
+        note.className = 'branch-explanation';
+        note.textContent = `${moveFeedback(last)}${last.captured ? '被吃的棋子在这条新支线上消失，原线上的后续版本仍在。' : ''}可选支线若停在对手阶段，需要对手选择在此推进，你的棋子才会再次轮到行动。`;
+        panel.appendChild(note);
+    }
 }
 
 function renderHistory() {

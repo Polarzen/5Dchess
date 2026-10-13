@@ -861,7 +861,42 @@ async function testCompactPollPreservesBoardsAndRejectsLateVersion() {
     assert.equal(vm.runInContext('gameState.move_counter', context), 2);
 }
 
+function testPastBranchControlsAndReasons() {
+    for (const online of [false, true]) {
+        const context = loadClient(online);
+        const links = [];
+        const container = context.document.getElementById('movable-board-list');
+        container.appendChild = node => links.push(node);
+        container.replaceChildren = () => { links.length = 0; };
+        vm.runInContext(`mode = '${online ? 'p2p' : 'pvp'}';
+            __old = {key:'2:1', playable:true, historical:false, is_movable:true, is_required:false,
+                timeline_active:false, coord:{key:'2:1',timeline:2,turn:0,time_point:1,side:'black'}};
+            __main = {...__old,key:'0:3',is_required:true,timeline_active:true,
+                coord:{key:'0:3',timeline:0,turn:1,time_point:3,side:'black'}};
+            gameState = {game_state:'PLAYING',turn:'black',player_color:'black', boards:[__main,__old],
+                p2p:{can_act:true,opponent_connected:true},action:{required_boards:[__main.coord]}};
+            __focused = null; focusBoard = key => { __focused = key; }; renderMovableBoards();`, context);
+        assert.equal(vm.runInContext("canSelectSource(__old, 'p')", context), true);
+        const optional = links.find(node => node.className === 'board-chip optional');
+        assert.ok(optional, 'old inactive branch must have a navigation button');
+        vm.runInContext('renderMovableBoards()', context);
+        assert.equal(links.find(node => node.className === 'board-chip optional'), optional, 'unchanged polls retain the navigation button and its focus');
+        optional.onclick();
+        assert.equal(vm.runInContext('__focused', context), '2:1');
+        assert.match(vm.runInContext('boardInteractionHelp(__old)', context), /现在可以走子/);
+        vm.runInContext("gameState.turn = 'white'; __old.is_movable = false;", context);
+        assert.equal(vm.runInContext("canSelectSource(__old, 'N')", context), false);
+        assert.match(vm.runInContext('boardInteractionHelp(__old)', context), /轮到黑方/);
+        assert.match(vm.runInContext('boardInteractionHelp({...__old,historical:true,playable:false})', context), /最右端/);
+        assert.match(vm.runInContext("moveFeedback({is_branching:true,created_timeline:2,captured:{type:'P'},result_destination_board:{side:'black'}})", context), /吃子已在新支线 L\+2；原时间线保留/);
+        vm.runInContext("gameState.game_state = 'CHECKMATE'; renderActionPanel();", context);
+        assert.match(context.document.getElementById('action-help').textContent, /白方已被将杀/);
+        assert.equal(links.some(node => node.className?.startsWith('board-chip')), false);
+    }
+}
+
 (async () => {
+    testPastBranchControlsAndReasons();
     testIncrementalBoardRendering();
     testKeyboardControlsDoNotAlsoSubmitTurn();
     await testDelayedSelectionFeedbackAndOwnership();

@@ -540,8 +540,7 @@ executeCanonicalMove = async function(move) {
         focusedBoardKey = moveArrivalBoardKey(result.last_move || result.move || move);
         if (applyP2PState(result, context, owner) && !gameState.rule_warning) {
             focusBoard(focusedBoardKey);
-            showToast(localizePlayerText(
-                (result.move || result.last_move || move).display_notation, '走子完成'));
+            showToast(moveFeedback(result.move || result.last_move || move));
         }
     } catch (error) {
         if (ownsMutation(owner)) {
@@ -637,7 +636,9 @@ renderActionPanel = function() {
     const opponentStatus = p2p.opponent_status || (
         p2p.opponent_connected ? 'connected' : 'not_connected'
     );
-    if (opponentStatus === 'not_connected') {
+    if (gameState.game_state !== 'PLAYING') {
+        help.textContent = submissionHelp(action);
+    } else if (opponentStatus === 'not_connected') {
         help.textContent = `房间 ${p2p.room_code} 正在等待第二位玩家；点击顶部“房间”可复制房间码。`;
     } else if (opponentStatus === 'offline') {
         help.textContent = '对手暂时离线，游戏已暂停，正在等待对手重新连接。';

@@ -92,6 +92,41 @@ function Open-P2PBrowser {
     }
 }
 
+function Show-P2PManualConnection {
+    param([int]$Port, [string]$Executable = 'cloudflared')
+    if (-not $Executable) { $Executable = 'cloudflared' }
+    Write-Host "[时线棋局] 网站继续运行：http://127.0.0.1:$Port"
+    Write-Host '[时线棋局] 保留本窗口，另开一个 CMD 窗口，复制以下整行命令：'
+    Write-Host ('"' + $Executable + '" tunnel --url http://127.0.0.1:' + $Port)
+    Write-Host '[时线棋局] 如果使用 PowerShell，复制这一行：'
+    Write-Host ("& '" + $Executable.Replace("'", "''") + "' tunnel --url http://127.0.0.1:" + $Port)
+    Write-Host '[时线棋局] 也可用自己的隧道工具，将上面的本机地址设为源站。'
+    Write-Host '[时线棋局] 没有安装 cloudflared 时，请重新选择项目版本或参考使用说明。'
+    Write-Host '[时线棋局] 取得公网网址后，双方打开同一公网网址；房主创建房间，再分享邀请链接。'
+    Write-Host '[时线棋局] 停止网站：本窗口 Ctrl+C；手动启动的隧道需在它自己的窗口 Ctrl+C。'
+}
+
+function Start-P2PRemoteConnection {
+    param([string]$Executable, [string]$ProjectRoot, [int]$Port, [string]$Protocol,
+          [string]$LogStem, $Server, [ref]$Tunnel, [int]$MaxAttempts = 3,
+          [int]$StartupTimeoutSeconds = 180, [switch]$OpenBrowser)
+    try {
+        Connect-P2PQuickTunnel -Executable $Executable -ProjectRoot $ProjectRoot -Port $Port `
+            -Protocol $Protocol -LogStem $LogStem -Server $Server -Tunnel $Tunnel `
+            -MaxAttempts $MaxAttempts -StartupTimeoutSeconds $StartupTimeoutSeconds -OpenBrowser:$OpenBrowser
+    } catch {
+        if ($Server.HasExited) { throw }
+        Write-Host "[时线棋局] 自动隧道未连接：$($_.Exception.Message)" -ForegroundColor Yellow
+        if ($Tunnel.Value) {
+            if (-not $Tunnel.Value.HasExited) { Stop-Process -Id $Tunnel.Value.Id -Force -ErrorAction SilentlyContinue }
+            $Tunnel.Value.Dispose()
+            $Tunnel.Value = $null
+        }
+        Show-P2PManualConnection -Port $Port -Executable $Executable
+        if ($OpenBrowser) { Open-P2PBrowser -Url "http://127.0.0.1:$Port" }
+    }
+}
+
 function Connect-P2PQuickTunnel {
     param(
         [string]$Executable,
@@ -102,6 +137,7 @@ function Connect-P2PQuickTunnel {
         $Server,
         [ref]$Tunnel,
         [ValidateRange(1, 5)][int]$MaxAttempts = 3,
+        [ValidateRange(10, 600)][int]$StartupTimeoutSeconds = 90,
         [switch]$OpenBrowser
     )
     # The caller owns process cleanup even when Ctrl+C interrupts startup.
@@ -124,7 +160,7 @@ function Connect-P2PQuickTunnel {
         try { $null = $Tunnel.Value.Handle } catch [System.InvalidOperationException] {
             # A process that already disappeared can still be diagnosed from its log.
         }
-        $deadline = (Get-Date).AddSeconds(90)
+        $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
         while ($true) {
             if ($Server.HasExited) { throw 'Flask 服务已退出；停止创建 Cloudflare Tunnel。' }
             $process = $Tunnel.Value
@@ -132,7 +168,7 @@ function Connect-P2PQuickTunnel {
             if ($exited) { $process.WaitForExit() }
             # Get-Content on a newly created empty log may yield AutomationNull
             # in Windows PowerShell 5.1, even with an expression-level cast.
-            $output = '' + (Get-Content -LiteralPath $errorLog -Raw -ErrorAction SilentlyContinue)
+            $output = '' + (Get-Content -LiteralPath $errorLog -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content -LiteralPath ($attemptStem + '.log') -Raw -ErrorAction SilentlyContinue)
             # api.trycloudflare.com/tunnel in an error is not a provisioned URL.
             $urlMatch = [regex]::Match($output, 'https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com(?=[\s|]|$)')
             $registered = $output.Contains('Registered tunnel connection')
@@ -163,9 +199,9 @@ function Connect-P2PQuickTunnel {
             }
             if ((Get-Date) -gt $deadline) {
                 if ($urlMatch.Success) {
-                    throw "已取得临时网址，但隧道在 90 秒内未连接；可尝试 -TunnelProtocol http2。查看日志：$errorLog"
+                    throw "已取得临时网址，但隧道在 $StartupTimeoutSeconds 秒内未连接；可尝试 -TunnelProtocol http2、auto 或 quic。查看日志：$errorLog"
                 }
-                throw "90 秒内未取得可用的 Cloudflare 临时网址；请检查网络到 api.trycloudflare.com 的连通性。查看日志：$errorLog"
+                throw "$StartupTimeoutSeconds 秒内未取得可用的 Cloudflare 临时网址；请检查网络到 api.trycloudflare.com 的连通性。查看日志：$errorLog"
             }
             Start-Sleep -Milliseconds 500
         }

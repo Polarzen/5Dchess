@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时线棋局 · 多时间线国际象棋</title>
     <meta name="theme-color" content="#f7e9ee">
-    <link rel="stylesheet" href="/static/css/style.css?v=14">
+    <link rel="stylesheet" href="/static/css/style.css?v=15">
     <link rel="stylesheet" href="/static/css/p2p.css?v=3">
 </head>
 <body>
@@ -121,6 +121,7 @@
                         <span id="check-badge" class="mini-badge danger hidden">将军</span>
                     </div>
                     <div id="action-summary"></div>
+                    <div id="movable-board-list" class="board-navigation"></div>
                     <button id="submit-action-btn" class="submit-btn" onclick="submitAction()" disabled>
                         提交行动
                     </button>
@@ -148,7 +149,7 @@
                         <span><i class="legend present"></i>当前时刻</span>
                         <span><i class="legend required"></i>必须推进</span>
                         <span><i class="legend movable"></i>可行动</span>
-                        <span><i class="legend inactive"></i>非活动</span>
+                        <span><i class="legend inactive"></i>可选支线</span>
                         <span><i class="legend target"></i>跨棋盘目标</span>
                         <span><i class="legend last"></i>最近走子</span>
                     </div>
@@ -222,8 +223,8 @@
     </div>
     <p><button class="ghost-btn" onclick="openLegacyReplay()">其他棋谱（.5dpgn）</button></p>
 </dialog>
-<script src="/static/js/game.js?v=12"></script>
-<script src="/static/js/p2p.js?v=8"></script>
+<script src="/static/js/game.js?v=13"></script>
+<script src="/static/js/p2p.js?v=9"></script>
 <script src="/static/js/replay_controls.js?v=1"></script>
 <script src="/static/js/p2p_invite.js?v=3"></script>
 <script src="/static/js/tutorial.js?v=3"></script>

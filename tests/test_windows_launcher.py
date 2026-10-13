@@ -108,8 +108,8 @@ def fake_project(tmp_path, *, failure=False):
     ) + " }\nfunction Initialize-LauncherCloudflared { return 'project-cloudflared.exe' }\n"
     (project / 'scripts/windows_bootstrap.ps1').write_text(bootstrap, encoding='utf-8-sig')
     (project / 'scripts/start_p2p.ps1').write_text('''
-param($PythonPath, $CloudflaredPath, [switch]$LanOnly, [switch]$Check, [switch]$OpenBrowser, $TunnelProtocol)
-[pscustomobject]@{Python=$PythonPath;Cloudflared=$CloudflaredPath;LAN=[bool]$LanOnly;Check=[bool]$Check;Browser=[bool]$OpenBrowser;Protocol=$TunnelProtocol} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot '../started.json') -Encoding UTF8
+param($PythonPath, $CloudflaredPath, [switch]$LanOnly, [switch]$ManualTunnel, [switch]$Check, [switch]$OpenBrowser, $TunnelProtocol)
+[pscustomobject]@{Python=$PythonPath;Cloudflared=$CloudflaredPath;LAN=[bool]$LanOnly;Manual=[bool]$ManualTunnel;Check=[bool]$Check;Browser=[bool]$OpenBrowser;Protocol=$TunnelProtocol} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot '../started.json') -Encoding UTF8
 ''', encoding='utf-8-sig')
     return project
 
@@ -119,14 +119,14 @@ param($PythonPath, $CloudflaredPath, [switch]$LanOnly, [switch]$Check, [switch]$
 @pytest.mark.parametrize('mode,check', [('Local', False), ('Remote', False), ('Local', True), ('Remote', True)])
 def test_launcher_selects_mode_and_check_never_opens_browser(shell, tmp_path, mode, check):
     project = fake_project(tmp_path)
-    result = run(shell, f"& {quote(project / 'scripts/launch_windows.ps1')} -Mode {mode} " + ('-Check' if check else ''))
+    result = run(shell, f"& {quote(project / 'scripts/launch_windows.ps1')} -Mode {mode} -Connection Auto " + ('-Check' if check else ''))
     assert result.returncode == 0, result.stdout + result.stderr
     actual = json.loads((project / 'started.json').read_text(encoding='utf-8-sig'))
     assert actual == {
         'Python': 'project-python.exe',
         'Cloudflared': 'project-cloudflared.exe' if mode == 'Remote' else None,
-        'LAN': mode == 'Local', 'Check': check, 'Browser': not check,
-        'Protocol': 'http2' if mode == 'Remote' else None,
+        'LAN': mode == 'Local', 'Manual': False, 'Check': check, 'Browser': not check,
+        'Protocol': 'auto' if mode == 'Remote' else None,
     }
 
 
@@ -171,3 +171,51 @@ Write-Output 'STILL_RUNNING'
 """)
     assert result.returncode == 0, result.stderr
     assert b'STILL_RUNNING' in result.stdout
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('answer,expected', [('', 'Auto'), ('2', 'Http2'), ('3', 'Quic'), ('4', 'System'), ('5', 'Manual')])
+def test_remote_menu_and_noninteractive_check(shell, answer, expected):
+    result = run(shell, f"""
+. {quote(ROOT / 'scripts/windows_bootstrap.ps1')}
+$script:reads = 0
+function Read-Host {{ $script:reads++; if ($script:reads -eq 1) {{ return 'invalid' }}; return '{answer}' }}
+$choice = Select-LauncherConnection 6>$null
+function Read-Host {{ throw 'Check must not ask for input' }}
+$checkChoice = Select-LauncherConnection -Check
+[pscustomobject]@{{Choice=$choice;Check=$checkChoice;Reads=$script:reads}} | ConvertTo-Json -Compress
+""")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {'Choice': expected, 'Check': 'Auto', 'Reads': 2}
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows entry point')
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('connection,protocol', [('Http2', 'http2'), ('Quic', 'quic'), ('Manual', None), ('System', 'auto')])
+def test_remote_choices_route_without_unwanted_downloads(shell, tmp_path, connection, protocol):
+    project = fake_project(tmp_path)
+    bootstrap = project / 'scripts/windows_bootstrap.ps1'
+    if connection in ('Manual', 'System'):
+        with bootstrap.open('a', encoding='utf-8') as output:
+            output.write("\nfunction Initialize-LauncherCloudflared { throw 'UNEXPECTED_DOWNLOAD' }\n")
+    prefix = "function Get-Command { return [pscustomobject]@{Source='existing-cloudflared.exe'} }; " if connection == 'System' else ''
+    result = run(shell, prefix + f"& {quote(project / 'scripts/launch_windows.ps1')} -Mode Remote -Connection {connection} -NoBrowser")
+    assert result.returncode == 0, result.stdout + result.stderr
+    actual = json.loads((project / 'started.json').read_text(encoding='utf-8-sig'))
+    assert actual['Manual'] == (connection == 'Manual')
+    assert actual['Protocol'] == protocol
+    assert actual['Cloudflared'] == (None if connection == 'Manual' else 'existing-cloudflared.exe' if connection == 'System' else 'project-cloudflared.exe')
+    assert not actual['Browser']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows entry point')
+@pytest.mark.parametrize('shell', SHELLS)
+def test_cloudflare_download_failure_still_starts_local_site(shell, tmp_path):
+    project = fake_project(tmp_path)
+    with (project / 'scripts/windows_bootstrap.ps1').open('a', encoding='utf-8') as output:
+        output.write("\nfunction Initialize-LauncherCloudflared { throw 'SIMULATED_CF_DOWNLOAD_FAILURE' }\n")
+    result = run(shell, f"& {quote(project / 'scripts/launch_windows.ps1')} -Mode Remote -Connection Auto -NoBrowser")
+    assert result.returncode == 0, result.stdout + result.stderr
+    actual = json.loads((project / 'started.json').read_text(encoding='utf-8-sig'))
+    assert actual['Manual'] and actual['Cloudflared'] is None
+    assert b'SIMULATED_CF_DOWNLOAD_FAILURE' in result.stdout

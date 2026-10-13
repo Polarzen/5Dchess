@@ -46,6 +46,18 @@ def test_selection_skips_one_occupied_preferred_port():
         assert port_utils.select_port(preferred_port=preferred) == preferred + 1
 
 
+def test_wildcard_probe_rejects_loopback_reuse_listener():
+    # On Windows, a plain 0.0.0.0 bind can succeed here while loopback requests
+    # still go to the original listener, causing false readiness timeouts.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert not port_utils.is_port_available('0.0.0.0', port)
+        assert port_utils.select_port(preferred_port=port) != port
+
+
 def test_selection_skips_one_and_two_occupied_candidates(monkeypatch):
     occupied = {62000, 62001}
     checked: list[int] = []

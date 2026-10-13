@@ -166,6 +166,7 @@ function Start-Process {{
     if ($script:created.Count -ge $script:plan.Count) {{ throw 'Unexpected extra process' }}
     $item = $script:plan[$script:created.Count]
     [IO.File]::WriteAllText($RedirectStandardError, [string]$item.log, [Text.UTF8Encoding]::new())
+    [IO.File]::WriteAllText($RedirectStandardOutput, [string]$item.stdout, [Text.UTF8Encoding]::new())
     $process = [pscustomobject]@{{
         HasExited = [bool]$item.exited; ExitCode = 1; Disposed = $false
         Log = $RedirectStandardError; Arguments = $ArgumentList
@@ -248,6 +249,40 @@ Add-Content -LiteralPath $script:created[0].Log -Value "`nINF Registered tunnel 
 """)
     assert result['Error'] is None
     assert result['Sleeps'] == [500]
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_tunnel_accepts_registration_split_between_stdout_and_stderr(shell, tmp_path):
+    result = tunnel_scenario(shell, tmp_path, [{'exited': False, 'log': PUBLIC_URL, 'stdout': 'INF Registered tunnel connection'}])
+    assert result['Error'] is None
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_failed_automatic_tunnel_preserves_server_and_offers_manual_port(shell):
+    result = run(shell, """
+$script:stopped = @(); $script:manualPort = 0; $script:opened = ''
+function Stop-Process { param($Id, [switch]$Force, $ErrorAction) $script:stopped += $Id }
+function Show-P2PManualConnection { param($Port, $Executable) $script:manualPort = $Port }
+function Open-P2PBrowser { param($Url) $script:opened = $Url }
+function Connect-P2PQuickTunnel { throw 'SIMULATED_TIMEOUT' }
+$server = [pscustomobject]@{HasExited=$false; Id=11}
+$tunnel = [pscustomobject]@{HasExited=$false; Id=22; Disposed=$false}
+$tunnel | Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+$original = $tunnel
+Start-P2PRemoteConnection -Executable fake -ProjectRoot . -Port 5053 -Protocol auto -Server $server -Tunnel ([ref]$tunnel) -OpenBrowser 6>$null
+[pscustomobject]@{Stopped=$script:stopped;ManualPort=$script:manualPort;Opened=$script:opened;Cleared=($null -eq $tunnel);Disposed=$original.Disposed;ServerExited=$server.HasExited} | ConvertTo-Json -Compress
+""")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {'Stopped': [22], 'ManualPort': 5053, 'Opened': 'http://127.0.0.1:5053', 'Cleared': True, 'Disposed': True, 'ServerExited': False}
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_manual_tunnel_check_does_not_require_cloudflared(shell, tmp_path):
+    result = run(shell, f"& {quoted(ROOT / 'scripts/start_p2p.ps1')} -ManualTunnel -Check -PythonPath {quoted(Path(sys.executable))}")
+    assert result.returncode == 0, result.stderr
+    assert b'P2P environment OK' in result.stdout
+    invalid = run(shell, f"& {quoted(ROOT / 'scripts/start_p2p.ps1')} -ManualTunnel -Check -CloudflaredPath {quoted(tmp_path / 'missing.exe')} -PythonPath {quoted(Path(sys.executable))}")
+    assert invalid.returncode != 0
 
 
 @pytest.mark.parametrize('shell', SHELLS)

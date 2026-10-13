@@ -730,7 +730,7 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
     summary = engine.get_game_summary()
     present = engine.get_present()
 
-    required = list(engine.get_required_action_boards()) if interactive else []
+    required = list(engine.get_required_action_boards()) if interactive and engine.game_state == GameState.PLAYING else []
     movable = (
         list(TimelineRules.movable_boards(
             engine.timeline_manager.timelines,

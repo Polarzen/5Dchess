@@ -306,7 +306,13 @@ button:disabled { cursor: not-allowed; }
     overflow: visible;
 }
 .board-card.historical { opacity: .82; }
-.board-card.inactive { opacity: .55; }
+.board-card.inactive { opacity: .82; }
+.board-card.inactive.playable, .board-card.inactive.movable { opacity: 1; }
+.board-navigation { margin: 12px 0; display: flex; gap: 7px; flex-wrap: wrap; }
+.board-navigation-label, .board-navigation > p { width: 100%; margin: 0; font-size: 12px; line-height: 1.7; }
+.board-chip.optional { border-color: var(--movable); }
+.board-explanation, .branch-explanation { margin: 10px 0 0; line-height: 1.7; }
+.branch-explanation { padding: 9px; border-radius: 8px; background: #f5e6ed; }
 .board-card.present { outline: 3px solid var(--present); outline-offset: 1px; }
 .board-card.required { border-color: var(--required); }
 .board-card.movable:not(.required) { border-color: var(--movable); }

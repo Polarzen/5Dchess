@@ -69,6 +69,11 @@
         </div>
         <p class="guide-branch-example">例如：车从 L0 · T1 白方的 d4 回到 L0 · T0 白方的空 d4，会在新支线的 T0 黑方后继中看到这枚车；原 L0 · T0 白方棋盘保持原样。</p>
         <button class="ghost-btn" onclick="practiceCrossBoardGuide('history')">试一次回到过去 →</button>
+        <details class="guide-details"><summary>跳到很早的支线后，为什么暂时不能继续走？</summary>
+            <p>只能从<strong>每条线自己的最新棋盘</strong>出发，不是只能操作时间最晚的那条线。点击“当前行动”里的棋盘按钮可以直接定位；点击历史棋盘后，也可以定位本线最新棋盘。</p>
+            <p>白棋跳过去后，新棋盘先轮到黑方；要等黑方在这张棋盘推进，白棋才会再次轮到行动。可选支线（规则中的“非活动线”）也能操作，只是不强制推进：若对手不在此走子，这里的棋子就可能一直等待。</p>
+            <p>一方比对手多开的第二条及后续支线会暂不参与当前时刻；对手创建更多支线后，它们可能加入。<strong>吃过去的棋子只改变新支线，不会删除原时间线上已经发生的后续。</strong>原线上的攻击仍需防守，不能用“回到过去吃掉它”来自动解除原线的将军。</p>
+        </details>
     </section>
 
     <section class="guide-section guide-finish" aria-labelledby="guide-submit-title">

@@ -1,6 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [ValidateSet('Local', 'Remote')][string]$Mode = 'Local',
+    [ValidateSet('Menu', 'Auto', 'Http2', 'Quic', 'System', 'Manual')][string]$Connection = 'Menu',
+    [string]$CloudflaredPath,
     [switch]$Check,
     [switch]$NoBrowser
 )
@@ -27,7 +29,7 @@ try {
     $launcherLog = Join-Path $logDirectory ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.log')
     Start-Transcript -LiteralPath $launcherLog | Out-Null
     $transcribing = $true
-    Write-Host "时线棋局 — $(if ($Mode -eq 'Local') { '本地 / 局域网' } else { '远程联机（HTTP/2）' })"
+    Write-Host "时线棋局 — $(if ($Mode -eq 'Local') { '本地 / 局域网' } else { '远程联机' })"
     Write-Host '首次启动需要联网下载运行组件；后续本地启动无需联网。'
     Write-Host '运行时请保留本窗口。结束时按 Ctrl+C，等待服务关闭后再关闭窗口。'
     $python = Initialize-LauncherPython -ProjectRoot $ProjectRoot -RuntimeDirectory $runtimeDirectory
@@ -35,8 +37,31 @@ try {
     if ($Mode -eq 'Local') {
         $launchArguments.LanOnly = $true
     } else {
-        $launchArguments.CloudflaredPath = Initialize-LauncherCloudflared -ProjectRoot $ProjectRoot -RuntimeDirectory $runtimeDirectory
-        $launchArguments.TunnelProtocol = 'http2'
+        $Connection = Select-LauncherConnection -Connection $Connection -Check:$Check
+        if ($Connection -eq 'Manual') {
+            $launchArguments.ManualTunnel = $true
+        } else {
+            try {
+                if ($CloudflaredPath) {
+                    if (-not (Test-Path -LiteralPath $CloudflaredPath -PathType Leaf)) { throw '指定的 cloudflared 文件不存在。' }
+                    $launchArguments.CloudflaredPath = (Resolve-Path -LiteralPath $CloudflaredPath).Path
+                } elseif ($Connection -eq 'System') {
+                    $command = Get-Command cloudflared -CommandType Application -ErrorAction SilentlyContinue
+                    if (-not $command) { throw '系统 PATH 中没有 cloudflared；可选择项目版本或手动连接。' }
+                    $launchArguments.CloudflaredPath = $command.Source
+                } else {
+                    $launchArguments.CloudflaredPath = Initialize-LauncherCloudflared -ProjectRoot $ProjectRoot -RuntimeDirectory $runtimeDirectory
+                }
+                $launchArguments.TunnelProtocol = if ($Connection -in @('Http2', 'Quic')) { $Connection.ToLowerInvariant() } else { 'auto' }
+                Write-Host "Cloudflare 程序：$($launchArguments.CloudflaredPath)；协议：$($launchArguments.TunnelProtocol)"
+            } catch {
+                if ($Check) { throw }
+                Write-Host "Cloudflare 准备未完成：$($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host '继续启动网站，稍后可在另一个终端手动连接。'
+                $launchArguments.Remove('CloudflaredPath')
+                $launchArguments.ManualTunnel = $true
+            }
+        }
     }
     & (Join-Path $PSScriptRoot 'start_p2p.ps1') @launchArguments
 } catch {

@@ -112,3 +112,28 @@ function Initialize-LauncherCloudflared {
     Get-VerifiedLauncherDownload -Url $release.url -Sha256 $release.sha256 -Destination $executable
     return $executable
 }
+
+function Select-LauncherConnection {
+    param([string]$Connection = 'Menu', [switch]$Check)
+    if ($Connection -ne 'Menu') { return $Connection }
+    if ($Check) { return 'Auto' }
+    Write-Host ''
+    Write-Host '选择远程连接方式（不知道选什么时按回车）：'
+    Write-Host '  1. 项目 Cloudflare：自动选择协议（推荐）'
+    Write-Host '  2. 项目 Cloudflare：HTTP/2（TCP）'
+    Write-Host '  3. 项目 Cloudflare：QUIC（UDP）'
+    Write-Host '  4. 使用系统 PATH 中已有的 cloudflared（自动协议）'
+    Write-Host '  5. 只启动网站：自行在 CMD / PowerShell 连接 Cloudflare 或其他隧道'
+    while ($true) {
+        $answer = Read-Host '输入 1–5，或回车选择 1'
+        if ([string]::IsNullOrWhiteSpace($answer)) { return 'Auto' }
+        switch ($answer.Trim()) {
+            '1' { return 'Auto' }
+            '2' { return 'Http2' }
+            '3' { return 'Quic' }
+            '4' { return 'System' }
+            '5' { return 'Manual' }
+            default { Write-Host '请输入 1、2、3、4 或 5。' }
+        }
+    }
+}

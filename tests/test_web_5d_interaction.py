@@ -42,6 +42,7 @@ def test_index_is_multiverse_canvas_not_single_board(client):
     assert 'id="timeline-canvas"' in html
     assert 'id="timeline-links"' in html
     assert 'id="submit-action-btn"' in html
+    assert 'id="movable-board-list"' in html
     assert 'id="board"' not in html
 
     # Local hotseat and online P2P are distinct, first-class menu entries.
@@ -67,6 +68,21 @@ def test_index_is_multiverse_canvas_not_single_board(client):
     assert "if (mode !== 'p2p') return baseExecuteCanonicalMove" in p2p_javascript
     assert "if (mode !== 'p2p') return baseSubmitAction" in p2p_javascript
     assert "if (mode !== 'p2p') return baseBackToMenu" in p2p_javascript
+
+
+def test_old_optional_branches_expose_moves_and_terminal_state_clears_controls(client):
+    from tests.test_branch_playability import branch_game
+    _start_pvp(client)
+    _game_session['mode_instance'].engine = branch_game(5)
+    state = client.get('/api/game/state').json
+    assert {b['coord']['timeline'] for b in state['boards'] if b['is_movable']} == {0, 1, 2}
+    assert any(b['is_movable'] and not b['timeline_active'] for b in state['boards'])
+    _game_session['mode_instance'].engine = branch_game()
+    state = client.get('/api/game/state').json
+    assert state['game_state'] == 'CHECKMATE'
+    assert not any(b['is_movable'] for b in state['boards'])
+    assert state['action']['required_boards'] == []
+    assert not state['action']['can_submit']
 
 
 def test_start_state_serializes_canonical_present_board(client):
