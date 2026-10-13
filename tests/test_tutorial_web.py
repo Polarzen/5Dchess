@@ -75,6 +75,34 @@ def test_curriculum_teaches_multiple_moves_piece_geometry_and_submission_blocker
     assert RoyalRules(_engine(_position(0, 1, {(7, 7): 'r'})).timeline_manager.timelines).is_in_check(ChessColor.WHITE)
 
 
+def test_quick_guide_examples_match_engine_practice_and_do_not_touch_game(client):
+    import re
+
+    engine = _game_session['mode_instance'].engine
+    before = deepcopy(engine.to_dict())
+    html = client.get('/').get_data(as_text=True)
+    lessons = {row['id']: row for row in client.get('/api/tutorial').json['lessons']}
+    assert html.count('onclick="openCrossBoardGuide()"') == 2
+    assert 'id="cross-board-guide"' in html
+    assert '过去的自己也会占格' in html
+    assert '没有红框不代表一定能提交' in html
+    assert 'T0 · 白方' in html and 'T0 · 黑方' in html and 'T1 · 白方' in html
+    for example, lesson, x in [('rook', 'cross-board', 3), ('bishop', 'bishop', 4), ('knight', 'knight', 5)]:
+        panel = html.split(f'id="guide-example-{example}"', 1)[1].split('亲手试这一步', 1)[0]
+        assert f"practiceCrossBoardGuide('{lesson}')" in panel
+        markers = re.findall(r'--file: (\d); --row: (\d)', panel)
+        assert markers == [('3', '4'), (str(x), '4')]
+        move = lessons[lesson]['plans'][0]['steps'][0]['move']
+        assert move['from'] == [3, 4] and move['to'] == [x, 4]
+        assert move['from_timeline'] == 0 and move['to_timeline'] == 1
+        assert move['created_timeline'] is None
+    assert "practiceCrossBoardGuide('history')" in html
+    assert lessons['history']['plans'][0]['steps'][0]['move']['created_timeline'] == 1
+    # The short guide is inline HTML/CSS and needs no additional asset request.
+    assert len(set(re.findall(r'(?:src|href)=[\"\'](/static/[^\"\']+)', html))) == 7
+    assert engine.to_dict() == before
+
+
 def test_final_practice_supports_both_board_orders_and_pawn_distances(client):
     lesson = client.get('/api/tutorial').json['lessons'][-1]
     assert lesson['independent']

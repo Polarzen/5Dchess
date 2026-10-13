@@ -3,17 +3,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-function client(saved = null) {
+function client(saved = null, search = '?test=1') {
     const nodes = new Map();
+    const storage = new Map([['5dchess.tutorial.v2', saved]]);
     const node = () => ({open: false, disabled: false, textContent: '', innerHTML: '', children: [],
-        setAttribute() {}, addEventListener() {}, focus() {}, classList: {add() {}},
+        attributes: {}, listeners: {}, focusCount: 0,
+        setAttribute(k, v) { this.attributes[k] = v; }, addEventListener(k, fn) { this.listeners[k] = fn; },
+        focus() { this.focusCount++; }, classList: {add() {}},
         replaceChildren() { this.children = []; }, appendChild(child) { this.children.push(child); },
         showModal() { this.open = true; }, close() { this.open = false; }});
-    const context = {Set, window: {location: {search: '?test=1'}},
-        localStorage: {getItem() { return saved; }, setItem(k, v) { saved = v; context.saved = JSON.parse(v); }},
+    const context = {Set, window: {location: {search}}, apiCalls: 0,
+        localStorage: {getItem(k) { return storage.get(k) ?? null; }, setItem(k, v) {
+            storage.set(k, v);
+            if (k === '5dchess.tutorial.v2') context.saved = JSON.parse(v);
+        }},
         document: {activeElement: node(), createElement: node, querySelector() { return null; }, getElementById(id) {
             if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id);
-        }}, api: async () => ({version: 2, lessons: []}), isErrorResult: r => Boolean(r.error),
+        }}, api: async () => { context.apiCalls++; return {version: 2, lessons: []}; }, isErrorResult: r => Boolean(r.error),
         escapeHtml: String, colorLabel: value => value, coordLabel: coord => coord.key,
         pieceColor: () => 'white', pieceSymbols: {P: '♙'}};
     vm.createContext(context);
@@ -42,6 +48,47 @@ async function load(c, data = lessons()) {
     await run(c, 'openTutorial()');
 }
 (async () => {
+    const guide = client(null, '');
+    const guideDialog = guide.document.getElementById('cross-board-guide');
+    assert.equal(guideDialog.open, true, 'a new visitor starts with the short guide');
+    assert.equal(guide.document.getElementById('tutorial-dialog').open, false);
+    run(guide, "showCrossBoardExample('bishop')");
+    assert.equal(guide.document.getElementById('guide-example-bishop').hidden, false);
+    assert.equal(guide.document.getElementById('guide-example-rook').hidden, true);
+    assert.equal(guide.document.getElementById('guide-choice-bishop').attributes['aria-pressed'], 'true');
+    run(guide, "showCrossBoardExample('unknown')");
+    assert.equal(guide.document.getElementById('guide-example-bishop').hidden, false);
+    let prevented = false;
+    guideDialog.listeners.cancel({preventDefault() { prevented = true; }});
+    assert.equal(prevented, true);
+    assert.equal(guideDialog.open, false);
+    assert.equal(guide.document.activeElement.focusCount, 1, 'close restores the opener');
+    assert.equal(run(guide, 'crossBoardGuideSeen()'), true);
+    assert.equal(run(guide, 'tutorialSeen()'), false, 'reading is not course completion');
+    run(guide, 'openCrossBoardGuide(); closeCrossBoardGuide()');
+    assert.equal(guide.apiCalls, 0, 'reading and switching diagrams are entirely local');
+    const requests = [];
+    guide.api = async path => { requests.push(path); return {version: 2, lessons: lessons()}; };
+    await run(guide, "openCrossBoardGuide(); practiceCrossBoardGuide('practice')");
+    assert.equal(guideDialog.open, false);
+    assert.deepEqual(requests, ['/api/tutorial'], 'practice must not mutate a live game');
+    assert.equal(run(guide, 'tutorialIndex'), 1, 'practice deep link skips basic lessons');
+    assert.equal(run(guide, 'tutorialCompleted.size'), 0);
+    run(guide, 'closeTutorial(); openCrossBoardGuide()');
+    await run(guide, "practiceCrossBoardGuide('intro')");
+    assert.equal(run(guide, 'tutorialIndex'), 0, 'cached curriculum also honors the requested lesson');
+    assert.equal(requests.length, 1);
+    guide.localStorage.setItem = () => { throw new Error('storage blocked'); };
+    run(guide, 'closeTutorial(); openCrossBoardGuide(); closeCrossBoardGuide()');
+    assert.equal(guideDialog.open, false);
+
+    const retry = client();
+    retry.api = async () => ({error: 'unavailable'});
+    await run(retry, "practiceCrossBoardGuide('practice')");
+    retry.api = async () => ({version: 2, lessons: lessons()});
+    await run(retry, 'loadTutorial()');
+    assert.equal(run(retry, 'tutorialIndex'), 1, 'retry retains the requested practice');
+
     const c = client();
     let resolve;
     c.api = () => new Promise(done => { resolve = done; });
@@ -103,5 +150,5 @@ async function load(c, data = lessons()) {
     await run(failed, 'openTutorial()');
     assert.match(failed.document.getElementById('tutorial-content').innerHTML, /重新加载/);
     assert.equal(run(failed, 'tutorialData'), null);
-    console.log('Tutorial browser tests passed: gates, choices, undo, feedback, resume, isolation, races');
+    console.log('Tutorial browser tests passed: quick guide, zero-request diagrams, deep links, gates, undo, resume, isolation, races');
 })().catch(error => { console.error(error); process.exitCode = 1; });

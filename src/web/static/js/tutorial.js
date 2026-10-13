@@ -5,6 +5,7 @@ let tutorialIndex = 0;
 let tutorialPhase = 'quiz';
 let tutorialRequest = 0;
 let tutorialOpener = null;
+let tutorialRequestedLesson = null;
 let tutorialMoves = [];
 let tutorialSelection = null;
 let tutorialHint = false;
@@ -23,12 +24,19 @@ function saveTutorialProgress(status = 'learning') {
         }));
     } catch (_) { /* The course also works when browser storage is unavailable. */ }
 }
-async function openTutorial() {
+async function openTutorial(lessonId = null) {
     const dialog = document.getElementById('tutorial-dialog');
     if (dialog.open) return;
+    tutorialRequestedLesson = lessonId;
     tutorialOpener = document.activeElement;
     dialog.showModal();
-    if (tutorialData) { renderTutorial(); return; }
+    if (tutorialData) {
+        const requested = tutorialData.findIndex(lesson => lesson.id === tutorialRequestedLesson);
+        tutorialRequestedLesson = null;
+        if (requested >= 0) goTutorialLesson(requested);
+        else renderTutorial();
+        return;
+    }
     await loadTutorial();
 }
 async function loadTutorial() {
@@ -49,11 +57,13 @@ async function loadTutorial() {
     if (Array.isArray(saved?.completed)) {
         for (const lesson of tutorialData) if (saved.completed.includes(lesson.id)) tutorialCompleted.add(lesson.id);
     }
-    tutorialIndex = Math.max(0, tutorialData.findIndex(lesson => lesson.id === saved?.lesson));
+    tutorialIndex = Math.max(0, tutorialData.findIndex(lesson => lesson.id === (tutorialRequestedLesson || saved?.lesson)));
+    tutorialRequestedLesson = null;
     resetTutorialLesson();
 }
 function closeTutorial() {
     ++tutorialRequest;
+    tutorialRequestedLesson = null;
     saveTutorialProgress(tutorialData && tutorialCompleted.size === tutorialData.length ? 'completed' : 'dismissed');
     document.getElementById('tutorial-dialog').close();
     tutorialOpener?.focus();
@@ -276,4 +286,41 @@ function renderTutorialBoards(state) {
 document.getElementById('tutorial-dialog').addEventListener('cancel', event => {
     event.preventDefault(); closeTutorial();
 });
-if (!tutorialSeen() && !window.location.search) openTutorial();
+
+// The short guide is already in the page. Opening it makes no API request.
+const CROSS_BOARD_GUIDE_KEY = '5dchess.crossBoardGuide.v1';
+let crossBoardGuideOpener = null;
+function crossBoardGuideSeen() {
+    try { return localStorage.getItem(CROSS_BOARD_GUIDE_KEY) === 'seen'; }
+    catch (_) { return false; }
+}
+function openCrossBoardGuide() {
+    const dialog = document.getElementById('cross-board-guide');
+    if (dialog.open) return;
+    crossBoardGuideOpener = document.activeElement;
+    dialog.showModal();
+    dialog.scrollTop = 0;
+    document.getElementById('cross-board-guide-title').focus({preventScroll: true});
+}
+function closeCrossBoardGuide() {
+    document.getElementById('cross-board-guide').close();
+    try { localStorage.setItem(CROSS_BOARD_GUIDE_KEY, 'seen'); }
+    catch (_) { /* Reading the guide does not require browser storage. */ }
+    crossBoardGuideOpener?.focus();
+}
+function showCrossBoardExample(id) {
+    const examples = ['rook', 'bishop', 'knight'];
+    if (!examples.includes(id)) return;
+    for (const example of examples) {
+        document.getElementById(`guide-example-${example}`).hidden = example !== id;
+        document.getElementById(`guide-choice-${example}`).setAttribute('aria-pressed', String(example === id));
+    }
+}
+function practiceCrossBoardGuide(lessonId = null) {
+    closeCrossBoardGuide();
+    return openTutorial(lessonId);
+}
+document.getElementById('cross-board-guide').addEventListener('cancel', event => {
+    event.preventDefault(); closeCrossBoardGuide();
+});
+if (!tutorialSeen() && !crossBoardGuideSeen() && !window.location.search) openCrossBoardGuide();

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时线棋局 · 多时间线国际象棋</title>
     <meta name="theme-color" content="#f7e9ee">
-    <link rel="stylesheet" href="/static/css/style.css?v=13">
+    <link rel="stylesheet" href="/static/css/style.css?v=14">
     <link rel="stylesheet" href="/static/css/p2p.css?v=3">
 </head>
 <body>
@@ -27,11 +27,12 @@
         <div class="lobby-play">
         <div class="section-heading"><span class="eyebrow">从这里出发</span><h2>开启你的棋局</h2><p>邀请朋友，或与电脑练习。</p></div>
         <div class="menu-grid">
-            <button class="menu-card tutorial-entry" onclick="openTutorial()">
+            <button class="menu-card tutorial-entry" onclick="openCrossBoardGuide()">
                 <span class="menu-icon">◎</span>
-                <strong>第一次玩？从这里开始</strong>
-                <small>13 课互动入门 · 从认识棋子到独立完成行动</small>
+                <strong>会下国际象棋？看跨棋盘速读</strong>
+                <small>车、象、马对照图 · 看懂支线与回合提交</small>
             </button>
+            <div class="guide-course-entry"><button class="ghost-btn" onclick="openTutorial()">从基础开始：完整 13 课互动教程 →</button></div>
             <button class="menu-card primary" onclick="startGame('pvp')">
                 <span class="menu-icon" aria-hidden="true">♟</span>
                 <strong>同屏双人对弈</strong>
@@ -79,6 +80,7 @@
         <header id="top-bar">
             <div class="top-left">
                 <button class="ghost-btn" onclick="backToMenu()">← 菜单</button>
+                <button class="ghost-btn" onclick="openCrossBoardGuide()">跨棋盘速读</button>
                 <button class="ghost-btn" onclick="openTutorial()">新手教程</button>
                 <div class="top-title">
                     <strong>时线棋局</strong>
@@ -180,6 +182,7 @@
     </section>
 </div>
 
+{% include '_cross_board_guide.html' %}
 <dialog id="tutorial-dialog" aria-labelledby="tutorial-title">
     <header class="tutorial-heading">
         <div><span class="tutorial-eyebrow">时线棋局 / 入门练习</span><h2 id="tutorial-title" tabindex="-1">先学会走完一个回合</h2></div>
@@ -223,6 +226,6 @@
 <script src="/static/js/p2p.js?v=8"></script>
 <script src="/static/js/replay_controls.js?v=1"></script>
 <script src="/static/js/p2p_invite.js?v=3"></script>
-<script src="/static/js/tutorial.js?v=2"></script>
+<script src="/static/js/tutorial.js?v=3"></script>
 </body>
 </html>

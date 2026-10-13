@@ -5,6 +5,7 @@
 ## 使用指南
 
 - [解压后的使用说明](../使用说明.txt)：下载、两个启动入口、停止与常见问题。
+- [跨棋盘快速上手](guides/CROSS_BOARD_QUICKSTART.md)：给已会国际象棋的玩家，先看车、象、马的跨盘区别。
 - [游玩指南](guides/PLAY.md)：模式选择、教程与行动提交。
 - [联机和 Cloudflare](guides/P2P_CLOUDFLARE.md)：局域网、异地邀请、重连和网络排查。
 

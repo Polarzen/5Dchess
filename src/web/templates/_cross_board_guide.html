@@ -1,0 +1,81 @@
+{% macro mini_board(piece, file, square, destination=false) -%}
+<div class="guide-mini-board" role="img" aria-label="{{ '目标格' if destination else '出发棋子' }} {{ square }}，其余棋子省略">
+    <span class="guide-marker {{ 'guide-target' if destination else '' }}" style="--file: {{ file }}; --row: 4" aria-hidden="true">{{ '●' if destination else piece }}</span>
+    <span class="guide-files" aria-hidden="true">{% for letter in 'abcdefgh' %}<span>{{ letter }}</span>{% endfor %}</span>
+</div>
+{%- endmacro %}
+<dialog id="cross-board-guide" aria-labelledby="cross-board-guide-title">
+    <header class="guide-heading">
+        <div><span class="eyebrow">会下国际象棋 · 只补上跨棋盘这一步</span><h2 id="cross-board-guide-title" tabindex="-1">跨棋盘，怎么走？</h2></div>
+        <button class="ghost-btn" onclick="closeCrossBoardGuide()" aria-label="关闭跨棋盘速读">关闭</button>
+    </header>
+    <p class="guide-lead">把每张棋盘看成一个局面。棋子除了在盘内走，还能按自己的走法，走到另一张棋盘上。</p>
+    <div class="guide-takeaways"><span><b>1</b> 选棋子，看各盘落点</span><span><b>2</b> 落到历史，才会分支</span><span><b>3</b> 走完后，手动提交</span></div>
+
+    <section class="guide-section" aria-labelledby="guide-map-title">
+        <h3 id="guide-map-title"><span>01</span> 先读懂棋盘标题</h3>
+        <p><strong>L 是哪条线，T 是第几回合，白／黑是该棋盘轮到谁。</strong> 同一条线上，时间顺序是：</p>
+        <div class="guide-time-strip" aria-label="同一条线：T0 白方，然后 T0 黑方，然后 T1 白方"><span>T0 · 白方</span><i aria-hidden="true">→</i><span>T0 · 黑方</span><i aria-hidden="true">→</i><span>T1 · 白方</span></div>
+        <p class="guide-note">跨时间“一步”指 T 相差 1，例如 T1 白方 → T0 白方；不是挪到紧挨着的黑方棋盘。跨线“一步”指 L 编号相差 1，例如 L0 → L+1；L−1 → L+1 算两步。</p>
+        <ul class="guide-checklist">
+            <li><strong>从哪里走：</strong>从标为“可行动”的最新棋盘选自己的棋子。历史棋盘不能选子出发。</li>
+            <li><strong>走到哪里：</strong>看选中棋子后，各张棋盘上亮起的合法落点。目标必须已存在，且白方阶段对白方阶段、黑方阶段对黑方阶段。</li>
+        </ul>
+    </section>
+
+    <section class="guide-section" aria-labelledby="guide-moves-title">
+        <h3 id="guide-moves-title"><span>02</span> 用三枚熟悉的棋子，看懂跨线</h3>
+        <p>原来的横、竖之外，多了<strong>时间</strong>和<strong>时间线</strong>两个方向。走法的形状仍由棋子决定，不是任意传送。</p>
+        <div class="guide-example-buttons" role="group" aria-label="选择跨线示例">
+            <button id="guide-choice-rook" class="tool-btn" aria-pressed="true" aria-controls="guide-example-rook" onclick="showCrossBoardExample('rook')">♖ 车：只换棋盘</button>
+            <button id="guide-choice-bishop" class="tool-btn" aria-pressed="false" aria-controls="guide-example-bishop" onclick="showCrossBoardExample('bishop')">♗ 象：跨线＋一格</button>
+            <button id="guide-choice-knight" class="tool-btn" aria-pressed="false" aria-controls="guide-example-knight" onclick="showCrossBoardExample('knight')">♘ 马：跨线＋两格</button>
+        </div>
+        {% for id, piece, name, file, square, explanation, lesson in [
+            ('rook', '♖', '车', 3, 'd4', '只把 L0 换成 L+1，仍在 d4。车一次只沿一个方向走，所以这一步不能再横移。', 'cross-board'),
+            ('bishop', '♗', '象', 4, 'e4', '跨一条线，同时向右一格。两个方向各走一步，就是象在“格子＋时间线”里的斜线。', 'bishop'),
+            ('knight', '♘', '马', 5, 'f4', '跨一条线，同时向右两格。仍然是马的“2＋1”，也仍然能跳过中间阻挡。', 'knight')
+        ] %}
+        <div id="guide-example-{{ id }}" class="guide-example" {% if id != 'rook' %}hidden{% endif %}>
+            <div class="guide-board-pair">
+                <figure><figcaption>出发 · L0 / T0 白方</figcaption>{{ mini_board(piece, 3, 'd4') }}<strong>{{ name }}在 d4</strong></figure>
+                <span class="guide-transfer" aria-hidden="true">→</span>
+                <figure><figcaption>目标 · L+1 / T0 白方</figcaption>{{ mini_board(piece, file, square, true) }}<strong>落到 {{ square }}</strong></figure>
+            </div>
+            <p class="guide-example-explanation">{{ explanation }}</p>
+            <button class="ghost-btn" onclick="practiceCrossBoardGuide('{{ lesson }}')">亲手试这一步 →</button>
+        </div>
+        {% endfor %}
+        <p class="guide-note">三图只演示跨线，时间相同；省略了其他棋子。实际还要检查落点占用、沿途阻挡和王安全。车、象、后不能穿过中间棋子或缺失的中间棋盘；马只跳过中间，不会凭空创造目标棋盘。</p>
+        <details class="guide-details"><summary>后、王、兵怎么跨？展开速查</summary>
+            <dl>
+                <dt>后：选中的方向，走一样远。</dt><dd>可以同时改变横、竖、时间、时间线中的一到四个方向，改变的距离必须相等。比如跨一条线，同时向右一格、向前一格；不能跨一条线却横走两格。</dd>
+                <dt>王：每个选中的方向，都只走一步。</dt><dd>也能跨时间或跨线，但落子及提交都要满足王安全。跨棋盘没有王车易位。</dd>
+                <dt>兵：跨线前进，跨线加时间才吃子。</dt><dd>不吃子时保持格子和 T 不变：白兵走向更小的 L，黑兵走向更大的 L，目标要空。首次可沿这个方向走两步，中间棋盘和空格都要存在。</dd>
+                <dd>跨棋盘吃子时保持格子不变，沿自己的 L 前进方向走一步，同时 T 加一或减一；落点必须有敌子。兵不能只沿时间旅行，也不能把普通斜吃随意拼成其他跨盘走法。</dd>
+            </dl>
+        </details>
+        <details class="guide-details"><summary>回到过去时，落点也一定是原来的格子吗？</summary>
+            <p>不一定。把上面例子的“跨一条线”换成“回到前一个 T”，走法同样成立：车 d4 → d4，象 d4 → e4，马 d4 → f4。象、马还有其他方向；这些只是帮助记忆的例子。</p>
+            <p>时间方向能指向更早或更晚，但目标必须已经存在；同一条线最新棋盘之后没有凭空可去的未来。不能落在己方棋子上，<strong>过去的自己也会占格</strong>。</p>
+        </details>
+    </section>
+
+    <section class="guide-section" aria-labelledby="guide-branch-title">
+        <h3 id="guide-branch-title"><span>03</span> 看目标是不是历史，判断会不会分支</h3>
+        <div class="guide-outcomes">
+            <div><span class="guide-case-label">目标是另一条线的最新棋盘</span><h4>两条线各往后走一步</h4><p>出发棋盘生成“棋子已离开”的后继；目标棋盘生成“棋子已到达”的后继。<strong>不会额外开新线。</strong></p></div>
+            <div><span class="guide-case-label">目标是已经有后继的历史棋盘</span><h4>从那段过去，另开一条线</h4><p>原历史和原来的后续都保留。棋子实际出现在<strong>新支线的后继棋盘</strong>，不是把旧历史改掉。</p></div>
+        </div>
+        <p class="guide-branch-example">例如：车从 L0 · T1 白方的 d4 回到 L0 · T0 白方的空 d4，会在新支线的 T0 黑方后继中看到这枚车；原 L0 · T0 白方棋盘保持原样。</p>
+        <button class="ghost-btn" onclick="practiceCrossBoardGuide('history')">试一次回到过去 →</button>
+    </section>
+
+    <section class="guide-section guide-finish" aria-labelledby="guide-submit-title">
+        <h3 id="guide-submit-title"><span>04</span> 落子后，再看红框和提交按钮</h3>
+        <p>一次回合可能需要走多张棋盘。一手跨线也可能同时推进两张棋盘；新分支又可能带来新的红框。</p>
+        <p><strong>每走一手重新看红框 → 完成必须推进的棋盘 → 保证所有己方王安全 → 点击“提交行动”。</strong> 提交成功，才真正交给对手。</p>
+        <p class="guide-note">按钮不可用时看“当前行动”面板：可能还有棋盘要走，也可能有王受到其他棋盘的攻击。没有红框不代表一定能提交。</p>
+    </section>
+    <footer class="guide-footer"><span>速读和练习都不会改动真实对局。</span><div><button class="ghost-btn" onclick="practiceCrossBoardGuide()">完整 13 课互动教程</button><button class="submit-btn" onclick="closeCrossBoardGuide()">明白了，回到游戏</button></div></footer>
+</dialog>

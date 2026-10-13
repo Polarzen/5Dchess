@@ -245,7 +245,19 @@ def _unapproved_english(value: str) -> list[str]:
     # T/L coordinates can be adjacent to their numeric coordinate without a
     # word boundary, for example L0 or t1.
     normalized = re.sub(r"(?<![A-Za-z])[tTlL](?=\d)", "", normalized)
+    # Algebraic squares and standalone file labels are chess notation, not UI
+    # prose. Keep rejecting longer words and invalid squares such as d40.
+    normalized = re.sub(r"(?<![A-Za-z0-9])[a-h][1-8](?![A-Za-z0-9])", "", normalized, flags=re.IGNORECASE)
+    if re.fullmatch(r"[a-h]", normalized.strip(), flags=re.IGNORECASE):
+        return []
     return re.findall(r"[A-Za-z]+", normalized)
+
+
+def test_chess_notation_is_allowed_without_allowing_english_prose():
+    assert _unapproved_english('从 d4 到 e4；a1 和 H8') == []
+    assert _unapproved_english('a') == []
+    assert _unapproved_english('Loading d4') == ['Loading']
+    assert _unapproved_english('d40') == ['d']
 
 
 def _assert_visible_chinese(values: list[str]) -> None:
