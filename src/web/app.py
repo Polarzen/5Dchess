@@ -23,6 +23,7 @@ from src.engine.multiverse import MultiverseBoardView
 from src.engine.royal_rules import RoyalRules
 from src.engine.timeline_rules import TimelineRules
 from src.data.pgn_parser import FiveDPGN
+from src.data.local_save import LocalSaveStore
 from src.modes import PvEMode, PvPMode, ReplayMode
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
@@ -389,6 +390,7 @@ def start_game():
             "mode_instance": instance,
             "ai_difficulty": difficulty,
             "player_color": player_color,
+            "local_save_id": None,
         })
         return jsonify({"success": True, **get_game_state()})
     except LLMConfigError as exc:
@@ -408,23 +410,70 @@ def api_game_state():
 @app.route("/api/game/save", methods=["POST"])
 def api_save_game():
     """Persist the active canonical engine without changing the live session."""
+    if not is_local_host():
+        return jsonify({"error": "保存本地棋局需在房主电脑的本机网址操作。"}), 403
     instance = _get_mode_instance()
-    if instance is None or _game_session["mode"] == "replay":
+    if instance is None or _game_session["mode"] not in {"pvp", "pve"}:
         return jsonify({"error": "当前模式没有可保存的进行中游戏"}), 400
 
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "保存请求格式不正确"}), 400
     filepath = data.get("filepath")
-    if not filepath:
-        return jsonify({"error": "缺少保存路径"}), 400
 
     metadata = {
         "mode": _game_session["mode"],
         "difficulty": _game_session.get("ai_difficulty"),
         "player_color": _game_session.get("player_color"),
     }
-    if not FiveDPGN.save(str(filepath), instance.engine, metadata):
-        return jsonify({"error": f"无法保存棋局: {filepath}"}), 500
-    return jsonify({"success": True, "filepath": str(filepath), **get_game_state()})
+    with getattr(instance, "_lock", None) or nullcontext():
+        if filepath:
+            if not FiveDPGN.save(str(filepath), instance.engine, metadata):
+                return jsonify({"error": "保存失败，请检查文件夹权限和磁盘空间；旧存档仍保留。"}), 503
+            return jsonify({"success": True, "filepath": str(filepath), **get_game_state()})
+        try:
+            saved = _local_save_store().save(instance.engine, metadata, _game_session.get("local_save_id"))
+        except (OSError, ValueError):
+            return jsonify({"error": "保存失败，请检查项目 saves/local 文件夹的权限和磁盘空间后重试；当前棋局未改变。"}), 503
+        _game_session["local_save_id"] = saved["save_id"]
+        return jsonify({"success": True, "saved": saved, **get_game_state()})
+
+
+def _local_save_store():
+    return LocalSaveStore(app.config.get("P2P_SAVE_DIR", Path(__file__).resolve().parents[2] / "saves"))
+
+
+@app.post("/api/game/restore_saved")
+@app.post("/api/game/replay_saved")
+def open_local_saved_game():
+    if not is_local_host():
+        return jsonify({"error": "打开本地存档需在房主电脑的本机网址操作。"}), 403
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "存档请求格式不正确"}), 400
+    try:
+        payload = _local_save_store().load(data.get("save_id"))
+        metadata = payload.metadata
+        mode = metadata["mode"]
+        difficulty = metadata.get("difficulty") or "medium"
+        player_color = metadata.get("player_color") or "white"
+        if request.path.endswith("replay_saved"):
+            instance = ReplayMode()
+            instance.load_from_engine(payload.engine, strict=True)
+            instance.start()
+            mode = "replay"
+        else:
+            if payload.engine.game_state != GameState.PLAYING:
+                return jsonify({"error": "该棋局已结束，请选择观看回放。"}), 409
+            instance = PvEMode(payload.engine, player_color=ChessColor(player_color), ai_difficulty=difficulty) if mode == "pve" else PvPMode(payload.engine)
+            instance.start()
+    except LLMConfigError:
+        return jsonify({"error": "此存档使用在线 AI，请先配置密钥后继续；观看回放不需要密钥。"}), 400
+    except (OSError, ValueError, KeyError, TypeError):
+        return jsonify({"error": "存档不存在、已损坏或无法完整回放；当前棋局未改变。"}), 400
+    _game_session.update(mode=mode, mode_instance=instance, ai_difficulty=difficulty,
+                         player_color=player_color, local_save_id=data["save_id"] if mode != "replay" else None)
+    return jsonify({"success": True, **get_game_state()})
 
 
 @app.route("/api/game/load", methods=["POST"])
@@ -473,6 +522,7 @@ def api_load_game():
         "mode_instance": instance,
         "ai_difficulty": difficulty,
         "player_color": player_color,
+        "local_save_id": None,
     })
     return jsonify({"success": True, "filepath": str(filepath), **get_game_state()})
 

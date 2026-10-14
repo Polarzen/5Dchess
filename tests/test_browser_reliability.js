@@ -898,6 +898,47 @@ function testPastBranchControlsAndReasons() {
     }
 }
 
+async function testLocalGameSaveAndRestoreOwnership() {
+    const context = loadClient(true);
+    vm.runInContext(`mode='pve'; gameState={mode:'pve',player_color:'white',turn:'white',game_state:'PLAYING',boards:[],action:{}};
+        __calls=0; __messages=[]; showToast=text=>__messages.push(text); scrollToCurrent=()=>{};
+        api=(path, method, body)=>{__calls++; __path=path; return new Promise(resolve=>{__saveResolve=resolve;});};`, context);
+    const saving = vm.runInContext('saveLocalGame()', context);
+    await vm.runInContext('saveLocalGame()', context);
+    assert.equal(vm.runInContext('__calls', context), 1);
+    assert.equal(vm.runInContext('__path', context), '/api/game/save');
+    vm.runInContext(`__saveResolve({success:true,mode:'pve',player_color:'white',turn:'white',game_state:'PLAYING',boards:[],action:{},saved:{save_id:'local-fixture'}});`, context);
+    await saving;
+    assert.match(vm.runInContext('__messages[0]', context), /保存到项目 saves\/local/);
+    assert.equal(context.document.getElementById('save-local-game-btn').disabled, false);
+    vm.runInContext(`gameState.turn='black'; gameState.ai_thinking=false; renderActionPanel();`, context);
+    await vm.runInContext('saveLocalGame()', context);
+    assert.equal(vm.runInContext('__calls', context), 1, 'wait for a scheduled AI action');
+    assert.equal(context.document.getElementById('save-local-game-btn').disabled, true);
+    vm.runInContext('aiRetryAvailable=true; renderActionPanel();', context);
+    assert.equal(context.document.getElementById('save-local-game-btn').disabled, false, 'allow saving an AI failure awaiting retry');
+    const failedAISave = vm.runInContext('saveLocalGame()', context);
+    assert.equal(vm.runInContext('__calls', context), 2);
+    vm.runInContext(`__saveResolve({success:true,mode:'pve',player_color:'white',turn:'black',game_state:'PLAYING',ai_thinking:false,boards:[],action:{}});`, context);
+    await failedAISave;
+    assert.equal(vm.runInContext('gameState.turn', context), 'black', 'saving must not submit the AI turn');
+    assert.equal(vm.runInContext('aiRetryAvailable', context), true);
+    const lateSave = vm.runInContext('saveLocalGame()', context);
+    vm.runInContext(`invalidateSession(); mode=null; gameState=null; __saveResolve({success:true,mode:'pve'});`, context);
+    await lateSave;
+    assert.equal(vm.runInContext('gameState', context), null);
+    vm.runInContext(`api=async ()=>({saves:[{save_id:'local-fixture',mode:'pve',game_state:'PLAYING',action_counter:0,saved_at:'2026-10-14T12:00:00Z'}],unreadable:0});`, context);
+    await vm.runInContext('openSavedP2PGames()', context);
+    vm.runInContext(`__scheduled=0; scheduleAIAction=()=>{__scheduled++;};
+        api=async path=>{__path=path;return {mode:'pve',player_color:'black',turn:'white',game_state:'PLAYING',boards:[],action:{}};};`, context);
+    await vm.runInContext('restoreSavedP2PGame()', context);
+    assert.equal(vm.runInContext('__path', context), '/api/game/restore_saved');
+    assert.equal(vm.runInContext('mode', context), 'pve');
+    assert.equal(vm.runInContext('gameState.player_color', context), 'black');
+    assert.equal(vm.runInContext('__scheduled', context), 1, 'resume the saved AI turn');
+    assert.equal(vm.runInContext('p2pPlayerToken', context), null);
+}
+
 async function testLLMSetupAndFallbackStatus() {
     const context = loadClient();
     const calls = [];
@@ -983,6 +1024,7 @@ async function testLLMSetupAndFallbackStatus() {
 }
 
 (async () => {
+    await testLocalGameSaveAndRestoreOwnership();
     await testLLMSetupAndFallbackStatus();
     testPastBranchControlsAndReasons();
     testIncrementalBoardRendering();

@@ -87,6 +87,7 @@
                 <button class="ghost-btn" onclick="backToMenu()">← 菜单</button>
                 <button class="ghost-btn" onclick="openCrossBoardGuide()">跨棋盘速读</button>
                 <button class="ghost-btn" onclick="openTutorial()">新手教程</button>
+                <button id="save-local-game-btn" class="ghost-btn" onclick="saveLocalGame()" hidden>保存棋局</button>
                 <div class="top-title">
                     <strong>时线棋局</strong>
                     <span id="game-info">多时间线</span>
@@ -282,7 +283,7 @@
 <dialog id="p2p-save-dialog" aria-labelledby="p2p-save-title">
     <h2 id="p2p-save-title">存档与回放</h2>
     <p id="p2p-save-detail" role="status"></p>
-    <label for="p2p-save-list">在线棋局存档（最近保存的在前）</label>
+    <label for="p2p-save-list">棋局存档（最近保存的在前）</label>
     <select id="p2p-save-list" onchange="updateSavedGameActions()"></select>
     <div class="save-actions">
         <button class="ghost-btn" onclick="document.getElementById('p2p-save-dialog').close()">取消</button>
@@ -291,8 +292,8 @@
     </div>
     <p><button class="ghost-btn" onclick="openLegacyReplay()">其他棋谱（.5dpgn）</button></p>
 </dialog>
-<script src="/static/js/game.js?v=16"></script>
-<script src="/static/js/p2p.js?v=9"></script>
+<script src="/static/js/game.js?v=17"></script>
+<script src="/static/js/p2p.js?v=10"></script>
 <script src="/static/js/replay_controls.js?v=1"></script>
 <script src="/static/js/p2p_invite.js?v=3"></script>
 <script src="/static/js/tutorial.js?v=3"></script>

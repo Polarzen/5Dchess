@@ -7,6 +7,8 @@ legacy adapter.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -31,8 +33,9 @@ class FiveDPGN:
         game_metadata: dict | None = None,
     ) -> bool:
         path = Path(filepath)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             metadata = {
                 "format": cls.FORMAT_NAME,
                 "version": cls.FORMAT_VERSION,
@@ -41,8 +44,13 @@ class FiveDPGN:
                 **(game_metadata or {}),
             }
             data = {"metadata": metadata, "game": GameArchive.capture(engine)}
-            with path.open("w", encoding="utf-8") as handle:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix=".game-", suffix=".tmp", delete=False) as handle:
+                temporary = handle.name
                 json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
             logger.info(
                 f"棋谱已保存: {filepath} "
                 f"({len(engine.action_history)} Actions / {engine.move_counter} Moves)"
@@ -51,6 +59,12 @@ class FiveDPGN:
         except Exception as exc:
             logger.error(f"棋谱保存失败: {exc}")
             return False
+        finally:
+            if temporary:
+                try:
+                    Path(temporary).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     @classmethod
     def load_archive(cls, filepath: str) -> ArchivePayload | None:

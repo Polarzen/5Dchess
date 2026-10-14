@@ -768,14 +768,17 @@ async function openSavedP2PGames() {
         p2pSavedGames.set(saved.save_id, saved);
         const option = document.createElement('option');
         option.value = saved.save_id;
-        option.textContent = `${new Date(saved.saved_at).toLocaleString()} · ${saved.action_counter} 个行动 · ${saved.game_state === 'PLAYING' ? '进行中' : '已结束'}`;
+        const kind = saved.mode === 'pve' ? 'AI 对战' : saved.mode === 'pvp' ? '本地双人' : '在线房间';
+        option.textContent = `${kind} · ${new Date(saved.saved_at).toLocaleString()} · ${saved.action_counter} 个行动`
+            + (saved.move_counter != null ? ` / ${saved.move_counter} 次走子` : '')
+            + ` · ${saved.game_state === 'PLAYING' ? '进行中' : '已结束'}`;
         select.appendChild(option);
     }
     select.value = result.saves?.[0]?.save_id || '';
     updateSavedGameActions();
     detail.textContent = (result.saves?.length
-        ? '默认选中最近存档。“继续对局”恢复最后一次已提交行动并生成新房间码；“观看回放”从开局逐手查看，不改动存档。已结束的棋局只能回放。'
-        : '尚无在线存档。创建在线房间后，成功提交的行动会自动保存。')
+        ? '默认选中最近存档。本地/AI 对战恢复到手动保存的位置；在线房间恢复最后一次已提交行动并生成新房间码。“观看回放”不改动存档，已结束棋局只能回放。'
+        : '尚无存档。本地双人或 AI 对战请点击棋盘上方“保存棋局”；在线房间每次成功提交行动后自动保存。')
         + (result.unreadable ? ` 另有 ${result.unreadable} 份存档无法读取，请保留 saves 目录中的原文件。` : '');
 }
 
@@ -797,21 +800,26 @@ async function openSelectedSavedGame(action) {
     if (p2pRoomOperation) return;
     const saveId = document.getElementById('p2p-save-list').value;
     if (!saveId) return;
+    const saved = p2pSavedGames.get(saveId);
+    const local = saved?.mode === 'pvp' || saved?.mode === 'pve';
     const context = captureSession();
     const owner = { id: ++operationSequence, context };
     p2pRoomOperation = owner;
     updateSavedGameActions();
     try {
-        const result = await api(`/api/p2p/${action}`, 'POST', { save_id: saveId });
+        const result = await api(local ? `/api/game/${action}_saved` : `/api/p2p/${action}`, 'POST', { save_id: saveId });
         if (!isCurrentSession(context) || p2pRoomOperation !== owner) return;
         if (isErrorResult(result)) {
-            document.getElementById('p2p-save-detail').textContent = p2pErrorCode(result) === 'room_full'
+            document.getElementById('p2p-save-detail').textContent = ['room_full', 'p2p_room_active'].includes(p2pErrorCode(result))
                 ? '已有在线房间，请先回到原页面继续或退出房间，再打开存档。'
                 : playerErrorMessage(result, '存档打开失败');
             return;
         }
         document.getElementById('p2p-save-dialog').close();
-        if (action === 'restore') {
+        if (action === 'restore' && local) {
+            enterSavedReplay(result);
+            showToast('已恢复本地棋局，保留原对手、执棋方和已保存的走子。');
+        } else if (action === 'restore') {
             enterP2PGame(result);
             showToast(`存档已恢复。请发送当前公网网址和新房间码 ${p2pRoomCode}，等待对手加入。`);
         } else {
@@ -838,7 +846,7 @@ function enterSavedReplay(result) {
     clearStoredP2PSession();
     p2pRoomCode = null;
     p2pPlayerToken = null;
-    mode = 'replay';
+    mode = result.mode || 'replay';
     gameState = result;
     clearSelection(false);
     switchToScreen('game-screen');
@@ -847,6 +855,7 @@ function enterSavedReplay(result) {
     requestAnimationFrame(() => {
         if (isCurrentSession(context)) scrollToCurrent();
     });
+    if (mode === 'pve' && shouldRunAI()) scheduleAIAction(context);
 }
 
 async function openLegacyReplay() {

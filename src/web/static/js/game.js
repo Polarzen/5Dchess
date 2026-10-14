@@ -599,6 +599,31 @@ async function startGame(nextMode, difficulty = 'medium') {
     }
 }
 
+async function saveLocalGame() {
+    if (!gameState || !['pvp', 'pve'].includes(mode) || aiRequestInFlight
+        || gameState.ai_thinking === true || (shouldRunAI() && !aiRetryAvailable)) return;
+    const context = captureSession();
+    const owner = acquireMutation(context);
+    if (!owner) return;
+    beginInteraction(owner, '正在保存棋局…');
+    try {
+        const result = await api('/api/game/save', 'POST', {});
+        if (!ownsMutation(owner)) return;
+        if (isErrorResult(result)) {
+            showToast(playerErrorMessage(result, '保存失败，请检查项目文件夹权限后重试。'), true);
+            return;
+        }
+        if (!commitMutation(owner)) return;
+        gameState = result;
+        updateAll();
+        showToast('棋局已保存到项目 saves/local 文件夹；可从“存档与回放”继续对局或观看回放。');
+    } catch (error) {
+        if (ownsMutation(owner)) showToast('保存未完成，请检查连接后重试；当前棋局仍保留。', true);
+    } finally {
+        releaseMutation(owner);
+    }
+}
+
 function backToMenu() {
     invalidateSession();
     gameState = null;
@@ -1418,6 +1443,10 @@ function appendCurve(svg, fromKey, toKey, className, markerId, boardRects) {
 }
 
 function renderActionPanel() {
+    const saveButton = document.getElementById('save-local-game-btn');
+    saveButton.hidden = !gameState || !['pvp', 'pve'].includes(mode);
+    saveButton.disabled = Boolean(mutationOwner) || aiRequestInFlight || gameState?.ai_thinking === true
+        || (shouldRunAI() && !aiRetryAvailable);
     const action = gameState.action || {};
     const present = gameState.present;
     const summary = document.getElementById('action-summary');
@@ -1665,6 +1694,7 @@ function checkGameOver() {
         <div id="game-over-dialog">
             <h2>游戏结束</h2>
             <p>${escapeHtml(resultLabel(gameState.game_state))}</p>
+            ${['pvp', 'pve'].includes(mode) ? '<button class="ghost-btn" onclick="saveLocalGame()">保存棋局</button>' : ''}
             <button class="submit-btn" onclick="backToMenu()">返回菜单</button>
         </div>
     `;

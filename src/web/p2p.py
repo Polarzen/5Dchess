@@ -18,6 +18,7 @@ from typing import Any, Callable
 from flask import g, jsonify, request
 
 from src.data.online_save import OnlineSaveStore
+from src.data.local_save import LocalSaveStore
 from src.engine import FiveDEngine
 from src.engine.multiverse import MultiverseBoardView
 from src.modes import PvPMode, ReplayMode
@@ -366,7 +367,10 @@ def register_p2p_routes(
             return _error("host_required", 403)
         with _room_lock:
             try:
-                return jsonify(save_store().catalog())
+                online = save_store().catalog()
+                local = LocalSaveStore(flask_app.config["P2P_SAVE_DIR"]).catalog()
+                return jsonify({"saves": sorted(online["saves"] + local["saves"], key=lambda saved: saved["saved_at"], reverse=True),
+                                "unreadable": online["unreadable"] + local["unreadable"]})
             except OSError:
                 return _error("save_unavailable", 503)
 
