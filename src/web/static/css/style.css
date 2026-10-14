@@ -84,6 +84,14 @@ button:disabled { cursor: not-allowed; }
 .llm-key-row button { flex: 0 0 auto; }
 #llm-dialog .llm-field-help { font-size: 12px; color: var(--muted); margin: 6px 0 12px; }
 .llm-advanced { margin-top: 12px; }
+.llm-storage { padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--chrome-2); }
+.llm-storage > strong { display: block; font-size: 13px; margin-bottom: 10px; }
+.llm-storage > label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+#llm-config-path { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--chrome); color: var(--text); font-size: 12px; }
+.llm-manage-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.llm-manage-actions button { flex: 1 1 140px; font-size: 12px; }
+.llm-delete-btn { color: #a53855; }
+.llm-delete-confirmation { margin-top: 12px; border-top: 1px solid var(--border); }
 #llm-setup-help { margin-top: 20px; }
 @media (max-width: 480px) { .llm-form-row { grid-template-columns: 1fr; gap: 0; } #llm-dialog { padding: 18px; } }
 #llm-dialog .save-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }

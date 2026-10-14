@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时线棋局 · 多时间线国际象棋</title>
     <meta name="theme-color" content="#f7e9ee">
-    <link rel="stylesheet" href="/static/css/style.css?v=17">
+    <link rel="stylesheet" href="/static/css/style.css?v=18">
     <link rel="stylesheet" href="/static/css/p2p.css?v=3">
 </head>
 <body>
@@ -132,6 +132,7 @@
                     </button>
                     <p id="action-help" class="panel-help"></p>
                     <p id="llm-ai-status" role="status" hidden></p>
+                    <button id="llm-manage-btn" class="ghost-btn" onclick="openLLMSetup()" hidden>在线 AI 设置与密钥</button>
                     <p id="repetition-warning" class="repetition-warning hidden" role="status"></p>
                 </section>
 
@@ -197,6 +198,21 @@
     </header>
     <p>模型选择走法，引擎校验规则；连接异常时自动使用本地方案。</p>
     <p id="llm-config-status" role="status" aria-live="polite">正在读取本机配置…</p>
+    <section class="llm-storage" aria-label="本机密钥管理">
+        <strong id="llm-storage-state">正在读取保存位置…</strong>
+        <label for="llm-config-path">配置文件位置（房主电脑）</label>
+        <input id="llm-config-path" type="text" readonly spellcheck="false" aria-describedby="llm-storage-help">
+        <p class="llm-field-help" id="llm-storage-help">文件包含密钥，请勿转发。复制文件夹路径后，可粘贴到文件资源管理器的地址栏。</p>
+        <div class="llm-manage-actions">
+            <button type="button" class="ghost-btn" id="llm-copy-path-btn" onclick="copyLLMConfigDirectory()" disabled>复制文件夹路径</button>
+            <button type="button" class="ghost-btn" id="llm-replace-key-btn" onclick="replaceLLMKey()" disabled>更换密钥</button>
+            <button type="button" class="ghost-btn llm-delete-btn" id="llm-delete-btn" onclick="showLLMDeleteConfirmation()" disabled>删除密钥及配置</button>
+        </div>
+        <div id="llm-delete-confirmation" class="llm-delete-confirmation" hidden>
+            <p>将删除本机保存的密钥、接口地址与模型设置，并放弃尚未保存的输入。存档不受影响；当前对局后续使用本地方案，已发起的请求可能继续完成。这不会撤销供应商平台上的密钥。</p>
+            <div class="llm-manage-actions"><button type="button" class="ghost-btn llm-delete-btn" id="llm-confirm-delete-btn" onclick="deleteLLMConfig()">确认删除</button><button type="button" class="ghost-btn" id="llm-cancel-delete-btn" onclick="cancelLLMDelete()">取消</button></div>
+        </div>
+    </section>
     <form id="llm-config-form" onsubmit="event.preventDefault(); saveLLMConfig()" autocomplete="off" oninput="markLLMConfigDirty()">
         <fieldset id="llm-fields" disabled>
             <label for="llm-provider">模型服务商</label>
@@ -211,7 +227,7 @@
             <p class="llm-field-help" id="llm-url-help">默认地址无需修改。粘贴完整接口路径也会自动整理；公网接口使用加密连接。</p>
             <label for="llm-api-key">API 密钥</label>
             <div class="llm-key-row"><input id="llm-api-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false" autocapitalize="none" aria-describedby="llm-key-help" required><button type="button" class="ghost-btn" id="llm-key-toggle" onclick="toggleLLMKeyVisibility()" aria-pressed="false">显示</button></div>
-            <p class="llm-field-help" id="llm-key-help">密钥仅保存在房主本机，保存或关闭后清空输入框；已保存的密钥不会回显。</p>
+            <p class="llm-field-help" id="llm-key-help">粘贴新密钥并保存即可替换；留空保留原密钥。保存或关闭后清空输入框，已保存的密钥不会回显。</p>
             <details class="llm-advanced"><summary>费用与等待时间</summary>
                 <div class="llm-form-row">
                     <div><label for="llm-timeout">网络等待（秒）</label><input id="llm-timeout" type="number" min="1" max="15" step="1" required></div>
@@ -275,7 +291,7 @@
     </div>
     <p><button class="ghost-btn" onclick="openLegacyReplay()">其他棋谱（.5dpgn）</button></p>
 </dialog>
-<script src="/static/js/game.js?v=15"></script>
+<script src="/static/js/game.js?v=16"></script>
 <script src="/static/js/p2p.js?v=9"></script>
 <script src="/static/js/replay_controls.js?v=1"></script>
 <script src="/static/js/p2p_invite.js?v=3"></script>

@@ -367,6 +367,18 @@ function updateLLMConfigControls() {
     document.getElementById('llm-reload-btn').disabled = llmConfigBusy;
     document.getElementById('llm-start-btn').disabled = !ready;
     document.getElementById('llm-test-btn').disabled = !ready;
+    document.getElementById('llm-copy-path-btn').disabled = llmConfigBusy || !llmSettings?.config_directory;
+    document.getElementById('llm-replace-key-btn').disabled = llmConfigBusy || !editable || !llmSettings.has_key;
+    document.getElementById('llm-delete-btn').disabled = llmConfigBusy || !editable || !llmSettings.file_exists;
+    document.getElementById('llm-confirm-delete-btn').disabled = llmConfigBusy || !editable || !llmSettings.file_exists;
+    document.getElementById('llm-cancel-delete-btn').disabled = llmConfigBusy;
+    document.getElementById('llm-save-btn').textContent = llmSettings?.file_exists ? '保存修改' : '保存到本机';
+    document.getElementById('llm-config-path').value = llmSettings?.config_path || '';
+    document.getElementById('llm-storage-state').textContent = !llmSettings ? '保存位置暂不可用'
+        : llmSettings.editing_locked ? '配置来源：环境变量覆盖 · 网页只读'
+        : llmSettings.ready ? '密钥已保存在本机 · 内容不回显'
+        : llmSettings.file_exists ? '本机已有配置文件，但配置不可用，可重新填写或删除'
+        : '尚未保存密钥 · 首次保存后创建下方文件';
 }
 
 function applyLLMSettings(result) {
@@ -380,9 +392,11 @@ function applyLLMSettings(result) {
     const key = document.getElementById('llm-api-key');
     key.required = !result.has_key;
     key.placeholder = result.has_key ? '已保存；留空保留原密钥' : '粘贴自己的 API 密钥';
+    cancelLLMDelete();
 }
 
 function markLLMConfigDirty() {
+    cancelLLMDelete();
     llmConfigDirty = true;
     document.getElementById('llm-config-status').textContent = '有未保存的修改，请先保存。切换接口地址时须填写对应的新密钥。';
     updateLLMConfigControls();
@@ -408,6 +422,7 @@ function closeLLMSetup() {
     ++llmConfigCheck;
     llmConfigBusy = false;
     clearLLMKeyInput();
+    cancelLLMDelete();
     document.getElementById('llm-dialog').close();
 }
 
@@ -425,6 +440,7 @@ async function checkLLMConfig() {
     const status = document.getElementById('llm-config-status');
     llmConfigBusy = true;
     llmSettings = null;
+    cancelLLMDelete();
     clearLLMKeyInput();
     updateLLMConfigControls();
     status.textContent = '正在读取本机配置…';
@@ -447,6 +463,7 @@ async function saveLLMConfig() {
     if (llmConfigBusy || !llmSettings || llmSettings.editing_locked) return;
     const form = document.getElementById('llm-config-form');
     if (!form.reportValidity()) return;
+    cancelLLMDelete();
     const payload = {
         revision: llmSettings.revision,
         api_key: document.getElementById('llm-api-key').value.trim(),
@@ -467,6 +484,59 @@ async function saveLLMConfig() {
     document.getElementById('llm-config-status').textContent = isErrorResult(result)
         ? playerErrorMessage(result, '保存失败，请重新载入检查；密钥需重新输入。')
         : result.message;
+    updateLLMConfigControls();
+}
+
+async function copyLLMConfigDirectory() {
+    if (llmConfigBusy || !llmSettings?.config_directory) return;
+    const check = llmConfigCheck;
+    try {
+        await navigator.clipboard.writeText(llmSettings.config_directory);
+        if (check === llmConfigCheck) document.getElementById('llm-config-status').textContent = llmSettings.file_exists
+            ? '已复制文件夹路径，可粘贴到文件资源管理器的地址栏。'
+            : '已复制预定文件夹路径；首次保存后才会创建配置文件。';
+    } catch (_) {
+        if (check === llmConfigCheck) document.getElementById('llm-config-status').textContent = '复制失败，请手动选择上方路径复制。';
+    }
+}
+
+function replaceLLMKey() {
+    if (llmConfigBusy || !llmSettings?.has_key || llmSettings.editing_locked) return;
+    clearLLMKeyInput();
+    const key = document.getElementById('llm-api-key');
+    key.required = true;
+    key.placeholder = '粘贴新密钥，再点击“保存修改”';
+    markLLMConfigDirty();
+    document.getElementById('llm-config-status').textContent = '请输入新密钥并保存。保存成功前，原密钥仍然有效；重新载入可放弃修改。';
+    key.focus();
+}
+
+function cancelLLMDelete() {
+    document.getElementById('llm-delete-confirmation').hidden = true;
+}
+
+function showLLMDeleteConfirmation() {
+    if (llmConfigBusy || !llmSettings?.file_exists || llmSettings.editing_locked) return;
+    document.getElementById('llm-delete-confirmation').hidden = false;
+    document.getElementById('llm-cancel-delete-btn').focus();
+}
+
+async function deleteLLMConfig() {
+    if (llmConfigBusy || !llmSettings?.file_exists || llmSettings.editing_locked
+        || document.getElementById('llm-delete-confirmation').hidden) return;
+    const payload = {revision: llmSettings.revision, confirmed: true};
+    const check = ++llmConfigCheck;
+    llmConfigBusy = true;
+    clearLLMKeyInput();
+    updateLLMConfigControls();
+    document.getElementById('llm-config-status').textContent = '正在删除本机密钥及配置…';
+    const result = await api('/api/ai/llm_delete', 'POST', payload);
+    if (check !== llmConfigCheck) return;
+    llmConfigBusy = false;
+    if (!isErrorResult(result) && result.revision) applyLLMSettings(result);
+    document.getElementById('llm-config-status').textContent = isErrorResult(result)
+        ? playerErrorMessage(result, '删除未完成，请重新载入并确认当前配置。') : result.message;
+    cancelLLMDelete();
     updateLLMConfigControls();
 }
 
@@ -1418,6 +1488,7 @@ function renderLLMStatus() {
     const status = document.getElementById('llm-ai-status');
     if (!status) return;
     const opponent = mode === 'pve' && gameState?.ai_difficulty === 'llm' ? gameState.ai_opponent : null;
+    document.getElementById('llm-manage-btn').hidden = !opponent;
     status.hidden = !opponent;
     if (!opponent) { status.textContent = ''; return; }
     const source = opponent.last_source === 'llm' ? '上回合由模型选招' : opponent.last_source === 'local' ? '上回合使用本地方案' : '等待首个 AI 回合';

@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from src.ai.action_planner import AIActionPlan, ActionPlanner, ActionPlanningError, ActionSearchBudget, engine_state_signature
 from src.ai.base import AIPlayer
-from src.ai.llm_client import LLMConfig, LLMRequestError, load_llm_config, request_completion
+from src.ai.llm_client import LLMConfig, LLMConfigError, LLMRequestError, load_llm_config, request_completion
 from src.engine.coordinates import BoardCoord
 from src.utils.constants import AIDifficulty, GameState
 
@@ -31,6 +32,7 @@ WARNINGS = {
     "busy": "上一条在线请求尚未结束，本回合已使用本地合法方案。",
     "request_limit": "已达到本局在线请求上限，后续回合使用本地合法方案。",
     "context_limit": "棋局规模超出在线上下文限制，本回合已使用本地合法方案。",
+    "configuration_removed": "在线 AI 配置已删除或不可用，本回合已使用本地合法方案。",
 }
 
 
@@ -70,6 +72,7 @@ class LLMAI(AIPlayer):
     def __init__(self, color, config: LLMConfig | None = None, *, budget=None):
         super().__init__(color, AIDifficulty.LLM, budget or ActionSearchBudget(
             max_states=512, max_actions=12, max_move_depth=32, max_seconds=2.0))
+        self._managed_config = config is None
         self.config = config or load_llm_config()
         self.requests_used = 0
         self.prompt_tokens = 0
@@ -95,6 +98,14 @@ class LLMAI(AIPlayer):
         self.last_source = "local"
         if len(candidates) > 1:
             try:
+                if self._managed_config:
+                    # Re-read at request admission: replacing/deleting the saved
+                    # key also affects games that are already in progress.
+                    try:
+                        self.config = load_llm_config()
+                    except LLMConfigError:
+                        self.config = replace(self.config, api_key="disabled")
+                        raise LLMRequestError("configuration_removed") from None
                 if self.requests_used >= self.config.max_requests:
                     raise LLMRequestError("request_limit")
                 messages = build_messages(engine, candidates)

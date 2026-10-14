@@ -27,7 +27,7 @@ from src.modes import PvEMode, PvPMode, ReplayMode
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
 from src.ai.llm_client import LLMConfigError, LLMRequestError, load_llm_config
-from src.ai.llm_settings import public_llm_settings, save_llm_settings, test_llm_connection, LLMSettingsConflict
+from src.ai.llm_settings import public_llm_settings, save_llm_settings, delete_llm_settings, test_llm_connection, LLMSettingsConflict
 from src.web.local_access import is_local_host
 from src.web.port_utils import (
     DEFAULT_HOST,
@@ -317,6 +317,7 @@ def llm_status():
 
 @app.post("/api/ai/llm_config")
 @app.post("/api/ai/llm_test")
+@app.post("/api/ai/llm_delete")
 def llm_settings_operation():
     if not is_local_host():
         return jsonify({"error": "在线 AI 设置仅允许在房主电脑的本机网址操作。"}), 403
@@ -327,6 +328,8 @@ def llm_settings_operation():
     try:
         if request.path.endswith("llm_config"):
             result = save_llm_settings(data)
+        elif request.path.endswith("llm_delete"):
+            result = delete_llm_settings(data)
         else:
             if not isinstance(data, dict) or set(data) != {"revision"}:
                 raise LLMConfigError("请先保存设置，再测试连接。")

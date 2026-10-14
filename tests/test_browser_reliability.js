@@ -20,6 +20,7 @@ function element() {
         replaceChildren() {},
         setAttribute() {},
         reportValidity() { return true; },
+        focus() { this.focused = true; },
         showModal() { this.open = true; },
         close() { this.open = false; },
         remove() {},
@@ -900,19 +901,28 @@ function testPastBranchControlsAndReasons() {
 async function testLLMSetupAndFallbackStatus() {
     const context = loadClient();
     const calls = [];
-    const settings = {ready:false,has_key:false,base_url:'https://api.deepseek.com',model:'deepseek-flash',timeout_seconds:8,max_requests:80,revision:'missing',editing_locked:false,message:'尚未配置在线 AI'};
+    const settings = {ready:false,has_key:false,file_exists:false,config_path:'/project/.runtime/llm.json',config_directory:'/project/.runtime',base_url:'https://api.deepseek.com',model:'deepseek-flash',timeout_seconds:8,max_requests:80,revision:'missing',editing_locked:false,message:'尚未配置在线 AI'};
     context.fetch = async path => { calls.push(path); return {ok:true,status:200,json:async () => settings}; };
     await vm.runInContext('openLLMSetup()', context);
     assert.equal(context.document.getElementById('llm-dialog').open, true);
     assert.equal(context.document.getElementById('llm-start-btn').disabled, true);
     assert.match(context.document.getElementById('llm-config-status').textContent, /尚未配置/);
-    context.fetch = async path => { calls.push(path); return {ok:true,status:200,json:async () => ({...settings,ready:true,has_key:true,revision:'saved'})}; };
+    assert.equal(context.document.getElementById('llm-config-path').value, settings.config_path);
+    assert.equal(context.document.getElementById('llm-delete-btn').disabled, true);
+    let copied;
+    context.navigator.clipboard.writeText = async value => { copied = value; };
+    await vm.runInContext('copyLLMConfigDirectory()', context);
+    assert.equal(copied, settings.config_directory);
+    context.fetch = async path => { calls.push(path); return {ok:true,status:200,json:async () => ({...settings,ready:true,has_key:true,file_exists:true,revision:'saved'})}; };
     await vm.runInContext('checkLLMConfig()', context);
     assert.equal(context.document.getElementById('llm-start-btn').disabled, false);
     assert.ok(calls.every(path => path === '/api/ai/llm_status'), 'setup must never make a paid AI request');
     const key = context.document.getElementById('llm-api-key');
     assert.equal(key.value, '');
     assert.equal(key.required, false);
+    vm.runInContext('replaceLLMKey()', context);
+    assert.equal(key.required, true);
+    assert.equal(key.focused, true);
     key.value = 'new-test-key';
     vm.runInContext('markLLMConfigDirty()', context);
     assert.equal(context.document.getElementById('llm-start-btn').disabled, true);
@@ -922,7 +932,7 @@ async function testLLMSetupAndFallbackStatus() {
         calls.push(path);
         assert.equal(JSON.parse(options.body).api_key, 'new-test-key');
         await new Promise(resolve => { finishSave = resolve; });
-        return {ok:true,status:200,json:async () => ({...settings,ready:true,has_key:true,revision:'next',message:'已保存'})};
+        return {ok:true,status:200,json:async () => ({...settings,ready:true,has_key:true,file_exists:true,revision:'next',message:'已保存'})};
     };
     const saving = vm.runInContext('saveLLMConfig()', context);
     assert.equal(key.value, '', 'clear entered key immediately after sending');
@@ -934,15 +944,42 @@ async function testLLMSetupAndFallbackStatus() {
     assert.equal(context.document.getElementById('llm-start-btn').disabled, false);
     assert.equal(key.value, '');
     assert.ok([...context.window.localStorage.values.values()].every(value => !String(value).includes('new-test-key')));
+    const beforeDelete = calls.length;
+    vm.runInContext('showLLMDeleteConfirmation(); cancelLLMDelete()', context);
+    await vm.runInContext('deleteLLMConfig()', context);
+    assert.equal(calls.length, beforeDelete, 'cancel must not delete');
+    let finishDelete;
+    context.fetch = async (path, options) => {
+        calls.push(path);
+        assert.equal(path, '/api/ai/llm_delete');
+        assert.deepEqual(JSON.parse(options.body), {revision:'next',confirmed:true});
+        await new Promise(resolve => { finishDelete = resolve; });
+        return {ok:true,status:200,json:async () => ({...settings,message:'已删除本机密钥及配置'})};
+    };
+    vm.runInContext('showLLMDeleteConfirmation()', context);
+    const deleting = vm.runInContext('deleteLLMConfig()', context);
+    await vm.runInContext('deleteLLMConfig()', context);
+    assert.equal(calls.filter(path => path === '/api/ai/llm_delete').length, 1);
+    finishDelete();
+    await deleting;
+    assert.equal(context.document.getElementById('llm-start-btn').disabled, true);
+    assert.equal(context.document.getElementById('llm-delete-btn').disabled, true);
+    assert.equal(context.document.getElementById('llm-delete-confirmation').hidden, true);
+    assert.equal(key.required, true);
+    vm.runInContext(`applyLLMSettings({ready:true,has_key:true,file_exists:true,editing_locked:true,revision:'env'}); updateLLMConfigControls();`, context);
+    assert.equal(context.document.getElementById('llm-replace-key-btn').disabled, true);
+    assert.equal(context.document.getElementById('llm-delete-btn').disabled, true);
     key.value = 'unsubmitted-test-key';
     vm.runInContext('toggleLLMKeyVisibility(); closeLLMSetup()', context);
     assert.equal(key.value, '');
     assert.equal(key.type, 'password');
     vm.runInContext(`mode='pve'; gameState={ai_difficulty:'llm',ai_opponent:{model:'deepseek-flash',requests_used:1,max_requests:80,last_source:'local'},ai_warning:'在线 AI 响应超时，本回合已使用本地合法方案。'}; renderLLMStatus();`, context);
     assert.match(context.document.getElementById('llm-ai-status').textContent, /请求 1\/80.*超时/);
+    assert.equal(context.document.getElementById('llm-manage-btn').hidden, false);
     vm.runInContext("mode='p2p'; renderLLMStatus();", context);
     assert.equal(context.document.getElementById('llm-ai-status').hidden, true);
     assert.equal(context.document.getElementById('llm-ai-status').textContent, '');
+    assert.equal(context.document.getElementById('llm-manage-btn').hidden, true);
 }
 
 (async () => {

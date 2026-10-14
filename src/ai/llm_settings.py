@@ -34,9 +34,15 @@ def _environment_locked():
 
 def public_llm_settings():
     with _SETTINGS_LOCK:
+        revision = _revision()
+        environment = _environment_locked()
         result = {"ready": False, "has_key": False, "base_url": "https://api.deepseek.com",
                   "model": "deepseek-flash", "timeout_seconds": 8, "max_requests": 80,
-                  "revision": _revision(), "editing_locked": _environment_locked()}
+                  "revision": revision, "editing_locked": environment,
+                  "config_path": str(llm_client.CONFIG_PATH.absolute()),
+                  "config_directory": str(llm_client.CONFIG_PATH.parent.absolute()),
+                  "file_exists": revision != "missing",
+                  "config_source": "environment" if environment else "file" if revision != "missing" else "none"}
         try:
             config = load_llm_config()
         except LLMConfigError as exc:
@@ -124,7 +130,24 @@ def save_llm_settings(data):
                 except OSError:
                     pass
         result = public_llm_settings()
-        result["message"] = "已保存到房主本机。尚未测试接口；新对局使用新配置，当前对局保持原配置。"
+        result["message"] = "已保存到房主本机。尚未测试接口；新配置从下一次在线请求起生效，已发起的请求可能继续完成。"
+        return result
+
+
+def delete_llm_settings(data):
+    if not isinstance(data, dict) or set(data) != {"revision", "confirmed"} or data["confirmed"] is not True:
+        raise LLMConfigError("请确认删除本机密钥及配置后再操作。")
+    with _SETTINGS_LOCK:
+        if _environment_locked():
+            raise LLMSettingsConflict("当前有环境变量覆盖，网页不能删除。请先在启动环境移除覆盖项并重启。")
+        if data["revision"] != _revision():
+            raise LLMSettingsConflict("配置已在其他窗口修改，请重新载入后再删除。")
+        try:
+            llm_client.CONFIG_PATH.unlink(missing_ok=True)
+        except OSError:
+            raise LLMConfigError("删除失败，请检查配置文件的访问权限；本机配置仍保留。") from None
+        result = public_llm_settings()
+        result["message"] = "已删除本机密钥及配置。当前对局后续使用本地方案；已发起的请求可能继续完成。供应商账户中的密钥仍有效，可在供应商平台撤销。"
         return result
 
 
