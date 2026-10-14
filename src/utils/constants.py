@@ -46,6 +46,7 @@ class AIDifficulty(Enum):
     EASY = "easy"
     MEDIUM = "medium"
     HARD = "hard"
+    LLM = "llm"
 
 
 # 棋子价值

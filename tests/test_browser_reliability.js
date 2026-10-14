@@ -18,6 +18,8 @@ function element() {
         style: {},
         appendChild() {},
         replaceChildren() {},
+        setAttribute() {},
+        reportValidity() { return true; },
         showModal() { this.open = true; },
         close() { this.open = false; },
         remove() {},
@@ -895,7 +897,56 @@ function testPastBranchControlsAndReasons() {
     }
 }
 
+async function testLLMSetupAndFallbackStatus() {
+    const context = loadClient();
+    const calls = [];
+    const settings = {ready:false,has_key:false,base_url:'https://api.deepseek.com',model:'deepseek-flash',timeout_seconds:8,max_requests:80,revision:'missing',editing_locked:false,message:'尚未配置在线 AI'};
+    context.fetch = async path => { calls.push(path); return {ok:true,status:200,json:async () => settings}; };
+    await vm.runInContext('openLLMSetup()', context);
+    assert.equal(context.document.getElementById('llm-dialog').open, true);
+    assert.equal(context.document.getElementById('llm-start-btn').disabled, true);
+    assert.match(context.document.getElementById('llm-config-status').textContent, /尚未配置/);
+    context.fetch = async path => { calls.push(path); return {ok:true,status:200,json:async () => ({...settings,ready:true,has_key:true,revision:'saved'})}; };
+    await vm.runInContext('checkLLMConfig()', context);
+    assert.equal(context.document.getElementById('llm-start-btn').disabled, false);
+    assert.ok(calls.every(path => path === '/api/ai/llm_status'), 'setup must never make a paid AI request');
+    const key = context.document.getElementById('llm-api-key');
+    assert.equal(key.value, '');
+    assert.equal(key.required, false);
+    key.value = 'new-test-key';
+    vm.runInContext('markLLMConfigDirty()', context);
+    assert.equal(context.document.getElementById('llm-start-btn').disabled, true);
+    assert.equal(context.document.getElementById('llm-test-btn').disabled, true);
+    let finishSave;
+    context.fetch = async (path, options) => {
+        calls.push(path);
+        assert.equal(JSON.parse(options.body).api_key, 'new-test-key');
+        await new Promise(resolve => { finishSave = resolve; });
+        return {ok:true,status:200,json:async () => ({...settings,ready:true,has_key:true,revision:'next',message:'已保存'})};
+    };
+    const saving = vm.runInContext('saveLLMConfig()', context);
+    assert.equal(key.value, '', 'clear entered key immediately after sending');
+    assert.equal(context.document.getElementById('llm-save-btn').disabled, true);
+    await vm.runInContext('saveLLMConfig()', context);
+    assert.equal(calls.filter(path => path === '/api/ai/llm_config').length, 1);
+    finishSave();
+    await saving;
+    assert.equal(context.document.getElementById('llm-start-btn').disabled, false);
+    assert.equal(key.value, '');
+    assert.ok([...context.window.localStorage.values.values()].every(value => !String(value).includes('new-test-key')));
+    key.value = 'unsubmitted-test-key';
+    vm.runInContext('toggleLLMKeyVisibility(); closeLLMSetup()', context);
+    assert.equal(key.value, '');
+    assert.equal(key.type, 'password');
+    vm.runInContext(`mode='pve'; gameState={ai_difficulty:'llm',ai_opponent:{model:'deepseek-flash',requests_used:1,max_requests:80,last_source:'local'},ai_warning:'在线 AI 响应超时，本回合已使用本地合法方案。'}; renderLLMStatus();`, context);
+    assert.match(context.document.getElementById('llm-ai-status').textContent, /请求 1\/80.*超时/);
+    vm.runInContext("mode='p2p'; renderLLMStatus();", context);
+    assert.equal(context.document.getElementById('llm-ai-status').hidden, true);
+    assert.equal(context.document.getElementById('llm-ai-status').textContent, '');
+}
+
 (async () => {
+    await testLLMSetupAndFallbackStatus();
     testPastBranchControlsAndReasons();
     testIncrementalBoardRendering();
     testKeyboardControlsDoNotAlsoSubmitTurn();

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections import deque
 from copy import deepcopy
-import ipaddress
 import os
 from pathlib import Path
 import secrets
@@ -22,6 +21,7 @@ from src.data.online_save import OnlineSaveStore
 from src.engine import FiveDEngine
 from src.engine.multiverse import MultiverseBoardView
 from src.modes import PvPMode, ReplayMode
+from src.web.local_access import is_local_host
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
 
@@ -198,23 +198,6 @@ def register_p2p_routes(
 
     def save_store():
         return OnlineSaveStore(flask_app.config["P2P_SAVE_DIR"])
-
-    def is_local_host():
-        # cloudflared connects from loopback too. Reject forwarded requests,
-        # public Host names and cross-origin browser requests as well.
-        try:
-            loopback = ipaddress.ip_address(request.remote_addr or "").is_loopback
-        except ValueError:
-            return False
-        hostname = request.host.split(":")[0].lower()
-        if request.host.startswith("["):
-            hostname = request.host.split("]")[0] + "]"
-        return (loopback and hostname in {"localhost", "127.0.0.1", "[::1]"}
-                and not any(name.lower().startswith(("x-forwarded-", "cf-"))
-                            or name.lower() == "forwarded" for name in request.headers.keys())
-                and request.headers.get("Sec-Fetch-Site") not in {"cross-site", "same-site"}
-                and request.headers.get("Origin", request.host_url.rstrip("/"))
-                == request.host_url.rstrip("/"))
 
     def open_room(engine, save_id, saved):
         global _room

@@ -17,6 +17,7 @@ let aiRecoveryPending = false;
 // heartbeat deadline without changing the normal game API.
 const API_TIMEOUT_MS = 10000;
 const AI_TIMEOUT_MS = 10000;
+const LLM_AI_TIMEOUT_MS = 25000;
 const NORMAL_REQUEST_TIMEOUT_MS = API_TIMEOUT_MS;
 const activeRequestControllers = new Set();
 const pendingAITimers = new Set();
@@ -344,6 +345,151 @@ async function api(path, method = 'GET', body = null, timeoutMs = NORMAL_REQUEST
 // Session / game flow
 // ---------------------------------------------------------------------------
 
+let llmConfigCheck = 0;
+let llmSettings = null;
+let llmConfigBusy = false;
+let llmConfigDirty = false;
+
+function clearLLMKeyInput() {
+    const key = document.getElementById('llm-api-key');
+    key.value = '';
+    key.type = 'password';
+    const toggle = document.getElementById('llm-key-toggle');
+    toggle.textContent = '显示';
+    toggle.setAttribute('aria-pressed', 'false');
+}
+
+function updateLLMConfigControls() {
+    const editable = llmSettings && !llmSettings.editing_locked;
+    const ready = llmSettings?.ready === true && !llmConfigDirty && !llmConfigBusy;
+    document.getElementById('llm-fields').disabled = llmConfigBusy || !editable;
+    document.getElementById('llm-save-btn').disabled = llmConfigBusy || !editable || !llmConfigDirty;
+    document.getElementById('llm-reload-btn').disabled = llmConfigBusy;
+    document.getElementById('llm-start-btn').disabled = !ready;
+    document.getElementById('llm-test-btn').disabled = !ready;
+}
+
+function applyLLMSettings(result) {
+    llmSettings = result;
+    llmConfigDirty = false;
+    for (const [id, name] of [['llm-base-url','base_url'], ['llm-model','model'], ['llm-timeout','timeout_seconds'], ['llm-max-requests','max_requests']]) {
+        document.getElementById(id).value = result[name];
+    }
+    document.getElementById('llm-provider').value = result.base_url === 'https://api.deepseek.com' ? 'deepseek' : 'custom';
+    clearLLMKeyInput();
+    const key = document.getElementById('llm-api-key');
+    key.required = !result.has_key;
+    key.placeholder = result.has_key ? '已保存；留空保留原密钥' : '粘贴自己的 API 密钥';
+}
+
+function markLLMConfigDirty() {
+    llmConfigDirty = true;
+    document.getElementById('llm-config-status').textContent = '有未保存的修改，请先保存。切换接口地址时须填写对应的新密钥。';
+    updateLLMConfigControls();
+}
+
+function changeLLMProvider() {
+    const deepseek = document.getElementById('llm-provider').value === 'deepseek';
+    document.getElementById('llm-base-url').value = deepseek ? 'https://api.deepseek.com' : '';
+    document.getElementById('llm-model').value = deepseek ? 'deepseek-flash' : '';
+    clearLLMKeyInput();
+    markLLMConfigDirty();
+}
+
+function toggleLLMKeyVisibility() {
+    const key = document.getElementById('llm-api-key');
+    const visible = key.type === 'password';
+    key.type = visible ? 'text' : 'password';
+    document.getElementById('llm-key-toggle').textContent = visible ? '隐藏' : '显示';
+    document.getElementById('llm-key-toggle').setAttribute('aria-pressed', String(visible));
+}
+
+function closeLLMSetup() {
+    ++llmConfigCheck;
+    llmConfigBusy = false;
+    clearLLMKeyInput();
+    document.getElementById('llm-dialog').close();
+}
+
+async function openLLMSetup() {
+    const dialog = document.getElementById('llm-dialog');
+    // Native Escape/cancel and any other close path must also discard input.
+    dialog.onclose = clearLLMKeyInput;
+    dialog.oncancel = () => { ++llmConfigCheck; llmConfigBusy = false; clearLLMKeyInput(); };
+    if (!dialog.open) dialog.showModal();
+    await checkLLMConfig();
+}
+
+async function checkLLMConfig() {
+    const check = ++llmConfigCheck;
+    const status = document.getElementById('llm-config-status');
+    llmConfigBusy = true;
+    llmSettings = null;
+    clearLLMKeyInput();
+    updateLLMConfigControls();
+    status.textContent = '正在读取本机配置…';
+    const result = await api('/api/ai/llm_status');
+    if (check !== llmConfigCheck) return;
+    llmConfigBusy = false;
+    if (isErrorResult(result) || !result.revision) {
+        status.textContent = playerErrorMessage(result, '无法读取配置，请重新载入。');
+    } else {
+        applyLLMSettings(result);
+        status.textContent = result.editing_locked ? result.message : result.ready
+            ? `已读取本机配置：${result.model} · 每局最多 ${result.max_requests} 次请求。密钥留空即可保留；可选测试连接。`
+            : result.message || '填写密钥后保存，即可使用在线 AI。';
+    }
+    document.getElementById('llm-setup-help').open = false;
+    updateLLMConfigControls();
+}
+
+async function saveLLMConfig() {
+    if (llmConfigBusy || !llmSettings || llmSettings.editing_locked) return;
+    const form = document.getElementById('llm-config-form');
+    if (!form.reportValidity()) return;
+    const payload = {
+        revision: llmSettings.revision,
+        api_key: document.getElementById('llm-api-key').value.trim(),
+        base_url: document.getElementById('llm-base-url').value.trim(),
+        model: document.getElementById('llm-model').value.trim(),
+        timeout_seconds: Number(document.getElementById('llm-timeout').value),
+        max_requests: Number(document.getElementById('llm-max-requests').value),
+    };
+    clearLLMKeyInput();
+    const check = ++llmConfigCheck;
+    llmConfigBusy = true;
+    updateLLMConfigControls();
+    document.getElementById('llm-config-status').textContent = '正在保存到房主本机…';
+    const result = await api('/api/ai/llm_config', 'POST', payload);
+    if (check !== llmConfigCheck) return;
+    llmConfigBusy = false;
+    if (!isErrorResult(result) && result.ready === true) applyLLMSettings(result);
+    document.getElementById('llm-config-status').textContent = isErrorResult(result)
+        ? playerErrorMessage(result, '保存失败，请重新载入检查；密钥需重新输入。')
+        : result.message;
+    updateLLMConfigControls();
+}
+
+async function testLLMConnection() {
+    if (llmConfigBusy || llmConfigDirty || !llmSettings?.ready) return;
+    const check = ++llmConfigCheck;
+    llmConfigBusy = true;
+    updateLLMConfigControls();
+    document.getElementById('llm-config-status').textContent = '正在测试已保存的接口；本次会产生少量接口用量…';
+    const result = await api('/api/ai/llm_test', 'POST', {revision: llmSettings.revision}, 20000);
+    if (check !== llmConfigCheck) return;
+    llmConfigBusy = false;
+    document.getElementById('llm-config-status').textContent = isErrorResult(result)
+        ? playerErrorMessage(result, '连接测试失败，请核对配置。') : result.message;
+    updateLLMConfigControls();
+}
+
+function startLLMGame() {
+    if (document.getElementById('llm-start-btn').disabled) return;
+    closeLLMSetup();
+    startGame('pve', 'llm');
+}
+
 async function startGame(nextMode, difficulty = 'medium') {
     if (startOperationOwner) return;
     invalidateSession();
@@ -492,8 +638,9 @@ async function runAIAction(context = captureSession(), explicitRetry = false) {
     aiRetryAvailable = false;
     const info = document.getElementById('game-info');
     try {
-        if (info && isCurrentSession(context)) info.textContent = 'AI 正在完成当前行动…';
-        const result = await api('/api/game/ai_move', 'POST', {}, AI_TIMEOUT_MS);
+        const onlineAI = gameState.ai_difficulty === 'llm';
+        if (info && isCurrentSession(context)) info.textContent = onlineAI ? '在线 AI 正在选择走法，超时将自动切换本地方案…' : 'AI 正在完成当前行动…';
+        const result = await api('/api/game/ai_move', 'POST', {}, onlineAI ? LLM_AI_TIMEOUT_MS : AI_TIMEOUT_MS);
         if (!ownsMutation(owner)) return;
         if (isErrorResult(result)) {
             if (hasAuthoritativeAIState(result)) {
@@ -1261,9 +1408,21 @@ function renderActionPanel() {
     }
 
     renderAIRetryControl(help);
+    renderLLMStatus();
     renderMovableBoards();
 
     document.getElementById('check-badge')?.classList.toggle('hidden', !gameState.in_check);
+}
+
+function renderLLMStatus() {
+    const status = document.getElementById('llm-ai-status');
+    if (!status) return;
+    const opponent = mode === 'pve' && gameState?.ai_difficulty === 'llm' ? gameState.ai_opponent : null;
+    status.hidden = !opponent;
+    if (!opponent) { status.textContent = ''; return; }
+    const source = opponent.last_source === 'llm' ? '上回合由模型选招' : opponent.last_source === 'local' ? '上回合使用本地方案' : '等待首个 AI 回合';
+    status.textContent = `${opponent.model} · 请求 ${opponent.requests_used}/${opponent.max_requests} · ${source}`
+        + (gameState.ai_warning ? `。${gameState.ai_warning}` : '');
 }
 
 function submissionHelp(action) {

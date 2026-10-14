@@ -19,8 +19,14 @@ _USER_VISIBLE_ATTRIBUTES = {
     "placeholder",
     "title",
 }
-_ALLOWED_BRAND_PHRASES = ("5D Chess", ".5dpgn")
-_ALLOWED_WORDS = {"AI", "T", "L"}
+# Preserve exact setup filenames/keys and provider brands; explanatory prose
+# must still be Chinese. Do not exempt all <code> text or generic path words.
+_ALLOWED_BRAND_PHRASES = (
+    "5D Chess", ".5dpgn", "DeepSeek", "config/llm.example.json",
+    ".runtime/llm.json", "api_key", "http://127.0.0.1:实际端口",
+    "docs/guides/LLM_AI.md",
+)
+_ALLOWED_WORDS = {"AI", "T", "L", "API"}
 _FORBIDDEN_VISIBLE_TERMS = (
     "Action",
     "Submit Action",

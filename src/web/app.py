@@ -26,6 +26,9 @@ from src.data.pgn_parser import FiveDPGN
 from src.modes import PvEMode, PvPMode, ReplayMode
 from src.utils.constants import ChessColor, GameState
 from src.utils.logger import logger
+from src.ai.llm_client import LLMConfigError, LLMRequestError, load_llm_config
+from src.ai.llm_settings import public_llm_settings, save_llm_settings, test_llm_connection, LLMSettingsConflict
+from src.web.local_access import is_local_host
 from src.web.port_utils import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -292,7 +295,59 @@ def _board_payloads(engine: FiveDEngine, interactive: bool) -> list[dict[str, An
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    response = app.make_response(render_template("index.html"))
+    # Host-side credential controls must not be embedded behind another site.
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
+
+
+@app.get("/api/ai/llm_status")
+def llm_status():
+    if not is_local_host():
+        return jsonify({"error": "在线 AI 使用房主账户，请在运行项目的电脑上通过本机网址打开。"}), 403
+    try:
+        result = public_llm_settings()
+    except LLMConfigError as exc:
+        result = {"ready": False, "message": str(exc)}
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/api/ai/llm_config")
+@app.post("/api/ai/llm_test")
+def llm_settings_operation():
+    if not is_local_host():
+        return jsonify({"error": "在线 AI 设置仅允许在房主电脑的本机网址操作。"}), 403
+    if not request.is_json or (request.content_length or 0) > 16384:
+        return jsonify({"error": "配置请求格式或大小不正确。"}), 400
+    data = request.get_json(silent=True)
+    status = 200
+    try:
+        if request.path.endswith("llm_config"):
+            result = save_llm_settings(data)
+        else:
+            if not isinstance(data, dict) or set(data) != {"revision"}:
+                raise LLMConfigError("请先保存设置，再测试连接。")
+            result = test_llm_connection(data["revision"])
+    except LLMSettingsConflict as exc:
+        result, status = {"error": str(exc)}, 409
+    except LLMConfigError as exc:
+        result, status = {"error": str(exc)}, 400
+    except LLMRequestError as exc:
+        message = {
+            "credentials": "认证或额度检查未通过，请核对密钥及账户余额。",
+            "rate_limit": "服务商限制了请求频率，请稍后再试。",
+            "timeout": "连接测试超时，请检查接口地址和网络；配置仍保留。",
+            "busy": "已有在线请求正在处理，请稍后再测试。",
+            "invalid_response": "接口回复格式不兼容，请核对模型及接口地址。",
+        }.get(str(exc), "连接测试失败，请核对接口地址、模型名称和网络。")
+        result, status = {"error": message}, 400
+    response = jsonify(result)
+    response.status_code = status
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +361,9 @@ def start_game():
     mode = data.get("mode", "pvp")
     difficulty = data.get("difficulty", "medium")
     player_color = data.get("player_color", "white")
+
+    if mode == "pve" and difficulty == "llm" and not is_local_host():
+        return jsonify({"error": "在线 AI 仅允许从房主本机启动。"}), 403
 
     try:
         engine = FiveDEngine()
@@ -330,6 +388,8 @@ def start_game():
             "player_color": player_color,
         })
         return jsonify({"success": True, **get_game_state()})
+    except LLMConfigError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.error(f"启动游戏失败: {exc}")
         return jsonify({"error": str(exc)}), 500
@@ -387,6 +447,13 @@ def api_load_game():
         or payload.metadata.get("player_color")
         or "white"
     )
+    if mode == "pve" and difficulty == "llm":
+        if not is_local_host():
+            return jsonify({"error": "在线 AI 仅允许从房主本机启动。"}), 403
+        try:
+            load_llm_config()
+        except LLMConfigError as exc:
+            return jsonify({"error": str(exc)}), 400
     if mode == "pvp":
         instance = PvPMode(payload.engine)
     elif mode == "pve":
@@ -590,6 +657,8 @@ def api_ai_move():
     instance = _get_mode_instance()
     if instance is None or _game_session["mode"] != "pve":
         return jsonify({"error": "非PvE模式"}), 400
+    if instance.ai_difficulty == "llm" and not is_local_host():
+        return jsonify({"error": "在线 AI 仅允许从房主本机调用。"}), 403
 
     try:
         result = instance.execute_ai_action()
@@ -821,6 +890,7 @@ def _get_game_state_unlocked(instance) -> dict[str, Any]:
             "ai_thinking": instance._ai_thinking,
             "ai_warning": instance._ai_warning,
             "ai_error": instance._ai_error,
+            "ai_opponent": instance.ai.public_status() if hasattr(instance.ai, "public_status") else None,
         })
     return state
 

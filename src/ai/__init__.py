@@ -27,6 +27,9 @@ def create_ai(difficulty: str, color) -> AIPlayer:
     """工厂函数：根据难度创建AI"""
     from src.utils.constants import AIDifficulty
     diff = AIDifficulty(difficulty)
+    if diff == AIDifficulty.LLM:
+        from src.ai.llm_ai import LLMAI
+        return LLMAI(color)
     if diff == AIDifficulty.EASY:
         return RandomAI(color)
     elif diff == AIDifficulty.MEDIUM:

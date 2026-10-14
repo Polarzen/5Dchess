@@ -7,6 +7,7 @@ PvE 现在使用 canonical Action 级 AI。AI 在引擎快照上规划一个可�
 - Easy：从完整合法 Action 候选中随机选择（支持固定 seed 的可重复测试）
 - Medium：在完整 Action boundary 上进行 bounded 候选评估
 - Hard：按 Action / turn 深度执行 bounded alpha-beta / negamax，至少考虑对手的下一 Action 响应
+- LLM：由 DeepSeek 或兼容接口选择本地引擎已验证的完整 Action 编号，超时使用本地合法候选；配置和限制见 [在线 AI 对弈](../guides/LLM_AI.md)
 - Evaluation：评估当前可玩的 multiverse frontier，不重复累计历史 Board
 
 搜索由状态数、候选 Action 数、单 Action Move 深度和单调时钟共同设限。预算耗尽不会被误判为将杀、逼和或“无合法 Action”：已有完整候选时从中安全选择；尚无完整候选时返回明确的 bounded-search failure 并停止本次 AI 执行。早期 `choose_move()` 和单 Move Opening Book 仅作为兼容接口保留，不进入 canonical PvE 主路径。

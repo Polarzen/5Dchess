@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时线棋局 · 多时间线国际象棋</title>
     <meta name="theme-color" content="#f7e9ee">
-    <link rel="stylesheet" href="/static/css/style.css?v=15">
+    <link rel="stylesheet" href="/static/css/style.css?v=17">
     <link rel="stylesheet" href="/static/css/p2p.css?v=3">
 </head>
 <body>
@@ -53,7 +53,12 @@
                 <strong>存档与回放</strong>
                 <small>选择存档 · 继续对局或观看回放 · 房主本机操作</small>
             </button>
-            <div class="menu-divider">人机对弈 <span>选择对手难度</span></div>
+            <div class="menu-divider">人机对弈 <span>在线模型或离线练习</span></div>
+            <button class="menu-card llm-entry" onclick="openLLMSetup()">
+                <span class="menu-icon" aria-hidden="true">✧</span>
+                <strong>在线 AI · DeepSeek / 自选模型</strong>
+                <small>模型选择走法 · 本地引擎校验 · 使用自己的 API 账户</small>
+            </button>
             <button class="menu-card" onclick="startGame('pve', 'easy')">
                 <span class="menu-icon">♞</span>
                 <strong>人机 · 简单</strong>
@@ -126,6 +131,7 @@
                         提交行动
                     </button>
                     <p id="action-help" class="panel-help"></p>
+                    <p id="llm-ai-status" role="status" hidden></p>
                     <p id="repetition-warning" class="repetition-warning hidden" role="status"></p>
                 </section>
 
@@ -184,6 +190,52 @@
 </div>
 
 {% include '_cross_board_guide.html' %}
+<dialog id="llm-dialog" aria-labelledby="llm-title">
+    <header class="tutorial-heading">
+        <div><span class="eyebrow">另一种对手</span><h2 id="llm-title">与在线 AI 对弈</h2></div>
+        <button class="ghost-btn" onclick="closeLLMSetup()">关闭</button>
+    </header>
+    <p>模型选择走法，引擎校验规则；连接异常时自动使用本地方案。</p>
+    <p id="llm-config-status" role="status" aria-live="polite">正在读取本机配置…</p>
+    <form id="llm-config-form" onsubmit="event.preventDefault(); saveLLMConfig()" autocomplete="off" oninput="markLLMConfigDirty()">
+        <fieldset id="llm-fields" disabled>
+            <label for="llm-provider">模型服务商</label>
+            <select id="llm-provider" onchange="changeLLMProvider()">
+                <option value="deepseek">DeepSeek（默认）</option>
+                <option value="custom">自定义兼容接口 / 本机模型</option>
+            </select>
+            <div class="llm-form-row">
+                <div><label for="llm-base-url">接口地址</label><input id="llm-base-url" type="text" maxlength="2048" required spellcheck="false" inputmode="url" aria-describedby="llm-url-help"></div>
+                <div><label for="llm-model">模型名称</label><input id="llm-model" type="text" maxlength="100" required spellcheck="false"></div>
+            </div>
+            <p class="llm-field-help" id="llm-url-help">默认地址无需修改。粘贴完整接口路径也会自动整理；公网接口使用加密连接。</p>
+            <label for="llm-api-key">API 密钥</label>
+            <div class="llm-key-row"><input id="llm-api-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false" autocapitalize="none" aria-describedby="llm-key-help" required><button type="button" class="ghost-btn" id="llm-key-toggle" onclick="toggleLLMKeyVisibility()" aria-pressed="false">显示</button></div>
+            <p class="llm-field-help" id="llm-key-help">密钥仅保存在房主本机，保存或关闭后清空输入框；已保存的密钥不会回显。</p>
+            <details class="llm-advanced"><summary>费用与等待时间</summary>
+                <div class="llm-form-row">
+                    <div><label for="llm-timeout">网络等待（秒）</label><input id="llm-timeout" type="number" min="1" max="15" step="1" required></div>
+                    <div><label for="llm-max-requests">每局请求上限</label><input id="llm-max-requests" type="number" min="1" max="200" step="1" required></div>
+                </div>
+            </details>
+        </fieldset>
+        <div class="save-actions"><button id="llm-save-btn" class="submit-btn" type="submit" disabled>保存到本机</button><button id="llm-reload-btn" class="ghost-btn" type="button" onclick="checkLLMConfig()">重新载入已保存设置</button></div>
+    </form>
+    <details id="llm-setup-help">
+        <summary>从哪里获取密钥？</summary>
+        <ol>
+            <li>在 DeepSeek 开放平台创建自己的 API 密钥，API 按用量计费。</li>
+            <li>将密钥粘贴到上方输入框，点击“保存到本机”；默认地址和模型已填好。</li>
+            <li>可先测试连接，再开始对局。切换服务商时需填写对应的新密钥。</li>
+        </ol>
+        <p>仅发送棋盘与候选走法，不发送存档身份信息。密钥保存在项目 <code>.runtime/llm.json</code>；详细说明见 <code>docs/guides/LLM_AI.md</code>。</p>
+    </details>
+    <p class="muted">保存不调用模型；测试连接会产生一次少量接口用量，不计入对局上限。模型棋力尚待实测，离线 AI 仍可免费使用。</p>
+    <div class="save-actions">
+        <button id="llm-test-btn" class="ghost-btn" onclick="testLLMConnection()" disabled>测试连接（少量计费）</button>
+        <button id="llm-start-btn" class="submit-btn" onclick="startLLMGame()" disabled>开始在线 AI 对局 →</button>
+    </div>
+</dialog>
 <dialog id="tutorial-dialog" aria-labelledby="tutorial-title">
     <header class="tutorial-heading">
         <div><span class="tutorial-eyebrow">时线棋局 / 入门练习</span><h2 id="tutorial-title" tabindex="-1">先学会走完一个回合</h2></div>
@@ -223,7 +275,7 @@
     </div>
     <p><button class="ghost-btn" onclick="openLegacyReplay()">其他棋谱（.5dpgn）</button></p>
 </dialog>
-<script src="/static/js/game.js?v=13"></script>
+<script src="/static/js/game.js?v=15"></script>
 <script src="/static/js/p2p.js?v=9"></script>
 <script src="/static/js/replay_controls.js?v=1"></script>
 <script src="/static/js/p2p_invite.js?v=3"></script>
